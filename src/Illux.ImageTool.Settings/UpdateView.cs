@@ -22,7 +22,7 @@ internal sealed record UpdateView(bool ShowBanner, string BannerText, bool CanUp
         var version = NewerVersion(state, installed);
         if (version is null) return new UpdateView(false, "", false, phaseText, busy, null);
 
-        // Only the running service can act on the request flag.
+        // Only the running service can receive the request (R37).
         if (!serviceRunning && !busy && phaseText.Length == 0) phaseText = "The service is not running. Start it to update.";
         return new UpdateView(true, $"Version {version} is ready", !busy && serviceRunning, phaseText, busy, version.ToString());
     }

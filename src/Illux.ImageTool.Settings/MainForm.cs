@@ -7,7 +7,10 @@ using Illux.ImageTool.Watch;
 
 namespace Illux.ImageTool.Settings;
 
-/// <summary>The settings window. Runs without admin rights; only the service buttons start an elevated copy.</summary>
+/// <summary>
+/// The settings window. It runs elevated (config.json is admin-only, R34); the service buttons still do their work in
+/// a separate elevated copy so a hung service call cannot freeze the window.
+/// </summary>
 internal sealed class MainForm : Form
 {
     private readonly ListView _folders = new() { View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false, Dock = DockStyle.Fill };
@@ -132,12 +135,14 @@ internal sealed class MainForm : Form
     private Control BuildBottomButtons()
     {
         var logs = new Button { Text = "Open log folder", AutoSize = true };
+        var serviceLog = new Button { Text = "Show service log", AutoSize = true };
         var help = new Button { Text = "AE parameter help", AutoSize = true };
         logs.Click += (_, _) => OpenLogFolder();
+        serviceLog.Click += (_, _) => ShowServiceLog();
         help.Click += (_, _) => { using var dialog = new HelpDialog(CliHelp.Text); dialog.ShowDialog(this); };
 
         var row = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, Margin = new Padding(0, 8, 0, 0) };
-        row.Controls.AddRange([logs, help]);
+        row.Controls.AddRange([logs, serviceLog, help]);
         return row;
     }
 
@@ -261,7 +266,7 @@ internal sealed class MainForm : Form
 
     private void UpdateNow()
     {
-        if (!TryWriteFlag(RequestFlags.RequestInstallNow)) return;
+        if (!TrySendRequest(ServiceRequests.RequestInstallNow)) return;
         _pendingUpdate = new PendingRequest(DateTimeOffset.Now);
         _updateNow.Enabled = false;
         _phase.Text = "Asking the service to update...";
@@ -269,16 +274,16 @@ internal sealed class MainForm : Form
 
     private void CheckNow()
     {
-        if (!TryWriteFlag(RequestFlags.RequestCheckNow)) return;
+        if (!TrySendRequest(ServiceRequests.RequestCheckNow)) return;
         _pendingCheck = new PendingRequest(DateTimeOffset.Now);
         _updateNote.Text = "Checking...";
     }
 
-    private bool TryWriteFlag(Action write)
+    private bool TrySendRequest(Action send)
     {
         try
         {
-            write();
+            send();
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -334,6 +339,23 @@ internal sealed class MainForm : Form
         _phase.Text = phaseText;
     }
 
+    /// <summary>
+    /// The service log is admin-only (R38). It is shown here, by this elevated window, rather than opened in Explorer,
+    /// which runs as the user and would offer to change the folder's permissions.
+    /// </summary>
+    private void ShowServiceLog()
+    {
+        var text = ServiceLog.ReadLatest(AppPaths.ServiceLogsDir);
+        if (text is null)
+        {
+            MessageBox.Show(this, "There is no service log yet.", "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        using var dialog = new HelpDialog(text, "Service log");
+        dialog.ShowDialog(this);
+    }
+
+    /// <summary>The command-line (AE) logs; users may read and write this folder.</summary>
     private void OpenLogFolder()
     {
         if (!Directory.Exists(AppPaths.LogsDir))

@@ -13,18 +13,25 @@ public sealed class UpdateWorkerOptions
 
     public TimeSpan CheckInterval { get; init; } = TimeSpan.FromHours(6);
 
-    /// <summary>How often the request flags are looked for.</summary>
-    public TimeSpan FlagPollInterval { get; init; } = TimeSpan.FromSeconds(2);
+    /// <summary>How often the request events are looked at.</summary>
+    public TimeSpan SignalPollInterval { get; init; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>False stops the periodic checks (R4); <c>check-now.flag</c> still works. Defaults to <c>CheckForUpdates</c> of config.json.</summary>
+    /// <summary>Name of the "check now" event (R37); tests use a <c>Local\</c> name.</summary>
+    public string CheckNowSignal { get; init; } = ServiceSignals.CheckNowName;
+
+    /// <summary>Name of the "update now" event (R37); tests use a <c>Local\</c> name.</summary>
+    public string InstallNowSignal { get; init; } = ServiceSignals.InstallNowName;
+
+    /// <summary>False stops the periodic checks (R4); "check now" still works. Defaults to <c>CheckForUpdates</c> of config.json.</summary>
     public Func<bool>? PeriodicChecksEnabled { get; init; }
 }
 
 /// <summary>
-/// Looks for updates at start (after a minute) and every 6 hours, and when <c>check-now.flag</c> appears. It installs
-/// only when <c>install-now.flag</c> appears, which the popup and the settings window write after the user clicks
-/// "Update now". The flags are only triggers: the release to install always comes from this process's own check.
-/// All work happens in one loop, so installs are serialised.
+/// Looks for updates at start (after a minute) and every 6 hours, and when the "check now" event is set. It installs
+/// only when the "update now" event is set, which the popup and the settings window do after the user clicks
+/// "Update now". The events (R37) are only triggers: the release to install always comes from this process's own
+/// check. They are auto-reset, so a request is acted on once and none is left over from a time the service was not
+/// running. All work happens in one loop, so installs are serialised.
 /// </summary>
 public sealed class UpdateWorker : BackgroundService
 {
@@ -32,12 +39,8 @@ public sealed class UpdateWorker : BackgroundService
     private readonly ILogger _log;
     private readonly UpdateWorkerOptions _options;
     private ReleaseInfo? _latest;
-    private bool _deleteFailureLogged;
     private string? _lastCheckError;
     private bool _lastGoodCheckForUpdates = true;
-
-    /// <summary>A request flag older than this was left behind (for example while the service was stopped) and is not acted on.</summary>
-    public static readonly TimeSpan MaxFlagAge = TimeSpan.FromMinutes(10);
 
     public UpdateWorker(Updater updater, ILogger log, UpdateWorkerOptions? options = null)
     {
@@ -48,21 +51,24 @@ public sealed class UpdateWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        using var checkNow = CreateSignal(_options.CheckNowSignal);
+        using var installNow = CreateSignal(_options.InstallNowSignal);
         var nextCheck = DateTime.UtcNow + _options.InitialDelay;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (TryConsume(AppPaths.CheckNowFlag))
+                if (IsSet(checkNow))
                 {
                     _log.LogInformation("Update check requested");
                     await CheckAsync(stoppingToken).ConfigureAwait(false);
                     nextCheck = DateTime.UtcNow + _options.CheckInterval;
                 }
 
-                if (TryConsume(AppPaths.InstallNowFlag))
+                if (IsSet(installNow))
                 {
-                    await InstallAsync(stoppingToken).ConfigureAwait(false);
+                    // A second click while a started install waited for idle asks for the same thing.
+                    if (await InstallAsync(stoppingToken).ConfigureAwait(false) == InstallOutcome.Started) IsSet(installNow);
                     nextCheck = DateTime.UtcNow + _options.CheckInterval;
                 }
 
@@ -73,7 +79,7 @@ public sealed class UpdateWorker : BackgroundService
                     if (PeriodicChecksEnabled()) await CheckAsync(stoppingToken).ConfigureAwait(false);
                 }
 
-                await Task.Delay(_options.FlagPollInterval, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(_options.SignalPollInterval, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -126,7 +132,7 @@ public sealed class UpdateWorker : BackgroundService
         }
     }
 
-    private async Task InstallAsync(CancellationToken ct)
+    private async Task<InstallOutcome?> InstallAsync(CancellationToken ct)
     {
         var release = _latest;
         if (release is null)
@@ -137,42 +143,30 @@ public sealed class UpdateWorker : BackgroundService
         if (release is null)
         {
             _log.LogInformation("Update requested, but there is no newer release to install");
-            return;
+            return null;
         }
 
         _log.LogInformation("Update to {Version} requested by the user", release.Version);
         var outcome = await _updater.InstallAsync(release, ct).ConfigureAwait(false);
         _log.LogInformation("Update to {Version}: {Outcome}", release.Version, outcome);
-
-        // A second click while the first install ran asks for the same thing.
-        if (outcome == InstallOutcome.Started) TryConsume(AppPaths.InstallNowFlag);
+        return outcome;
     }
 
-    /// <summary>
-    /// True when the flag existed, was fresh and has been deleted (a flag that cannot be deleted would fire again and
-    /// again). A flag older than <see cref="MaxFlagAge"/> is deleted without being acted on.
-    /// </summary>
-    private bool TryConsume(string path)
+    /// <summary>The event for <paramref name="name"/>, or null (logged) when it cannot be created: periodic checks still run.</summary>
+    private WaitHandle? CreateSignal(string name)
     {
+        if (!OperatingSystem.IsWindows()) return null;
         try
         {
-            if (!File.Exists(path)) return false;
-            var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
-            File.Delete(path);
-            _deleteFailureLogged = false;
-            if (age <= MaxFlagAge) return true;
-
-            _log.LogWarning("Ignored the old request flag '{Flag}' ({Minutes} minutes old)", Path.GetFileName(path), (int)age.TotalMinutes);
-            return false;
+            return ServiceSignals.Create(name);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            if (!_deleteFailureLogged)
-            {
-                _deleteFailureLogged = true;
-                _log.LogWarning(ex, "Could not delete the request flag '{Flag}'; ignoring it until it can be deleted", path);
-            }
-            return false;
+            _log.LogError(ex, "Could not create the request event '{Name}'; the settings window and tray cannot reach the service", name);
+            return null;
         }
     }
+
+    /// <summary>True (once) when the auto-reset event was set since the last look.</summary>
+    private static bool IsSet(WaitHandle? signal) => signal?.WaitOne(0) == true;
 }

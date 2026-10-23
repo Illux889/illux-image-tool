@@ -32,15 +32,74 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.False(RunLock.AnyActive());
     }
 
-    [Fact]
-    public void RunLock_StaleFileIgnored()
+    private static string Stale()
     {
         Directory.CreateDirectory(AppPaths.RunsDir);
         var stale = Path.Combine(AppPaths.RunsDir, "4242-" + Guid.NewGuid().ToString("N") + ".lock");
         File.WriteAllText(stale, "left behind by a crashed run");
+        return stale;
+    }
+
+    [Fact]
+    public void AnyActive_StaleFile_IsIgnoredButNeverDeleted()
+    {
+        var stale = Stale();
 
         Assert.False(RunLock.AnyActive());
+        Assert.True(File.Exists(stale)); // the privileged caller only reads (R39)
+        Assert.Equal("left behind by a crashed run", File.ReadAllText(stale));
+    }
+
+    [Fact]
+    public void Acquire_RemovesStaleFiles_ButNotLiveLocks()
+    {
+        var stale = Stale();
+        using var live = RunLock.Acquire();
+
+        using var second = RunLock.Acquire();
+
         Assert.False(File.Exists(stale));
+        Assert.Equal(2, Directory.GetFiles(AppPaths.RunsDir, "*.lock").Length);
+    }
+
+    [Fact]
+    public void AnyActive_NoRunsFolder_False()
+    {
+        Assert.False(Directory.Exists(AppPaths.RunsDir));
+        Assert.False(RunLock.AnyActive());
+    }
+
+    [Fact]
+    public void AnyActive_LockThatCannotBeRead_DoesNotBlockUpdatesForever()
+    {
+        var unreadable = Stale();
+        var security = new FileInfo(unreadable).GetAccessControl();
+        using var me = System.Security.Principal.WindowsIdentity.GetCurrent();
+        security.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(
+            me.User!, System.Security.AccessControl.FileSystemRights.ReadData | System.Security.AccessControl.FileSystemRights.WriteData, System.Security.AccessControl.AccessControlType.Deny));
+        new FileInfo(unreadable).SetAccessControl(security);
+        Assert.Throws<UnauthorizedAccessException>(() => File.ReadAllText(unreadable));
+
+        Assert.False(RunLock.AnyActive());
+    }
+
+    [FactWhenFileSymlinksWork]
+    public void AnyActive_SkipsLinks_AndAcquireLeavesThemAlone()
+    {
+        Directory.CreateDirectory(AppPaths.RunsDir);
+        var target = Path.Combine(Dir, "elsewhere.txt");
+        File.WriteAllText(target, "not a lock");
+        var link = Path.Combine(AppPaths.RunsDir, "1-link.lock");
+        File.CreateSymbolicLink(link, target);
+
+        using (new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.False(RunLock.AnyActive()); // following the link would see a sharing violation
+        }
+        RunLock.Acquire().Dispose();
+
+        Assert.True(File.Exists(link));
+        Assert.Equal("not a lock", File.ReadAllText(target));
     }
 
     [Fact]
@@ -51,9 +110,7 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.Equal(Path.Combine(AppRoot, "logs"), AppPaths.LogsDir);
         Assert.Equal(Path.Combine(AppRoot, "runs"), AppPaths.RunsDir);
         Assert.Equal(Path.Combine(AppRoot, "updating.flag"), AppPaths.UpdatingFlag);
-        Assert.Equal(Path.Combine(AppRoot, "requests"), AppPaths.RequestsDir);
-        Assert.Equal(Path.Combine(AppRoot, "requests", "check-now.flag"), AppPaths.CheckNowFlag);
-        Assert.Equal(Path.Combine(AppRoot, "requests", "install-now.flag"), AppPaths.InstallNowFlag);
+        Assert.Equal(Path.Combine(AppRoot, "service-logs"), AppPaths.ServiceLogsDir);
     }
 
     [Fact]

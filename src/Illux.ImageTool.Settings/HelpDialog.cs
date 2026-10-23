@@ -1,11 +1,11 @@
 namespace Illux.ImageTool.Settings;
 
-/// <summary>Shows the command-line help text (the Automation Engine parameters).</summary>
+/// <summary>Shows read-only text: the command-line help (the Automation Engine parameters) or the service log.</summary>
 internal sealed class HelpDialog : Form
 {
-    public HelpDialog(string text)
+    public HelpDialog(string text, string title = "AE parameter help")
     {
-        Text = "AE parameter help";
+        Text = title;
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(720, 520);
         MinimumSize = new Size(400, 300);

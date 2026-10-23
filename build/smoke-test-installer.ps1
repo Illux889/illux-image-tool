@@ -7,7 +7,8 @@
 
   1. Plants an "untrusted" (user-owned) data folder, then installs -Installer silently.
   2. Checks the service, files, version, shortcuts, Run key, Event Log source, ProgramData owner/ACLs (also by
-     writing as a standard user) and that the untrusted folder was moved aside.
+     writing as a standard user) and that the untrusted folder was moved aside. The service logs into the admin-only
+     service-logs\ and a standard user can signal its "check now" event but not change the event's permissions.
   3. Runs both AE scripts end to end on a generated JPEG (image output and PDF output).
   4. Sets up a watched folder, plants updating.flag + an "Installing" update state, loosens the ACL of logs\, then
      upgrades silently to -UpgradeInstaller as SYSTEM (as the updater in the service does): new version, service
@@ -155,7 +156,7 @@ function Test-DataAcls([string]$When) {
 
     $modify = [Security.AccessControl.FileSystemRights]::Modify
     $createHere = [Security.AccessControl.FileSystemRights]'CreateFiles, CreateDirectories'
-    foreach ($sub in 'runs', 'logs', 'requests') {
+    foreach ($sub in 'runs', 'logs') {
         $path = Join-Path $Data $sub
         Check ((Get-Acl -LiteralPath $path).AreAccessRulesProtected) "$($When): $sub\ ACL is protected"
         $userRules = @(Get-Rules $path $true | Where-Object { $_.IdentityReference.Value -eq $SidUsers -and $_.AccessControlType -eq 'Allow' })
@@ -169,10 +170,13 @@ function Test-DataAcls([string]$When) {
         Check ($folderWrite.Count -eq 0) "$($When): Users cannot delete or change $sub\ itself"
     }
 
-    $update = Join-Path $Data 'update'
-    Check ((Get-Acl -LiteralPath $update).AreAccessRulesProtected) "$($When): update\ ACL is protected"
-    $updateSids = @(Get-Rules $update $true | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
-    Check (($updateSids -join ',') -eq (@($SidSystem, $SidAdmins) | Sort-Object) -join ',') "$($When): update\ grants only SYSTEM and Administrators (found $($updateSids -join ', '))"
+    foreach ($sub in 'update', 'service-logs') {
+        $path = Join-Path $Data $sub
+        Check ((Get-Acl -LiteralPath $path).AreAccessRulesProtected) "$($When): $sub\ ACL is protected"
+        $subSids = @(Get-Rules $path $true | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+        Check (($subSids -join ',') -eq (@($SidSystem, $SidAdmins) | Sort-Object) -join ',') "$($When): $sub\ grants only SYSTEM and Administrators (found $($subSids -join ', '))"
+    }
+    Check (-not (Test-Path -LiteralPath (Join-Path $Data 'requests'))) "$($When): there is no requests\ folder (R37)"
 }
 
 # --- a standard user, to check the ACLs by actually writing ---
@@ -211,6 +215,32 @@ public static class SmokeImpersonation
             });
         }
     }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern SafeWaitHandle OpenEventW(uint access, bool inherit, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetEvent(SafeWaitHandle handle);
+
+    // Logged on interactively (as at the console, where the tray helper runs): opens the named event with the given
+    // access and, for EVENT_MODIFY_STATE, sets it. "ok" or "error <Win32 code>".
+    public static string TrySignal(string user, string password, string name, uint access)
+    {
+        SafeAccessTokenHandle token;
+        if (!LogonUser(user, ".", password, 2 /* interactive */, 0, out token)) return "logon failed " + Marshal.GetLastWin32Error();
+        using (token)
+        {
+            return WindowsIdentity.RunImpersonated(token, () =>
+            {
+                using (var handle = OpenEventW(access, false, name))
+                {
+                    if (handle.IsInvalid) return "error " + Marshal.GetLastWin32Error();
+                    if (access == 0x0002 && !SetEvent(handle)) return "error " + Marshal.GetLastWin32Error();
+                    return "ok";
+                }
+            });
+        }
+    }
 }
 '@
 $TestUser = 'illuxsmoke'
@@ -222,10 +252,10 @@ function Test-UserWrites([string]$When) {
         @{ Path = (Join-Path $Data 'user-test.txt');            Expect = $false; Mode = 'create'; Name = 'create a file in the data folder' },
         @{ Path = (Join-Path $Data 'update\user-test.txt');     Expect = $false; Mode = 'create'; Name = 'create a file in update\' },
         @{ Path = (Join-Path $Data 'config.json');              Expect = $false; Mode = 'open';   Name = 'write config.json' },
-        @{ Path = (Join-Path $Data 'requests\user-test.txt');   Expect = $true;  Mode = 'create'; Name = 'create (and delete) a file in requests\' },
+        @{ Path = (Join-Path $Data 'service-logs\user-test.txt'); Expect = $false; Mode = 'create'; Name = 'create a file in service-logs\' },
         @{ Path = (Join-Path $Data 'runs\user-test.txt');       Expect = $true;  Mode = 'create'; Name = 'create (and delete) a file in runs\' },
         @{ Path = (Join-Path $Data 'logs\user-test.txt');       Expect = $true;  Mode = 'create'; Name = 'create (and delete) a file in logs\' },
-        @{ Path = (Join-Path $Data 'requests');                 Expect = $false; Mode = 'rmdir';  Name = 'delete the requests\ folder' }
+        @{ Path = (Join-Path $Data 'runs');                     Expect = $false; Mode = 'rmdir';  Name = 'delete the runs\ folder' }
     )
     foreach ($c in $cases) {
         if ($c.Mode -ne 'create' -and -not (Test-Path -LiteralPath $c.Path)) { Check $false "$($When): $($c.Path) exists for the write test"; continue }
@@ -310,7 +340,7 @@ Section 'Data folder'
 $aside = @(Get-ChildItem -LiteralPath $env:ProgramData -Directory -Filter 'Illux Image Tool (untrusted *')
 Check ($aside.Count -eq 1) "the planted data folder was moved aside (found: $($aside.Name -join ', '))"
 Check (-not (Test-Path -LiteralPath (Join-Path $Data 'config.json'))) 'the planted config.json is not in the new data folder'
-foreach ($sub in 'runs', 'logs', 'requests', 'update') { Check (Test-Path -LiteralPath (Join-Path $Data $sub)) "data folder has $sub\" }
+foreach ($sub in 'runs', 'logs', 'service-logs', 'update') { Check (Test-Path -LiteralPath (Join-Path $Data $sub)) "data folder has $sub\" }
 # The settings window (elevated) is the normal writer of config.json; here the test writes it as administrator.
 $watch = Join-Path $WorkDir 'watch'
 foreach ($d in 'In', 'Out', 'Error') { New-Item -ItemType Directory -Force -Path (Join-Path $watch $d) | Out-Null }
@@ -319,6 +349,18 @@ $config = @{ folders = @(@{ name = 'smoke'; in = "$watch\In"; out = "$watch\Out"
 $configHash = (Get-FileHash -LiteralPath (Join-Path $Data 'config.json')).Hash
 Test-DataAcls 'after install'
 Test-UserWrites 'after install'
+
+Section 'Service log and requests from a standard user (R37, R38)'
+$ServiceLogs = Join-Path $Data 'service-logs'
+function Get-ServiceLogText { (Get-ChildItem -LiteralPath $ServiceLogs -Filter 'watcher-*.log' -ErrorAction SilentlyContinue | Get-Content -Raw) -join "`n" }
+Check (Wait-Until { [bool](Get-ChildItem -LiteralPath $ServiceLogs -Filter 'watcher-*.log' -ErrorAction SilentlyContinue) } 30) 'the service writes its log into the admin-only service-logs\'
+Check (-not (Get-ChildItem -LiteralPath (Join-Path $Data 'logs') -Filter 'watcher-*.log' -ErrorAction SilentlyContinue)) 'no service log in the user-writable logs\'
+$EventModifyState = [uint32]0x0002; $WriteDac = [uint32]0x00040000
+$signal = [SmokeImpersonation]::TrySignal($TestUser, $TestPassword, 'Global\IlluxImageTool.CheckNow', $EventModifyState)
+Check ($signal -eq 'ok') "a standard user (logged on interactively) can signal 'check for updates now' (result: $signal)"
+Check (Wait-Until { (Get-ServiceLogText) -match 'Update check requested' } 30) 'the service acted on the request'
+$signal = [SmokeImpersonation]::TrySignal($TestUser, $TestPassword, 'Global\IlluxImageTool.InstallNow', $WriteDac)
+Check ($signal -eq 'error 5') "a standard user cannot change the permissions of the 'update now' event (result: $signal)"
 
 Section 'Tray helper'
 Check (Wait-Until { [bool](Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'") } 20) "the installer started the tray helper ($((Get-TrayOwners) -join ', '))"
@@ -387,7 +429,7 @@ if (Test-Path -LiteralPath $watchedOut) {
 }
 $originals = Join-Path $watch 'Originals\watched.jpg'
 Check (Wait-Until { Test-Path -LiteralPath $originals } 30) 'the original was moved to Originals'
-Show-Log (Get-ChildItem -LiteralPath (Join-Path $Data 'logs') -Filter 'watcher*.log' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+Show-Log (Get-ChildItem -LiteralPath $ServiceLogs -Filter 'watcher*.log' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 
 # =====================================================================================================
 Section 'Failed update (installer that fails before copying files)'

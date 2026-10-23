@@ -63,3 +63,34 @@ public sealed class FactWhenJunctionsWorkAttribute : FactAttribute
         }
     }
 }
+
+/// <summary>Skipped when this account may not create file symbolic links (no Developer Mode and not elevated).</summary>
+public sealed class FactWhenFileSymlinksWorkAttribute : FactAttribute
+{
+    private static readonly Lazy<bool> Works = new(Probe);
+
+    public FactWhenFileSymlinksWorkAttribute()
+    {
+        if (!Works.Value) Skip = "File symbolic links cannot be created here (needs Developer Mode or elevation).";
+    }
+
+    private static bool Probe()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "illux-symlink-probe-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, "target"), "x");
+            File.CreateSymbolicLink(Path.Combine(root, "link"), Path.Combine(root, "target"));
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+}

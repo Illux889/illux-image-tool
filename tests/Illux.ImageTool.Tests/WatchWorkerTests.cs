@@ -284,6 +284,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     private readonly List<UpdateWorker> _workers = [];
     private readonly List<string> _requests = [];
     private readonly List<(string Path, string Args)> _started = [];
+    private readonly string _checkNowName = $@"Local\IlluxImageTool.Test.{Guid.NewGuid():N}.CheckNow";
+    private readonly string _installNowName = $@"Local\IlluxImageTool.Test.{Guid.NewGuid():N}.InstallNow";
     private bool _releaseAvailable = true;
     private volatile bool _throwOnApi;
 
@@ -349,7 +351,9 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         {
             InitialDelay = initialDelay ?? TimeSpan.Zero,
             CheckInterval = checkInterval ?? TimeSpan.FromHours(6),
-            FlagPollInterval = TimeSpan.FromMilliseconds(20),
+            SignalPollInterval = TimeSpan.FromMilliseconds(20),
+            CheckNowSignal = _checkNowName,
+            InstallNowSignal = _installNowName,
             PeriodicChecksEnabled = useConfigFile ? null : () => periodicChecks,
         });
         _workers.Add(worker);
@@ -357,10 +361,23 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         return worker;
     }
 
-    private static void DropFlag(string path)
+    /// <summary>What the settings window and tray do; retried until the worker has created its events.</summary>
+    private async Task Request(bool install)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, "x");
+        var name = install ? _installNowName : _checkNowName;
+        var watch = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                ServiceSignals.Signal(name);
+                return;
+            }
+            catch (IOException) when (watch.ElapsedMilliseconds < 10000)
+            {
+                await Task.Delay(20);
+            }
+        }
     }
 
     private static async Task<bool> WaitUntil(Func<bool> condition, int timeoutMs = 20000)
@@ -380,7 +397,7 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     }
 
     [Fact]
-    public async Task UpdateWorker_NewVersion_NoInstallWithoutFlag()
+    public async Task UpdateWorker_NewVersion_NoInstallWithoutRequest()
     {
         await StartAsync();
 
@@ -393,58 +410,59 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     }
 
     [Fact]
-    public async Task UpdateWorker_InstallFlag_TriggersInstall()
+    public async Task UpdateWorker_InstallRequest_TriggersInstall()
     {
         await StartAsync();
         Assert.True(await WaitUntil(() => UpdateStateStore.Load().AvailableVersion == "9.9.9"));
 
-        DropFlag(AppPaths.InstallNowFlag);
+        await Request(install: true);
 
         Assert.True(await WaitUntil(() => StartedCount() == 1), "the installer was not started");
-        Assert.False(File.Exists(AppPaths.InstallNowFlag));
+        Assert.False(Directory.Exists(Path.Combine(AppRoot, "requests"))); // no request files any more (R37)
         Assert.EndsWith("IlluxImageTool-Setup-9.9.9.exe", _started[0].Path);
         Assert.Contains("/VERYSILENT", _started[0].Args);
         Assert.Equal(1, ApiRequests()); // the release from the earlier check was reused
     }
 
     [Fact]
-    public async Task UpdateWorker_InstallFlag_WithoutEarlierCheck_ChecksFirst()
+    public async Task UpdateWorker_InstallRequest_WithoutEarlierCheck_ChecksFirst()
     {
         await StartAsync(periodicChecks: false);
         await Task.Delay(200);
         Assert.Equal(0, ApiRequests());
 
-        DropFlag(AppPaths.InstallNowFlag);
+        await Request(install: true);
 
         Assert.True(await WaitUntil(() => StartedCount() == 1));
         Assert.Equal(1, ApiRequests());
     }
 
     [Fact]
-    public async Task UpdateWorker_InstallFlag_NoRelease_DeletesFlagAndInstallsNothing()
+    public async Task UpdateWorker_InstallRequest_NoRelease_InstallsNothing()
     {
         _releaseAvailable = false;
         await StartAsync(periodicChecks: false);
 
-        DropFlag(AppPaths.InstallNowFlag);
+        await Request(install: true);
 
-        Assert.True(await WaitUntil(() => !File.Exists(AppPaths.InstallNowFlag)));
+        Assert.True(await WaitUntil(() => ApiRequests() == 1));
         await Task.Delay(200);
         Assert.Equal(0, InstallerDownloads());
         Assert.Equal(0, StartedCount());
     }
 
     [Fact]
-    public async Task UpdateWorker_CheckNowFlag_ChecksEvenWhenPeriodicChecksAreOff()
+    public async Task UpdateWorker_CheckNowRequest_ChecksEvenWhenPeriodicChecksAreOff()
     {
         await StartAsync(periodicChecks: false);
         await Task.Delay(200);
         Assert.Equal(0, ApiRequests());
 
-        DropFlag(AppPaths.CheckNowFlag);
+        await Request(install: false);
 
         Assert.True(await WaitUntil(() => ApiRequests() == 1));
-        Assert.True(await WaitUntil(() => !File.Exists(AppPaths.CheckNowFlag)));
+        await Task.Delay(300);
+        Assert.Equal(1, ApiRequests()); // acted on once: the event resets itself
         Assert.Equal(0, StartedCount());
     }
 
@@ -469,29 +487,22 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(1, ApiRequests());
 
         _throwOnApi = false;
-        DropFlag(AppPaths.CheckNowFlag);
-        Assert.True(await WaitUntil(() => UpdateStateStore.Load().AvailableVersion == "9.9.9"), "the worker must still react to flags");
+        await Request(install: false);
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().AvailableVersion == "9.9.9"), "the worker must still react to requests");
         Assert.Equal(2, ApiRequests());
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task UpdateWorker_OldFlag_IsDeletedWithoutActing(bool installFlag)
+    [Fact]
+    public async Task UpdateWorker_StoppedWorker_NoLongerListens()
     {
-        await StartAsync(periodicChecks: false);
-        var flag = installFlag ? AppPaths.InstallNowFlag : AppPaths.CheckNowFlag;
-        // Aged before it is moved into place, so the worker can never see it fresh.
-        var staging = flag + ".staging";
-        Directory.CreateDirectory(Path.GetDirectoryName(flag)!);
-        File.WriteAllText(staging, "x");
-        File.SetLastWriteTimeUtc(staging, DateTime.UtcNow - TimeSpan.FromMinutes(11));
-        File.Move(staging, flag);
+        var worker = await StartAsync(periodicChecks: false);
+        await Request(install: false);
+        Assert.True(await WaitUntil(() => ApiRequests() == 1));
 
-        Assert.True(await WaitUntil(() => !File.Exists(flag)));
-        await Task.Delay(300);
-        Assert.Equal(0, ApiRequests());
-        Assert.Equal(0, StartedCount());
+        await worker.StopAsync(CancellationToken.None);
+
+        // Nothing is queued for later: a request while the service is down fails at once and is never acted on.
+        Assert.Throws<IOException>(() => ServiceSignals.Signal(_checkNowName));
     }
 
     [Fact]

@@ -6,9 +6,10 @@ using Microsoft.Extensions.Logging;
 namespace Illux.ImageTool.Watcher.Logging;
 
 /// <summary>
-/// Daily log file <c>logs\watcher-YYYYMMDD.log</c>, 30 days kept. The file is opened per entry with
-/// <see cref="FileShare.ReadWrite"/> so the settings window can read it and other writers can append; a logging
-/// failure never reaches the caller.
+/// Daily log file <c>service-logs\watcher-YYYYMMDD.log</c>, 30 days kept. The folder is SYSTEM/Administrators only
+/// (R38): the service never creates, appends to or deletes a file by name in a folder standard users can write. The
+/// file is opened per entry with <see cref="FileShare.ReadWrite"/> so the settings window can read it and other
+/// writers can append; a logging failure never reaches the caller.
 /// </summary>
 public sealed class FileLoggerProvider : ILoggerProvider
 {
@@ -23,7 +24,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     public FileLoggerProvider(Func<string>? directory = null, TimeProvider? clock = null)
     {
-        _directory = directory ?? (() => AppPaths.LogsDir);
+        _directory = directory ?? (() => AppPaths.ServiceLogsDir);
         _clock = clock ?? TimeProvider.System;
     }
 

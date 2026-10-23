@@ -186,3 +186,19 @@ public sealed class StaleUpdatingFlagTests : AppRootTestBase
     public void NoFlag_NothingHappens() =>
         Assert.False(StaleUpdatingFlag.RemoveIfStale(Now, () => false, NullLogger.Instance));
 }
+
+[Collection("AppRoot")]
+public sealed class FileLoggerDefaultFolderTests : AppRootTestBase
+{
+    [Fact]
+    public void ServiceLog_GoesToTheAdminOnlyServiceLogs_NotToLogs()
+    {
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the service");
+
+        var files = Directory.GetFiles(AppPaths.ServiceLogsDir, FileLoggerProvider.Prefix + "*.log");
+        Assert.Single(files);
+        Assert.Contains("hello from the service", File.ReadAllText(files[0]));
+        Assert.False(Directory.Exists(AppPaths.LogsDir)); // R38
+    }
+}

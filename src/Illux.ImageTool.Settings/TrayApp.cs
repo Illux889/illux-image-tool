@@ -5,7 +5,7 @@ namespace Illux.ImageTool.Settings;
 
 /// <summary>
 /// The tray helper (<c>--tray</c>): an icon, and a small popup when the service reports a new version.
-/// It only ever writes a request flag after the user clicks "Update now".
+/// It only ever sends the "update now" request (R37) after the user clicks "Update now".
 /// </summary>
 internal sealed class TrayApp : ApplicationContext
 {
@@ -77,7 +77,7 @@ internal sealed class TrayApp : ApplicationContext
     {
         try
         {
-            RequestFlags.RequestCheckNow();
+            ServiceRequests.RequestCheckNow();
             _icon.ShowBalloonTip(3000, "Illux Image Tool", "Checking for updates...", ToolTipIcon.Info);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -157,7 +157,7 @@ internal sealed class UpdatePopup : Form
     {
         try
         {
-            RequestFlags.RequestInstallNow();
+            ServiceRequests.RequestInstallNow();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

@@ -1,6 +1,6 @@
 namespace Illux.ImageTool.Settings;
 
-/// <summary>A request flag the service has not answered yet ("Checking...", "Asking the service..."). It gives up after a while.</summary>
+/// <summary>A request the service has not answered yet ("Checking...", "Asking the service..."). It gives up after a while.</summary>
 internal sealed class PendingRequest(DateTimeOffset startedAt, TimeSpan? timeout = null)
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);

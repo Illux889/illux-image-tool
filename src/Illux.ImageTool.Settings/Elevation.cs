@@ -6,7 +6,7 @@ namespace Illux.ImageTool.Settings;
 
 /// <summary>
 /// config.json is admin-only (R34), so the settings window runs elevated. The tray helper and the elevated service
-/// copy never self-elevate: the tray only writes request flags, the service copy is already elevated.
+/// copy never self-elevate: the tray only signals the service (R37), the service copy is already elevated.
 /// </summary>
 internal static class Elevation
 {

@@ -97,8 +97,8 @@ const
   ExitServiceNotStarted = 10;
 
   DirRoot = 0;          // SYSTEM/Administrators full, Users read (R29, R34)
-  DirUsersModify = 1;   // as the root, plus Users: create files/folders here and modify what is inside (runs, logs, requests)
-  DirAdminsOnly = 2;    // SYSTEM/Administrators only (update)
+  DirUsersModify = 1;   // as the root, plus Users: create files/folders here and modify what is inside (runs, logs: the CLI runs as the AE user)
+  DirAdminsOnly = 2;    // SYSTEM/Administrators only (update, service-logs: R36, R38)
 
   { Every folder gets a protected DACL, set atomically when it is created (no moment with ProgramData's inherited
     rights). 0x1200a9 = read + execute, 0x1301bf = modify, 0x100006 = create files + create folders (+ synchronize). }
@@ -810,7 +810,7 @@ begin
       if (Name = '.') or (Name = '..') then
         Continue;
       if (CompareText(Name, 'runs') <> 0) and (CompareText(Name, 'logs') <> 0)
-        and (CompareText(Name, 'requests') <> 0) and (CompareText(Name, 'update') <> 0) then
+        and (CompareText(Name, 'service-logs') <> 0) and (CompareText(Name, 'update') <> 0) then
       begin
         Result := 'Unexpected item "' + Name + '" in the new folder "' + Root + '".';
         Exit;
@@ -838,7 +838,10 @@ begin
   Result := EnsureDataDir(Root, DirRoot, FreshRoot);
   if Result = '' then Result := EnsureDataDir(Root + '\runs', DirUsersModify, Created);
   if Result = '' then Result := EnsureDataDir(Root + '\logs', DirUsersModify, Created);
-  if Result = '' then Result := EnsureDataDir(Root + '\requests', DirUsersModify, Created);
+  { The service and the elevated settings window log here, never into the user-writable logs\ (R38). The requests\
+    folder of older versions is no longer used (R37: the service is signalled through named events); it is left
+    alone rather than deleted, because users could have placed links in it. }
+  if Result = '' then Result := EnsureDataDir(Root + '\service-logs', DirAdminsOnly, Created);
   if Result = '' then Result := EnsureDataDir(Root + '\update', DirAdminsOnly, Created);
   if (Result = '') and FreshRoot then
     Result := VerifyFreshRoot(Root);
@@ -961,7 +964,7 @@ begin
       ServiceStartFailed := True;
       ResetUpdateState('The watcher service did not start after the installation - see the Windows event log.');
       SuppressibleMsgBox('Illux Image Tool was installed, but the watcher service did not start. '
-        + 'See the Windows event log and the logs in ' + DataRoot + '\logs.', mbError, MB_OK, IDOK);
+        + 'See the Windows event log and the logs in ' + DataRoot + '\service-logs.', mbError, MB_OK, IDOK);
     end;
     StartTray;
     InstallCompleted := True;

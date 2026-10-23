@@ -217,12 +217,12 @@ public sealed class TrayBusyTests : IDisposable
 public sealed class SettingsLogTests : AppRootTestBase
 {
     [Fact]
-    public void WritesToTheDatedLogFileUnderLogs()
+    public void NotElevated_WritesToTheDatedLogFileUnderLogs()
     {
-        SettingsLog.Write("hello", new InvalidOperationException("boom"));
+        SettingsLog.Write("hello", new InvalidOperationException("boom"), elevated: false);
 
-        var file = SettingsLog.FileFor(DateTime.Now);
-        Assert.StartsWith(AppPaths.LogsDir, file);
+        var file = SettingsLog.FileFor(DateTime.Now, elevated: false);
+        Assert.StartsWith(AppPaths.LogsDir + Path.DirectorySeparatorChar, file);
         Assert.Matches(@"settings-\d{8}\.log$", file);
         var text = File.ReadAllText(file);
         Assert.Contains("hello", text);
@@ -230,11 +230,24 @@ public sealed class SettingsLogTests : AppRootTestBase
     }
 
     [Fact]
-    public void NeverThrows_WhenTheLogFolderCannotBeCreated()
+    public void Elevated_WritesOnlyIntoTheAdminOnlyServiceLogs()
+    {
+        SettingsLog.Write("from the elevated window", null, elevated: true);
+
+        var file = SettingsLog.FileFor(DateTime.Now, elevated: true);
+        Assert.StartsWith(AppPaths.ServiceLogsDir + Path.DirectorySeparatorChar, file);
+        Assert.Contains("from the elevated window", File.ReadAllText(file));
+        Assert.False(Directory.Exists(AppPaths.LogsDir)); // never touches the user-writable folder (R38)
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NeverThrows_WhenTheLogFolderCannotBeCreated(bool elevated)
     {
         Directory.CreateDirectory(AppRoot);
-        File.WriteAllText(AppPaths.LogsDir, "a file where the folder should be");
+        File.WriteAllText(SettingsLog.DirectoryFor(elevated), "a file where the folder should be");
 
-        SettingsLog.Write("ignored");
+        SettingsLog.Write("ignored", null, elevated);
     }
 }

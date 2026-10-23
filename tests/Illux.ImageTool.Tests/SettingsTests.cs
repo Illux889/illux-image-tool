@@ -181,30 +181,113 @@ public sealed class FolderDialogTests
     }
 }
 
-[Collection("AppRoot")]
-public sealed class RequestFlagsTests : AppRootTestBase
+public sealed class ServiceSignalsTests
 {
-    [Fact]
-    public void CheckNow_CreatesTheRequestsFolderAndTheFlag()
+    private const uint EventModifyState = 0x0002;
+    private const uint Synchronize = 0x00100000;
+    private const uint WriteOwner = 0x00080000;
+    private const uint EventAllAccess = 0x1F0003;
+
+    private static string NewName() => $@"Local\IlluxImageTool.Test.{Guid.NewGuid():N}";
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeWaitHandle OpenEventW(uint access, bool inherit, string name);
+
+    private static bool CanOpen(string name, uint access)
     {
-        Assert.False(Directory.Exists(AppPaths.RequestsDir));
-
-        RequestFlags.RequestCheckNow();
-
-        Assert.True(File.Exists(AppPaths.CheckNowFlag));
-        Assert.StartsWith(AppRoot, AppPaths.CheckNowFlag);
-        Assert.False(File.Exists(AppPaths.InstallNowFlag));
-        Assert.False(File.Exists(Path.Combine(AppRoot, "check-now.flag"))); // not in Root (R29)
+        using var handle = OpenEventW(access, false, name);
+        return !handle.IsInvalid;
     }
 
     [Fact]
-    public void InstallNow_WritesOnlyTheInstallFlag_AndCanBeRepeated()
+    public void Names_AreTheGlobalOnesOfRuling37()
     {
-        RequestFlags.RequestInstallNow();
-        RequestFlags.RequestInstallNow();
+        Assert.Equal(@"Global\IlluxImageTool.CheckNow", ServiceSignals.CheckNowName);
+        Assert.Equal(@"Global\IlluxImageTool.InstallNow", ServiceSignals.InstallNowName);
+        Assert.Equal("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x100002;;;IU)", ServiceSignals.Sddl);
+    }
 
-        Assert.True(File.Exists(AppPaths.InstallNowFlag));
-        Assert.False(File.Exists(AppPaths.CheckNowFlag));
+    [Fact]
+    public void Signal_WithoutTheService_IsAnIOExceptionSayingSo()
+    {
+        var ex = Assert.Throws<IOException>(() => ServiceSignals.Signal(NewName()));
+        Assert.Contains("service is not running", ex.Message);
+    }
+
+    [Fact]
+    public void Signal_SetsTheEventOnce_AutoReset()
+    {
+        var name = NewName();
+        using var listening = ServiceSignals.Create(name);
+        Assert.False(listening.WaitOne(0));
+
+        ServiceSignals.Signal(name);
+        ServiceSignals.Signal(name); // two clicks before the service looked: still one request
+
+        Assert.True(listening.WaitOne(0));
+        Assert.False(listening.WaitOne(0));
+    }
+
+    [Fact]
+    public void Event_IsGoneWhenTheServiceClosesIt()
+    {
+        var name = NewName();
+        ServiceSignals.Create(name).Dispose();
+
+        Assert.Throws<IOException>(() => ServiceSignals.Signal(name));
+    }
+
+    [FactWhenNotElevated]
+    public void Dacl_LetsAnInteractiveUserOnlySignal()
+    {
+        var name = NewName();
+        using var listening = ServiceSignals.Create(name);
+
+        Assert.True(CanOpen(name, EventModifyState | Synchronize));
+        // The test process owns the event, which implicitly grants it READ_CONTROL and WRITE_DAC; the service's events
+        // are owned by SYSTEM/Administrators. Everything the DACL itself would have to grant is refused:
+        Assert.False(CanOpen(name, WriteOwner), "a standard user must not be able to take the event over");
+        Assert.False(CanOpen(name, EventAllAccess));
+    }
+
+    [FactWhenNotElevated]
+    public void Create_RefusesAnExistingEventAStandardUserOwns()
+    {
+        var name = NewName();
+        using var planted = ServiceSignals.Create(name); // owned by this (non-admin) test user
+
+        Assert.Throws<UnauthorizedAccessException>(() => ServiceSignals.Create(name));
+    }
+
+    [Fact]
+    public void Requests_UseTheGlobalNames_AndFailClearlyWhenTheServiceIsNotRunning()
+    {
+        // No service on a development machine or CI test step: both requests report that plainly.
+        if (CanOpen(ServiceSignals.CheckNowName, EventModifyState)) return; // a real service is installed here
+        Assert.Contains("not running", Assert.Throws<IOException>(ServiceRequests.RequestCheckNow).Message);
+        Assert.Contains("not running", Assert.Throws<IOException>(ServiceRequests.RequestInstallNow).Message);
+    }
+}
+
+[Collection("AppRoot")]
+public sealed class ServiceLogTests : AppRootTestBase
+{
+    [Fact]
+    public void ReadLatest_NoFolder_Null() => Assert.Null(ServiceLog.ReadLatest(AppPaths.ServiceLogsDir));
+
+    [Fact]
+    public void ReadLatest_ShowsTheNewestFile_Tail()
+    {
+        Directory.CreateDirectory(AppPaths.ServiceLogsDir);
+        File.WriteAllText(Path.Combine(AppPaths.ServiceLogsDir, "watcher-20261001.log"), "old");
+        File.WriteAllText(Path.Combine(AppPaths.ServiceLogsDir, "watcher-20261023.log"), "first line\n" + new string('x', 50) + "\nlast line");
+
+        var text = ServiceLog.ReadLatest(AppPaths.ServiceLogsDir, maxChars: 20)!;
+
+        Assert.StartsWith(Path.Combine(AppPaths.ServiceLogsDir, "watcher-20261023.log"), text);
+        Assert.EndsWith("last line", text);
+        Assert.DoesNotContain("first line", text);
+        Assert.DoesNotContain("old", text);
     }
 }
 
