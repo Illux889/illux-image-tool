@@ -33,6 +33,19 @@ internal sealed class TrayMemory(string path)
         }
     }
 
+    /// <summary>Called when the tray starts (at log-in): "Later" lasts until the next version or the next log-in (spec 11a).</summary>
+    public void ForgetLater()
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best effort: the popup then stays quiet for that version a little longer.
+        }
+    }
+
     private Data Load()
     {
         try

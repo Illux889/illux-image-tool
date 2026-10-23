@@ -9,7 +9,7 @@ A small Windows program that prepares images for print. It is made to be called 
 - **Baseline:** rewrites progressive JPEGs as baseline JPEGs, without losing quality when possible.
 - **PDF:** can also write a PDF 1.6 with the image on one page.
 
-Colours, ICC profiles and metadata are never changed.
+Colours and ICC profiles are never changed, and EXIF, XMP and IPTC metadata are kept as they are (the pixel size recorded inside EXIF is not updated). Only what an operation needs changes: the pixel size and the stored resolution after upsampling, and the bit depth. Photoshop layers inside a TIFF are dropped when its pixels are rewritten (the flattened image is kept, and the file gets a warning).
 
 ## Download
 
@@ -28,7 +28,9 @@ See [docs/ae-setup.md](docs/ae-setup.md).
 
 ## Watched folders
 
-Open **Illux Image Tool Settings** from the Start menu. Add a folder, choose what to do with the files that arrive in it, and save. Originals are moved to an `Originals` folder, never deleted.
+Open **Illux Image Tool Settings** from the Start menu. Windows asks for administrator permission, because the settings apply to the whole computer. Add a folder and choose what to do with the files that arrive in it; each change is saved as soon as you click **OK**. Originals are moved to an `Originals` folder, never deleted.
+
+Logs: `C:\ProgramData\Illux Image Tool\logs` holds the command-line and Automation Engine runs. The watcher service logs into `service-logs` next to it, which only administrators can open; the settings window shows it with **Show service log**.
 
 ### Service account and folder permissions
 
@@ -38,7 +40,9 @@ The service writes into the Out, Error and Originals folders with the rights of 
 
 ## Updates
 
-The tool checks GitHub for a new version when it starts and every 6 hours. If there is one, a popup appears, and the settings window shows an **Update now** button. Nothing is installed until you click.
+The tool checks GitHub for a new version when it starts and every 6 hours. If there is one, a popup appears, and the settings window shows an **Update now** button. Nothing is installed until you click. **Update now** waits until no file is being converted.
+
+If you run a newer installer by hand instead, pause Automation Engine first: a manual install closes a conversion that is still running, and that task then ends with an error.
 
 ## Build from source
 

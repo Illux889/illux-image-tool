@@ -19,7 +19,9 @@ internal static class Program
             using var mutex = new Mutex(initiallyOwned: true, TrayMutexName, out var first);
             if (!first) return 0;
             TrayApp.InstallExceptionHandlers();
-            Application.Run(new TrayApp(TrayMemory.CreateDefault()));
+            var memory = TrayMemory.CreateDefault();
+            memory.ForgetLater(); // the tray starts at log-in
+            Application.Run(new TrayApp(memory));
             return 0;
         }
 

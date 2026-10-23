@@ -49,6 +49,7 @@ public static class ImagePipeline
         ct.ThrowIfCancellationRequested();
 
         var messages = plan.Messages;
+        var warning = plan.Warning;
         var changed = true;
         try
         {
@@ -71,7 +72,12 @@ public static class ImagePipeline
                 var droppedLayers = await Task.Run(() => MagickRewriter.Rewrite(inputPath, outputPath, source, spec), ct)
                     .ConfigureAwait(false);
                 if (source.IsJpeg) messages.Add(JpegReencodeMessage(plan.ToBaseline, options));
-                if (droppedLayers) messages.Add("Photoshop layers removed (flattened image kept)");
+                if (droppedLayers)
+                {
+                    // Not asked for, so a Warning (anti-goal "changing anything not asked").
+                    messages.Add("Photoshop layers removed (flattened image kept)");
+                    warning = true;
+                }
             }
         }
         catch
@@ -80,7 +86,7 @@ public static class ImagePipeline
             throw;
         }
 
-        var status = plan.Warning ? Status.Warning : Status.Ok;
+        var status = warning ? Status.Warning : Status.Ok;
         return new PipelineResult(status, messages, outputPath, plan.FinalResolution, changed);
     }
 
@@ -149,6 +155,13 @@ public static class ImagePipeline
                     }
                 }
             }
+        }
+
+        if (resolution is null && options.Output is OutputMode.Pdf or OutputMode.Both)
+        {
+            // The PDF page size comes from the resolution; without one it would silently be 72 ppi (final review M1).
+            messages.Add($"no resolution stored — PDF page size assumes {Format(AssumedPpi)} ppi");
+            warning = true;
         }
 
         var toBaseline = options.Operations.HasFlag(Operations.Baseline) && source.Jpeg?.Coding == JpegCoding.Progressive;

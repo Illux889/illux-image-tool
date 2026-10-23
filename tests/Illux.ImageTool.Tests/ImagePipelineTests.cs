@@ -270,7 +270,7 @@ public sealed class ImagePipelineTests : IDisposable
 
         var result = await Run(input, output);
 
-        Assert.Equal(Status.Ok, result.Status);
+        Assert.Equal(Status.Warning, result.Status); // something not asked for changed: say so (final review M2)
         Assert.Contains("Photoshop layers removed (flattened image kept)", result.Messages);
         using var image = new MagickImage(output);
         Assert.Equal(8u, image.Depth);
@@ -357,6 +357,64 @@ public sealed class ImagePipelineTests : IDisposable
         Assert.Equal(new Resolution(72, 72), result.FinalResolution);
         using var image = new MagickImage(output);
         Assert.Equal(40u, image.Width);
+    }
+
+    [Theory]
+    [InlineData(OutputMode.Pdf)]
+    [InlineData(OutputMode.Both)]
+    public async Task Pipeline_MissingPpi_UpsampleOff_PdfOutput_WarnsAboutThePageSize(OutputMode output)
+    {
+        var input = TestImages.Write(_dir, "n.png", 40, 30, ColorSpace.sRGB, 16, null);
+
+        var result = await Run(input, OutPath("n.png"),
+            Options(Operations.EightBit | Operations.Baseline, MissingPpiPolicy.Error) with { Output = output });
+
+        Assert.Equal(Status.Warning, result.Status);
+        Assert.Contains("no resolution stored — PDF page size assumes 72 ppi", result.Messages);
+    }
+
+    [Fact]
+    public async Task Pipeline_FolderAsInput_SaysSo()
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(_dir, "a folder.jpg")).FullName;
+
+        var ex = await Assert.ThrowsAsync<UnsupportedImageException>(() => Run(folder, OutPath("x.jpg")));
+
+        Assert.Equal("is a folder, not a file", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Pipeline_WebP_ReencodeKeepsLosslessOrLossy(bool lossless)
+    {
+        var input = Path.Combine(_dir, "w.webp");
+        using (var source = new MagickImage(TestImages.Write(_dir, "w.png", 60, 40, ColorSpace.sRGB, 8, null)))
+        {
+            source.Settings.SetDefine(MagickFormat.WebP, "lossless", lossless);
+            source.Write(input, MagickFormat.WebP);
+        }
+        Assert.Equal(lossless, WebPChunk(input) == "VP8L");
+
+        var output = OutPath("w.webp");
+        var result = await Run(input, output); // no resolution: 72 ppi assumed, upsampled to 200
+
+        Assert.NotEqual(Status.Error, result.Status);
+        Assert.Equal(lossless ? "VP8L" : "VP8 ", WebPChunk(output));
+    }
+
+    /// <summary>The image chunk of a simple or extended WebP: "VP8L" (lossless) or "VP8 " (lossy).</summary>
+    private static string WebPChunk(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        for (var pos = 12; pos + 8 <= bytes.Length;)
+        {
+            var fourcc = System.Text.Encoding.ASCII.GetString(bytes, pos, 4);
+            if (fourcc is "VP8L" or "VP8 ") return fourcc;
+            var size = BitConverter.ToInt32(bytes, pos + 4);
+            pos += 8 + size + (size & 1);
+        }
+        return "";
     }
 
     [Fact]

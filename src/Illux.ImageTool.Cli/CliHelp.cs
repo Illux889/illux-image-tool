@@ -1,6 +1,6 @@
 namespace Illux.ImageTool.Cli;
 
-/// <summary>The text printed by <c>--help</c>; the settings window shows the same text by running <c>IlluxImageTool.exe --help</c>.</summary>
+/// <summary>The text printed by <c>--help</c>; the settings window shows the same text (it uses this constant directly).</summary>
 public static class CliHelp
 {
     public const string Text = """

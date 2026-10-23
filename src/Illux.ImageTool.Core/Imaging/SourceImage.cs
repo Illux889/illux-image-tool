@@ -42,6 +42,7 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
     /// <summary>Inspects <paramref name="path"/>; throws <see cref="UnsupportedImageException"/> for inputs we reject.</summary>
     public static SourceImage Inspect(string path)
     {
+        if (Directory.Exists(path)) throw new UnsupportedImageException("is a folder, not a file");
         if (RawExtensions.Contains(Path.GetExtension(path)))
             throw new UnsupportedImageException("camera RAW files are not supported");
 

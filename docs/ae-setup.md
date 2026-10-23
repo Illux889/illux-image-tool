@@ -13,6 +13,8 @@ Illux Image Tool runs from a **Run Script** task. It converts images to 8 bit, u
 
    You only need one of them. PowerShell is the better choice: Esko says it reports errors more reliably than a batch file.
 
+   If these Script Runner folders already exist when you install, the installer offers to copy both scripts there for you ("Copy the Automation Engine scripts into the Esko Script Runner folders"). Those copies are replaced on every upgrade and removed when the tool is uninstalled, so do not edit them there; keep your own changes in a copy with another name.
+
    If the PowerShell script is blocked, the execution policy of the Script Runner machine must allow local scripts (for example `RemoteSigned`).
 5. **Set up the Run Script task** in your ticket:
 

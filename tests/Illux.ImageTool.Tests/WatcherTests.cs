@@ -557,6 +557,14 @@ public sealed class WatcherTests : IDisposable
         Assert.Equal(Path.Combine(_dir, "elsewhere"), folder.OriginalsOrDefault);
     }
 
+    [Theory]
+    [InlineData(@"D:\", @"D:\Originals")]
+    [InlineData(@"D:\In", @"D:\Originals")]
+    [InlineData(@"\\srv\share", @"\\srv\share\Originals")]
+    [InlineData(@"\\srv\share\", @"\\srv\share\Originals")]
+    public void OriginalsOrDefault_InAtARoot_IsAFullPath(string inFolder, string expected) =>
+        Assert.Equal(expected, new WatchedFolder { In = inFolder }.OriginalsOrDefault);
+
     [Fact]
     public void ConfigStore_RoundTrip()
     {

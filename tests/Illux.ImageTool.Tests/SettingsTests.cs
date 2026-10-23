@@ -420,6 +420,18 @@ public sealed class TrayTests : IDisposable
     }
 
     [Fact]
+    public void ForgetLater_AtLogIn_AnnouncesAgain()
+    {
+        // Spec 11a: "Later" lasts until the next version or the next log-in (the tray starts at log-in).
+        Memory.MarkLater("1.2.0");
+
+        Memory.ForgetLater();
+
+        Assert.False(Memory.IsLater("1.2.0"));
+        Memory.ForgetLater(); // nothing to forget: no error
+    }
+
+    [Fact]
     public void CorruptMemoryFile_IsTreatedAsEmpty()
     {
         Directory.CreateDirectory(Path.Combine(_dir, "sub"));
