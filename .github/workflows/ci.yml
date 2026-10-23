@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    # Branches only: a version tag runs release.yml, which tests and smoke-tests on its own.
+    branches: ['**']
   pull_request:
 
 permissions:
@@ -38,12 +40,13 @@ jobs:
 
       - name: Versions
         id: versions
-        # The installer of this run is 0.1.<run number>; a second build one patch higher tests the silent upgrade and
-        # a third one (built to fail before copying files) tests the recovery from a failed update.
+        # The installer of this run is 0.0.<run number>, below every real release (0.1.0 and up), so a machine with a
+        # CI test build is always offered the first real release (R45). A second build one patch higher tests the
+        # silent upgrade and a third one (built to fail before copying files) tests the recovery from a failed update.
         run: |
           $run = [int]$env:GITHUB_RUN_NUMBER
           # Windows PowerShell's >> would write UTF-16; the runner reads UTF-8.
-          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=0.1.$run`nupgrade_version=0.1.$($run + 1)`nfail_version=0.1.$($run + 2)`n")
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=0.0.$run`nupgrade_version=0.0.$($run + 1)`nfail_version=0.0.$($run + 2)`n")
 
       - name: Build installers
         uses: ./.github/actions/build-installers

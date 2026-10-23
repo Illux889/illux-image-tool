@@ -35,7 +35,8 @@ jobs:
         # one (built to fail); they are only used inside this run and are never published.
         run: |
           $tag = $env:GITHUB_REF_NAME
-          if ($tag -notmatch '^v(\d+)\.(\d+)\.(\d+)$') { throw "Tag '$tag' is not of the form vX.Y.Z." }
+          # No leading zeros (v01.2.3): the release name must equal the version the installer reports and the updater parses.
+          if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "Tag '$tag' is not of the form vX.Y.Z (numbers without leading zeros)." }
           $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
           $version = "$major.$minor.$patch"
           Write-Host "Releasing $version from tag $tag"
