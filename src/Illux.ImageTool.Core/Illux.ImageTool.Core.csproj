@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Illux.ImageTool</RootNamespace>
+    <AssemblyName>Illux.ImageTool.Core</AssemblyName>
+  </PropertyGroup>
+
+</Project>
