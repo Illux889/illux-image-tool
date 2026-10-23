@@ -100,7 +100,14 @@ public sealed class FileLoggerProvider : ILoggerProvider
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(logLevel)) return;
-            owner.Write(logLevel, category, formatter(state, exception), exception);
+            try
+            {
+                owner.Write(logLevel, category, formatter(state, exception), exception);
+            }
+            catch (Exception)
+            {
+                // A throwing formatter must not reach the caller either.
+            }
         }
     }
 }

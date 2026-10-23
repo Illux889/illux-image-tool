@@ -33,6 +33,11 @@ public sealed class UpdateWorker : BackgroundService
     private readonly UpdateWorkerOptions _options;
     private ReleaseInfo? _latest;
     private bool _deleteFailureLogged;
+    private string? _lastCheckError;
+    private bool _lastGoodCheckForUpdates = true;
+
+    /// <summary>A request flag older than this was left behind (for example while the service was stopped) and is not acted on.</summary>
+    public static readonly TimeSpan MaxFlagAge = TimeSpan.FromMinutes(10);
 
     public UpdateWorker(Updater updater, ILogger log, UpdateWorkerOptions? options = null)
     {
@@ -63,8 +68,9 @@ public sealed class UpdateWorker : BackgroundService
 
                 if (DateTime.UtcNow >= nextCheck)
                 {
-                    if (PeriodicChecksEnabled()) await CheckAsync(stoppingToken).ConfigureAwait(false);
+                    // Advance first: a failing check must wait for the next interval, not be retried on every loop.
                     nextCheck = DateTime.UtcNow + _options.CheckInterval;
+                    if (PeriodicChecksEnabled()) await CheckAsync(stoppingToken).ConfigureAwait(false);
                 }
 
                 await Task.Delay(_options.FlagPollInterval, stoppingToken).ConfigureAwait(false);
@@ -87,15 +93,38 @@ public sealed class UpdateWorker : BackgroundService
         if (_options.PeriodicChecksEnabled is { } configured) return configured();
         try
         {
-            return ConfigStore.Load().CheckForUpdates;
+            _lastGoodCheckForUpdates = ConfigStore.Load().CheckForUpdates;
         }
         catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
         {
-            return true; // an unreadable configuration does not turn the update check off
+            // A broken file keeps the last good setting (true until a good one was read).
         }
+        return _lastGoodCheckForUpdates;
     }
 
-    private async Task CheckAsync(CancellationToken ct) => _latest = await _updater.CheckAsync(ct).ConfigureAwait(false);
+    /// <summary>An unexpected failure is logged at Error once; an identical repeat goes to Debug. It never escapes.</summary>
+    private async Task CheckAsync(CancellationToken ct)
+    {
+        try
+        {
+            _latest = await _updater.CheckAsync(ct).ConfigureAwait(false);
+            _lastCheckError = null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            _latest = null;
+            var summary = $"{ex.GetType().Name}: {ex.Message}";
+            if (summary != _lastCheckError)
+            {
+                _lastCheckError = summary;
+                _log.LogError(ex, "Update check failed unexpectedly");
+            }
+            else
+            {
+                _log.LogDebug("Update check failed again: {Summary}", summary);
+            }
+        }
+    }
 
     private async Task InstallAsync(CancellationToken ct)
     {
@@ -119,15 +148,22 @@ public sealed class UpdateWorker : BackgroundService
         if (outcome == InstallOutcome.Started) TryConsume(AppPaths.InstallNowFlag);
     }
 
-    /// <summary>True when the flag existed and has been deleted (a flag that cannot be deleted would fire again and again).</summary>
+    /// <summary>
+    /// True when the flag existed, was fresh and has been deleted (a flag that cannot be deleted would fire again and
+    /// again). A flag older than <see cref="MaxFlagAge"/> is deleted without being acted on.
+    /// </summary>
     private bool TryConsume(string path)
     {
         try
         {
             if (!File.Exists(path)) return false;
+            var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
             File.Delete(path);
             _deleteFailureLogged = false;
-            return true;
+            if (age <= MaxFlagAge) return true;
+
+            _log.LogWarning("Ignored the old request flag '{Flag}' ({Minutes} minutes old)", Path.GetFileName(path), (int)age.TotalMinutes);
+            return false;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

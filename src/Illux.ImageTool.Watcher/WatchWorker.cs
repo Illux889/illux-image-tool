@@ -31,7 +31,19 @@ public sealed class WatchWorker : BackgroundService
     private (DateTime LastWriteUtc, long Length)? _loadedSignature;
     private string? _lastProblem;
 
-    private sealed record ScannerEntry(string Key, FolderScanner Scanner);
+    private string? _lastLoopError;
+
+    private sealed class ScannerEntry(string key, string name, FolderScanner scanner)
+    {
+        public string Key { get; } = key;
+
+        public string Name { get; } = name;
+
+        public FolderScanner Scanner { get; } = scanner;
+
+        /// <summary>The last scan failure that was logged at Error; an identical repeat only goes to Debug.</summary>
+        public string? LastError { get; set; }
+    }
 
     public WatchWorker(ILogger log, WatchWorkerOptions? options = null)
     {
@@ -64,12 +76,23 @@ public sealed class WatchWorker : BackgroundService
                     try
                     {
                         await entry.Scanner.ScanOnceAsync(stoppingToken).ConfigureAwait(false);
+                        entry.LastError = null;
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        _log.LogError(ex, "Scanning a watched folder failed");
+                        var summary = $"{ex.GetType().Name}: {ex.Message}";
+                        if (summary != entry.LastError)
+                        {
+                            entry.LastError = summary;
+                            _log.LogError(ex, "Scanning watched folder '{Name}' failed", entry.Name);
+                        }
+                        else
+                        {
+                            _log.LogDebug("Scanning watched folder '{Name}' failed again: {Summary}", entry.Name, summary);
+                        }
                     }
                 }
+                _lastLoopError = null;
                 await Task.Delay(_options.PollInterval ?? TimeSpan.FromSeconds(Math.Max(1, _config.PollSeconds)), stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -78,7 +101,12 @@ public sealed class WatchWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                _log.LogError(ex, "Watcher loop failed; continuing");
+                var summary = $"{ex.GetType().Name}: {ex.Message}";
+                if (summary != _lastLoopError)
+                {
+                    _lastLoopError = summary;
+                    _log.LogError(ex, "Watcher loop failed; continuing");
+                }
                 await DelayQuietly(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
             }
         }
@@ -111,6 +139,12 @@ public sealed class WatchWorker : BackgroundService
         {
             // Possibly a writer holding the file: try again on the next poll, but do not repeat the message.
             ReportProblem($"config.json could not be read; keeping the last good configuration: {ex.Message}");
+            return;
+        }
+        catch (Exception ex)
+        {
+            _loadedSignature = signature;
+            ReportProblem($"config.json could not be loaded; keeping the last good configuration: {ex.GetType().Name}: {ex.Message}");
             return;
         }
 
@@ -155,7 +189,15 @@ public sealed class WatchWorker : BackgroundService
             }
             else
             {
-                next.Add(new ScannerEntry(key, _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(folder, _log)));
+                try
+                {
+                    next.Add(new ScannerEntry(key, folder.Name, _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(folder, _log)));
+                }
+                catch (Exception ex)
+                {
+                    // One folder that cannot be set up must not stop the others.
+                    _log.LogError(ex, "Watched folder '{Name}' could not be set up and is skipped", folder.Name);
+                }
             }
         }
 

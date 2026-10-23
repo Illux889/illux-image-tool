@@ -86,6 +86,14 @@ public sealed class FileLoggerProviderTests : IDisposable
     }
 
     [Fact]
+    public void Log_ThrowingFormatter_DoesNotThrow()
+    {
+        using var provider = new FileLoggerProvider(() => _dir);
+
+        provider.CreateLogger("Test").Log(LogLevel.Error, 0, "state", null, (_, _) => throw new InvalidOperationException("formatter"));
+    }
+
+    [Fact]
     public void Log_UnwritableFolder_DoesNotThrow()
     {
         Directory.CreateDirectory(_dir);
