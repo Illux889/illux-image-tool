@@ -1,0 +1,60 @@
+name: Smoke test installer
+description: >
+  Checks the checksum file and runs build/smoke-test-installer.ps1 (install, upgrade, failed upgrade, uninstall) on a
+  throw-away runner. The installers must already be downloaded into the folder "installers". Used by ci.yml and
+  release.yml so both run the same test.
+
+inputs:
+  version:
+    description: Version of the installer under test
+    required: true
+  upgrade-version:
+    description: Version of the upgrade-test installer
+    required: true
+  fail-version:
+    description: Version of the installer that fails on purpose
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Verify checksum file
+      shell: powershell
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        $name = "IlluxImageTool-Setup-$env:VERSION.exe"
+        $expected = (Get-Content -Raw "installers/$name.sha256").Trim()
+        $actual = "$((Get-FileHash "installers/$name" -Algorithm SHA256).Hash.ToLowerInvariant())  $name"
+        if ($actual -ne $expected) { throw "Checksum file says '$expected', file is '$actual'" }
+        Write-Host $expected
+
+    - name: Smoke test (elevated runner)
+      shell: powershell
+      env:
+        VERSION: ${{ inputs.version }}
+        UPGRADE_VERSION: ${{ inputs.upgrade-version }}
+        FAIL_VERSION: ${{ inputs.fail-version }}
+      run: >
+        ./build/smoke-test-installer.ps1
+        -Installer "installers/IlluxImageTool-Setup-$env:VERSION.exe"
+        -UpgradeInstaller "installers/IlluxImageTool-Setup-$env:UPGRADE_VERSION.exe"
+        -FailingInstaller "installers/IlluxImageTool-Setup-$env:FAIL_VERSION.exe"
+        -Version $env:VERSION -UpgradeVersion $env:UPGRADE_VERSION
+        -WorkDir "$env:RUNNER_TEMP\smoke"
+
+    - name: Collect logs
+      if: always()
+      shell: powershell
+      run: |
+        $logs = Join-Path $env:ProgramData 'Illux Image Tool\logs'
+        if (Test-Path $logs) { Copy-Item -Recurse -Force $logs "$env:RUNNER_TEMP\smoke\programdata-logs" }
+
+    - name: Upload smoke-test logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: smoke-test-logs
+        path: ${{ runner.temp }}/smoke/**/*.log
+        if-no-files-found: ignore
+        retention-days: 7

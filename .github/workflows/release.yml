@@ -1,0 +1,162 @@
+name: Release
+
+# Runs only when a version tag such as v0.1.0 is pushed. Tests, builds and smoke-tests the installer, then publishes
+# a full GitHub Release with exactly two files: the installer and its .sha256 (the names the in-app updater expects).
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build:
+    name: Test and build installer
+    runs-on: windows-latest
+    timeout-minutes: 40
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+      upgrade_version: ${{ steps.versions.outputs.upgrade_version }}
+      fail_version: ${{ steps.versions.outputs.fail_version }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Versions from the tag
+        id: versions
+        # v1.2.3 -> installer 1.2.3. The smoke test also needs a higher version (for the silent upgrade) and a third
+        # one (built to fail); they are only used inside this run and are never published.
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(\d+)\.(\d+)\.(\d+)$') { throw "Tag '$tag' is not of the form vX.Y.Z." }
+          $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
+          $version = "$major.$minor.$patch"
+          Write-Host "Releasing $version from tag $tag"
+          # Windows PowerShell's >> would write UTF-16; the runner reads UTF-8.
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`nupgrade_version=$major.$minor.$($patch + 1)`nfail_version=$major.$minor.$($patch + 2)`n")
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Fetch jpegtran
+        run: ./build/fetch-jpegtran.ps1
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Build installers
+        uses: ./.github/actions/build-installers
+        with:
+          version: ${{ steps.versions.outputs.version }}
+          upgrade-version: ${{ steps.versions.outputs.upgrade_version }}
+          fail-version: ${{ steps.versions.outputs.fail_version }}
+
+      - name: Check the built files match the tag
+        env:
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          $dir = 'artifacts/installer'
+          $exe = "IlluxImageTool-Setup-$env:VERSION.exe"
+          foreach ($name in @($exe, "$exe.sha256")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $name))) { throw "Expected $dir/$name was not built; the tag $env:GITHUB_REF_NAME and the built files do not match." }
+          }
+          $info = (Get-Item -LiteralPath (Join-Path $dir $exe)).VersionInfo
+          Write-Host "$exe : file version $($info.FileVersion), product version $($info.ProductVersion)"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: IlluxImageTool-Setup-${{ steps.versions.outputs.version }}
+          path: |
+            artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.version }}.exe
+            artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.version }}.exe.sha256
+          if-no-files-found: error
+
+      - name: Upload test installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: upgrade-test-installer
+          path: |
+            artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.upgrade_version }}.exe
+            artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.fail_version }}.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  smoke-test:
+    name: Install, upgrade and uninstall
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: IlluxImageTool-Setup-${{ needs.build.outputs.version }}
+          path: installers
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: upgrade-test-installer
+          path: installers
+
+      - name: Verify and smoke test installer
+        uses: ./.github/actions/smoke-test
+        with:
+          version: ${{ needs.build.outputs.version }}
+          upgrade-version: ${{ needs.build.outputs.upgrade_version }}
+          fail-version: ${{ needs.build.outputs.fail_version }}
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build, smoke-test]
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      # No checkout: this job only uploads the files the earlier jobs built and tested.
+      - uses: actions/download-artifact@v8
+        with:
+          name: IlluxImageTool-Setup-${{ needs.build.outputs.version }}
+          path: release-files
+
+      - name: Check the files match the tag
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          if ($env:GITHUB_REF_NAME -ne "v$env:VERSION") { throw "Tag '$env:GITHUB_REF_NAME' does not match the built version $env:VERSION." }
+          $exe = "IlluxImageTool-Setup-$env:VERSION.exe"
+          $expected = @($exe, "$exe.sha256") | Sort-Object
+          $found = @(Get-ChildItem -LiteralPath release-files -File | ForEach-Object Name) | Sort-Object
+          if (($found -join '|') -ne ($expected -join '|')) { throw "Release files are '$($found -join ', ')', expected '$($expected -join ', ')'." }
+          $checksum = (Get-Content -Raw "release-files/$exe.sha256").Trim()
+          $actual = "$((Get-FileHash "release-files/$exe" -Algorithm SHA256).Hash.ToLowerInvariant())  $exe"
+          if ($actual -ne $checksum) { throw "Checksum file says '$checksum', file is '$actual'" }
+          Write-Host $checksum
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        # A full release: neither --draft nor --prerelease (the updater ignores both).
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            "release-files/IlluxImageTool-Setup-$env:VERSION.exe" `
+            "release-files/IlluxImageTool-Setup-$env:VERSION.exe.sha256" `
+            --repo $env:GITHUB_REPOSITORY --verify-tag --title $env:GITHUB_REF_NAME --generate-notes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

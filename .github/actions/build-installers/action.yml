@@ -1,0 +1,47 @@
+name: Build installers
+description: >
+  Installs Inno Setup when it is missing, then builds the installer of a version plus the two throw-away installers
+  that the smoke test needs (one patch version higher for the silent upgrade, and one built to fail before copying
+  files). Used by ci.yml and release.yml so both build the same way.
+
+inputs:
+  version:
+    description: Version of the installer, for example 0.1.0
+    required: true
+  upgrade-version:
+    description: Version of the upgrade-test installer (higher than version)
+    required: true
+  fail-version:
+    description: Version of the installer that fails on purpose
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Inno Setup if missing
+      shell: powershell
+      run: |
+        $iscc = @((Get-Command iscc.exe -ErrorAction SilentlyContinue | ForEach-Object Source),
+                  "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+                Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if ($iscc) { Write-Host "Inno Setup found: $iscc"; exit 0 }
+        choco install innosetup --version 6.7.1 -y --no-progress
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    - name: Build installer
+      shell: powershell
+      env:
+        VERSION: ${{ inputs.version }}
+      run: ./build/build-installer.ps1 -Version $env:VERSION
+
+    - name: Build upgrade-test installer
+      shell: powershell
+      env:
+        VERSION: ${{ inputs.upgrade-version }}
+      run: ./build/build-installer.ps1 -Version $env:VERSION
+
+    - name: Build failing test installer
+      shell: powershell
+      env:
+        VERSION: ${{ inputs.fail-version }}
+      run: ./build/build-installer.ps1 -Version $env:VERSION -FailPrepareForTest
