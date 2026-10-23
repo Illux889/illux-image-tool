@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <PackageReference Include="Magick.NET-Q16-HDRI-x64" Version="14.17.2" />
+    <InternalsVisibleTo Include="Illux.ImageTool.Tests" />
   </ItemGroup>
 
   <!-- jpegtran comes from third_party/ (git-ignored); run build/fetch-jpegtran.ps1 to populate it. -->
