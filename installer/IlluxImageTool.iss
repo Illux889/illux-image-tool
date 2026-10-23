@@ -354,54 +354,71 @@ begin
   end;
 end;
 
+function XmlEscape(const Text: String): String;
+begin
+  Result := Text;
+  StringChangeEx(Result, '&', '&amp;', True);
+  StringChangeEx(Result, '<', '&lt;', True);
+  StringChangeEx(Result, '>', '&gt;', True);
+end;
+
+function Schtasks(const Params: String): Integer;
+begin
+  Result := RunHidden(ExpandConstant('{sys}\schtasks.exe'), Params);
+end;
+
 { As SYSTEM (an update started by the service) there is no "original user": a scheduled task for the Users group
-  runs the tray helper in the session of each logged-on user. The tray helper allows one copy per user. }
+  runs the tray helper in the session of each logged-on user. The tray helper allows one copy per user.
+  schtasks.exe does the work in its own process (the Task Scheduler COM calls inside Setup ended, as SYSTEM, in
+  heap corruption when Setup exited). }
 procedure StartTrayForLoggedOnUsers;
 var
-  Service, Folder, Definition, Action, Task: Variant;
-  Step: String;
+  Xml: TArrayOfString;
+  FileName: String;
+  Code: Integer;
 begin
-  try
-    Step := 'connect to the Task Scheduler';
-    Service := CreateOleObject('Schedule.Service');
-    Service.Connect();
-    Folder := Service.GetFolder('\');
-    Step := 'define the task';
-    Definition := Service.NewTask(0);
-    Definition.RegistrationInfo.Description := 'Starts the Illux Image Tool tray helper for the logged-on users after an update.';
-    Definition.Principal.GroupId := 'S-1-5-32-545';
-    Definition.Principal.LogonType := 4;    { TASK_LOGON_GROUP }
-    Definition.Principal.RunLevel := 0;     { TASK_RUNLEVEL_LUA }
-    Definition.Settings.ExecutionTimeLimit := 'PT0S';
-    Definition.Settings.DisallowStartIfOnBatteries := False;
-    Definition.Settings.StopIfGoingOnBatteries := False;
-    Definition.Settings.MultipleInstances := 0;    { TASK_INSTANCES_PARALLEL }
-    Definition.Settings.Priority := 5;
-    Action := Definition.Actions.Create(0);    { TASK_ACTION_EXEC }
-    Action.Path := ExpandConstant('{app}\{#SettingsExe}');
-    Action.Arguments := '--tray';
-    Step := 'register the task';
-    { No user or password: the principal of the definition (the Users group) is used. }
-    Task := Folder.RegisterTaskDefinition(TrayTaskName, Definition, 6, Unassigned, Unassigned, 4, Unassigned);
-    Step := 'run the task';
-    Task.Run(Unassigned);
-    Log('Started the tray helper for the logged-on users.');
-  except
-    Log('Could not start the tray helper for the logged-on users (' + Step + '): ' + GetExceptionMessage);
+  SetArrayLength(Xml, 23);
+  Xml[0] := '<?xml version="1.0" encoding="UTF-8"?>';
+  Xml[1] := '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">';
+  Xml[2] := '  <RegistrationInfo>';
+  Xml[3] := '    <Description>Starts the Illux Image Tool tray helper for the logged-on users after an update.</Description>';
+  Xml[4] := '  </RegistrationInfo>';
+  Xml[5] := '  <Principals>';
+  Xml[6] := '    <Principal id="Users">';
+  Xml[7] := '      <GroupId>S-1-5-32-545</GroupId>';
+  Xml[8] := '      <RunLevel>LeastPrivilege</RunLevel>';
+  Xml[9] := '    </Principal>';
+  Xml[10] := '  </Principals>';
+  Xml[11] := '  <Settings>';
+  Xml[12] := '    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>';
+  Xml[13] := '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>';
+  Xml[14] := '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>';
+  Xml[15] := '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>';
+  Xml[16] := '    <Priority>5</Priority>';
+  Xml[17] := '  </Settings>';
+  Xml[18] := '  <Actions Context="Users">';
+  Xml[19] := '    <Exec><Command>' + XmlEscape(ExpandConstant('{app}\{#SettingsExe}')) + '</Command><Arguments>--tray</Arguments></Exec>';
+  Xml[20] := '  </Actions>';
+  Xml[21] := '</Task>';
+  Xml[22] := '';
+  FileName := ExpandConstant('{tmp}\tray-task.xml');
+  if not SaveStringsToUTF8File(FileName, Xml, False) then
+  begin
+    Log('Could not write ' + FileName);
+    Exit;
   end;
+  Code := Schtasks('/create /tn "' + TrayTaskName + '" /xml "' + FileName + '" /f');
+  if Code = 0 then
+    Code := Schtasks('/run /tn "' + TrayTaskName + '"');
+  if Code = 0 then
+    Log('Started the tray helper for the logged-on users.')
+  else
+    Log(Format('Could not start the tray helper for the logged-on users (schtasks, error %d).', [Code]));
 end;
 
 procedure DeleteTrayTask;
-var
-  Service: Variant;
 begin
-  try
-    Service := CreateOleObject('Schedule.Service');
-    Service.Connect();
-    Service.GetFolder('\').DeleteTask(TrayTaskName, 0);
-  except
-    { Not registered: nothing to remove. }
-  end;
+  Schtasks('/delete /tn "' + TrayTaskName + '" /f');
 end;
 
 procedure StartTray;
