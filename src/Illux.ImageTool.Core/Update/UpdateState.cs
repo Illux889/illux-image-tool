@@ -34,32 +34,41 @@ public static class UpdateStateStore
 
     public static string FilePath => Path.Combine(AppPaths.Root, "update-state.json");
 
-    /// <summary>A missing or unreadable file gives the default (idle) state; this never throws.</summary>
+    /// <summary>A missing, corrupt or unreadable file gives the default (idle) state; this never throws.</summary>
     public static UpdateState Load()
+    {
+        TryLoad(out var state);
+        return state;
+    }
+
+    /// <summary>
+    /// False only when an existing file could not be read (locked, access denied); <paramref name="state"/> is then the
+    /// default and must not be written back over the saved one. A missing or corrupt file is true with the default state.
+    /// </summary>
+    internal static bool TryLoad(out UpdateState state)
     {
         var path = FilePath;
         for (var attempt = 0; attempt < 3; attempt++)
         {
             try
             {
-                if (!File.Exists(path)) return new UpdateState();
+                if (!File.Exists(path)) { state = new UpdateState(); return true; }
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                return JsonSerializer.Deserialize<UpdateState>(stream, Json) ?? new UpdateState();
+                state = JsonSerializer.Deserialize<UpdateState>(stream, Json) ?? new UpdateState();
+                return true;
             }
             catch (JsonException)
             {
-                return new UpdateState();
+                state = new UpdateState();
+                return true;
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 Thread.Sleep(25); // a writer is swapping the file in; try again
             }
-            catch (UnauthorizedAccessException)
-            {
-                Thread.Sleep(25);
-            }
         }
-        return new UpdateState();
+        state = new UpdateState();
+        return false;
     }
 
     /// <summary>Writes through a temporary file so a reader never sees a half-written state.</summary>

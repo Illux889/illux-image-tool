@@ -67,9 +67,14 @@ public sealed partial class ReleaseClient(HttpClient http)
             if (asset.ValueKind != JsonValueKind.Object) continue;
             if (!asset.TryGetProperty("name", out var n) || n.ValueKind != JsonValueKind.String || n.GetString() != name) continue;
             if (!asset.TryGetProperty("browser_download_url", out var u) || u.ValueKind != JsonValueKind.String) continue;
-            // Only https downloads are accepted: the installer is about to be run with elevated rights.
-            if (Uri.TryCreate(u.GetString(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps) return uri;
+            // The installer is run with elevated rights, so only GitHub's own https hosts are accepted.
+            if (Uri.TryCreate(u.GetString(), UriKind.Absolute, out var uri) && IsTrustedDownload(uri)) return uri;
         }
         return null;
     }
+
+    internal static bool IsTrustedDownload(Uri uri) =>
+        uri.Scheme == Uri.UriSchemeHttps
+        && string.IsNullOrEmpty(uri.UserInfo)
+        && (uri.Host == "github.com" || uri.Host.EndsWith(".githubusercontent.com", StringComparison.Ordinal));
 }
