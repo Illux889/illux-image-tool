@@ -97,7 +97,7 @@ internal sealed class MainForm : Form
 
         var row = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
         row.Controls.AddRange([new Label { Text = "Watcher service:", AutoSize = true, Margin = new Padding(0, 6, 4, 0) }, _serviceStatus, _start, _stop, _account]);
-        var note = new Label { Text = "Start, Stop and Change account ask Windows for permission.", AutoSize = true, ForeColor = SystemColors.GrayText };
+        var note = new Label { Text = "A named service account must be a local Administrator, or the service cannot install updates.", AutoSize = true, ForeColor = SystemColors.GrayText };
 
         var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         layout.Controls.AddRange([row, note]);

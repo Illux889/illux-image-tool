@@ -26,6 +26,10 @@ Illux Image Tool runs from a **Run Script** task. It converts images to 8 bit, u
 
    AE adds the input files and the output folder by itself. You only add the parameters.
 
+## Watched folders on a network share
+
+The tool can also watch folders without Automation Engine (see the README). Its watcher service runs as Local System. For folders on a network share, choose another account with **Change account...** in the settings window. That account must be a **local Administrator** of the machine (or a managed service account in the local Administrators group), or the service cannot install updates.
+
 ## Parameters
 
 Write each parameter on its own line. They are not case sensitive.

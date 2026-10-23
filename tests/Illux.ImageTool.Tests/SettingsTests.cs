@@ -6,6 +6,47 @@ using Illux.ImageTool.Watch;
 
 namespace Illux.ImageTool.Tests;
 
+public sealed class ServiceAccountAdminTests
+{
+    private static string MachineAccount(System.Security.Principal.WellKnownSidType type)
+    {
+        using var me = System.Security.Principal.WindowsIdentity.GetCurrent();
+        var machine = me.User!.AccountDomainSid!; // a local or domain account; built-in accounts below are the machine's own
+        var sid = new System.Security.Principal.SecurityIdentifier(type, machine);
+        return sid.Translate(typeof(System.Security.Principal.NTAccount)).Value;
+    }
+
+    [Fact]
+    public void Dialog_SaysTheAccountMustBeALocalAdministrator()
+    {
+        Assert.Contains("must be a local Administrator", AccountDialog.Hint);
+        Assert.Contains("cannot install updates", AccountDialog.NotAdminWarning(@".\bob"));
+    }
+
+    [Fact]
+    public void BuiltInAdministratorAccount_IsAMember()
+    {
+        var name = MachineAccount(System.Security.Principal.WellKnownSidType.AccountAdministratorSid);
+        if (!name.StartsWith(Environment.MachineName + "\\", StringComparison.OrdinalIgnoreCase)) return; // domain-joined test machine
+
+        Assert.True(LocalAdministrators.IsDirectMember(name));
+        Assert.True(LocalAdministrators.IsDirectMember(@".\" + name[(name.IndexOf('\\') + 1)..]));
+    }
+
+    [Fact]
+    public void GuestAccount_IsNotAMember()
+    {
+        var name = MachineAccount(System.Security.Principal.WellKnownSidType.AccountGuestSid);
+        if (!name.StartsWith(Environment.MachineName + "\\", StringComparison.OrdinalIgnoreCase)) return;
+
+        Assert.False(LocalAdministrators.IsDirectMember(name));
+    }
+
+    [Fact]
+    public void UnknownAccount_CannotBeTold() =>
+        Assert.Null(LocalAdministrators.IsDirectMember(@".\no-such-user-" + Guid.NewGuid().ToString("N")[..8]));
+}
+
 public sealed class ServiceControlTests
 {
     [Theory]

@@ -812,6 +812,37 @@ public sealed class UpdaterTests : AppRootTestBase
     }
 
     [Fact]
+    public async Task Check_StateNotWritable_OneClearError()
+    {
+        // What a named service account that is not a local Administrator meets: Root is SYSTEM/Administrators only.
+        Directory.CreateDirectory(AppPaths.Root);
+        var root = new DirectoryInfo(AppPaths.Root);
+        using var me = System.Security.Principal.WindowsIdentity.GetCurrent();
+        var deny = new System.Security.AccessControl.FileSystemAccessRule(me.User!,
+            System.Security.AccessControl.FileSystemRights.CreateFiles, System.Security.AccessControl.AccessControlType.Deny);
+        var security = root.GetAccessControl();
+        security.AddAccessRule(deny);
+        root.SetAccessControl(security);
+        try
+        {
+            var log = new ListLogger();
+            var rig = NewRig(r => Route(r, InstallerHash), log: log);
+
+            await rig.Updater.CheckAsync(CancellationToken.None);
+            await rig.Updater.CheckAsync(CancellationToken.None);
+
+            var error = Assert.Single(log.Entries, e => e.Level == LogLevel.Error);
+            Assert.Contains("may not write update-state.json", error.Message);
+            Assert.Contains("local Administrator", error.Message);
+        }
+        finally
+        {
+            security.RemoveAccessRule(deny);
+            root.SetAccessControl(security);
+        }
+    }
+
+    [Fact]
     public async Task Check_LogsEveryResult()
     {
         var log = new ListLogger();

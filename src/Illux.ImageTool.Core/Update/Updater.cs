@@ -36,6 +36,7 @@ public sealed partial class Updater
     private readonly TimeSpan _recheckInterval;
     private readonly TimeSpan _giveUpAfter;
     private readonly object _stateLock = new();
+    private bool _stateDeniedLogged;
 
     /// <param name="startInstaller">Called with the installer path and its command-line arguments; null means it could not be started.</param>
     /// <param name="timeProvider">Used for the idle waits, so tests can run them fast.</param>
@@ -353,7 +354,15 @@ public sealed partial class Updater
                 change(state);
                 UpdateStateStore.Save(state);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (UnauthorizedAccessException ex)
+            {
+                // R43: typically a named service account that is not a local Administrator. Said clearly, once.
+                if (_stateDeniedLogged) return;
+                _stateDeniedLogged = true;
+                _log.LogError(ex, "The service account may not write update-state.json in {Root}, so updates cannot be offered or installed. "
+                    + "Run the service as Local System or as a local Administrator.", AppPaths.Root);
+            }
+            catch (IOException ex)
             {
                 _log.LogWarning(ex, "Could not write update-state.json");
             }

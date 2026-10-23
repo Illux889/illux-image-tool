@@ -30,6 +30,12 @@ See [docs/ae-setup.md](docs/ae-setup.md).
 
 Open **Illux Image Tool Settings** from the Start menu. Add a folder, choose what to do with the files that arrive in it, and save. Originals are moved to an `Originals` folder, never deleted.
 
+### Service account and folder permissions
+
+The watcher service runs as Local System, which cannot reach network shares. To watch a folder on a share, click **Change account...** in the settings window and enter an account that can reach it. That account must be a **local Administrator** of this computer (or a managed service account in the local Administrators group). Otherwise the service cannot install updates, and **Update now** fails. The settings window warns you if the account is not in the local Administrators group.
+
+The service writes into the Out, Error and Originals folders with the rights of its account. Ordinary users should be able to add and take files *inside* the watched folders, but not delete, rename or replace the folders themselves. The service refuses to write through a folder or file that has been swapped for a link.
+
 ## Updates
 
 The tool checks GitHub for a new version when it starts and every 6 hours. If there is one, a popup appears, and the settings window shows an **Update now** button. Nothing is installed until you click.
