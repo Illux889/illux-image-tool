@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Illux.ImageTool.Tests", "te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Illux.ImageTool.Cli", "src\Illux.ImageTool.Cli\Illux.ImageTool.Cli.csproj", "{516C9776-F9AF-42D0-ADD0-B06B226C3919}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Illux.ImageTool.Watcher", "src\Illux.ImageTool.Watcher\Illux.ImageTool.Watcher.csproj", "{990E630E-CA05-4B97-B20B-B4CA627E7D1A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -59,6 +61,18 @@ Global
 		{516C9776-F9AF-42D0-ADD0-B06B226C3919}.Release|x64.Build.0 = Release|Any CPU
 		{516C9776-F9AF-42D0-ADD0-B06B226C3919}.Release|x86.ActiveCfg = Release|Any CPU
 		{516C9776-F9AF-42D0-ADD0-B06B226C3919}.Release|x86.Build.0 = Release|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Debug|x64.Build.0 = Debug|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Debug|x86.Build.0 = Debug|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Release|x64.ActiveCfg = Release|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Release|x64.Build.0 = Release|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Release|x86.ActiveCfg = Release|Any CPU
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -67,5 +81,6 @@ Global
 		{663A77AB-8EC7-4620-BEA0-DC178BE956D3} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{AF0A5C76-6F26-435C-8310-14D3D3A99F62} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{516C9776-F9AF-42D0-ADD0-B06B226C3919} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{990E630E-CA05-4B97-B20B-B4CA627E7D1A} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

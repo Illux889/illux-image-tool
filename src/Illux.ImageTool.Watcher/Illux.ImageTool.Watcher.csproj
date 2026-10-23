@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Illux.ImageTool.Watcher</RootNamespace>
+    <AssemblyName>IlluxImageToolWatcher</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.13" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Illux.ImageTool.Core\Illux.ImageTool.Core.csproj" />
+    <InternalsVisibleTo Include="Illux.ImageTool.Tests" />
+  </ItemGroup>
+
+</Project>
