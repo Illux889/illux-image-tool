@@ -432,3 +432,4 @@ if ($script:Failures.Count -gt 0) {
     exit 1
 }
 Write-Host 'All installer checks passed.'
+exit 0 # not the exit code of the last native command (query user returns 1)
