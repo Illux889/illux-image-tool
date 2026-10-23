@@ -3,8 +3,13 @@ using Illux.ImageTool.Options;
 
 namespace Illux.ImageTool.Imaging;
 
-/// <summary>What <see cref="MagickRewriter"/> changes. <paramref name="NewSize"/> null means no resampling.</summary>
-internal sealed record RewriteSpec(bool To8Bit, (uint Width, uint Height)? NewSize, double TargetPpi, ResampleFilter Filter, int JpegQuality);
+/// <summary>What <see cref="MagickRewriter"/> changes.</summary>
+/// <param name="NewSize">Pixel size after resampling; null means no resampling.</param>
+/// <param name="NewResolution">Resolution written with <paramref name="NewSize"/> (per axis, ruling R13).</param>
+/// <param name="KeepProgressive">Write a progressive JPEG (input was progressive and the Baseline operation is off, R14).</param>
+internal sealed record RewriteSpec(
+    bool To8Bit, (uint Width, uint Height)? NewSize, Resolution NewResolution, ResampleFilter Filter, int JpegQuality,
+    bool KeepProgressive);
 
 /// <summary>Decodes, changes and re-encodes an image with ImageMagick, in the input's own format.</summary>
 internal static class MagickRewriter
@@ -27,7 +32,7 @@ internal static class MagickRewriter
             // ImageMagick writes this density into JFIF / TIFF / PNG pHYs and, while writing, also syncs an existing
             // EXIF X/YResolution + ResolutionUnit and Photoshop ResolutionInfo (8BIM 0x03ED) to it, so every
             // resolution tag in the output agrees (covered by Pipeline_Upsample_RewritesExifAndPhotoshopResolution).
-            image.Density = new Density(spec.TargetPpi, spec.TargetPpi, DensityUnit.PixelsPerInch);
+            image.Density = new Density(spec.NewResolution.X, spec.NewResolution.Y, DensityUnit.PixelsPerInch);
         }
 
         // Reduce depth after resampling so the filter works at full precision (spec 8.2: "resampling is done at the
@@ -45,7 +50,7 @@ internal static class MagickRewriter
         if (source.IsJpeg)
         {
             image.Quality = (uint)spec.JpegQuality;
-            image.Settings.Interlace = Interlace.NoInterlace; // baseline
+            image.Settings.Interlace = spec.KeepProgressive ? Interlace.Jpeg : Interlace.NoInterlace;
             // Without this ImageMagick drops chroma subsampling for quality >= 90.
             if (!string.IsNullOrEmpty(samplingFactor))
                 image.Settings.SetDefine(MagickFormat.Jpeg, "sampling-factor", samplingFactor);

@@ -6,9 +6,10 @@ namespace Illux.ImageTool.Imaging;
 
 /// <param name="Messages">One line per action or warning, e.g. <c>16→8 bit</c>.</param>
 /// <param name="FinalResolution">
-/// The resolution the written file carries: the target when upsampled, otherwise the stored one. When the file
-/// stores none and is not upsampled, this is 72 ppi (the value Photoshop assumes), because the PDF writer needs a
-/// value. Results with <see cref="Status.Error"/> write nothing and carry 0×0.
+/// The resolution the written file carries: per axis the target where that axis was raised, otherwise the stored
+/// value. When the file stores none and is not upsampled, this is 72 ppi (the value Photoshop assumes), because the
+/// PDF writer needs a value. Formats that cannot store a resolution (GIF) are written without one, yet still report
+/// the resolution here (ruling R15). Results with <see cref="Status.Error"/> write nothing and carry 0×0.
 /// </param>
 /// <param name="Changed">False when the input was copied byte for byte (or nothing was written).</param>
 public sealed record PipelineResult(Status Status, IReadOnlyList<string> Messages, string OutputPath, Resolution FinalResolution, bool Changed);
@@ -60,10 +61,12 @@ public static class ImagePipeline
             }
             else
             {
-                var spec = new RewriteSpec(plan.To8Bit, plan.NewSize, options.TargetPpi, options.Filter, options.JpegQuality);
+                // R14: with the Baseline operation off, a re-encoded progressive JPEG stays progressive.
+                var keepProgressive = source.Jpeg?.Coding == JpegCoding.Progressive && !options.Operations.HasFlag(Operations.Baseline);
+                var spec = new RewriteSpec(plan.To8Bit, plan.NewSize, plan.FinalResolution, options.Filter, options.JpegQuality, keepProgressive);
                 var droppedLayers = await Task.Run(() => MagickRewriter.Rewrite(inputPath, outputPath, source, spec), ct)
                     .ConfigureAwait(false);
-                if (source.IsJpeg) messages.Add(JpegReencodeMessage(source, options));
+                if (source.IsJpeg) messages.Add(JpegReencodeMessage(plan.ToBaseline, options));
                 if (droppedLayers) messages.Add("Photoshop layers removed (flattened image kept)");
             }
         }
@@ -113,31 +116,42 @@ public static class ImagePipeline
                 }
             }
 
-            if (resolution is not null && (resolution.X < target - PpiTolerance || resolution.Y < target - PpiTolerance))
+            if (resolution is { } stored)
             {
-                // Per axis, so both axes end at the target (spec 8.2: non-square resolutions resampled per axis).
-                newSize = (Scale(source.Width, target / resolution.X), Scale(source.Height, target / resolution.Y));
-                var from = resolution.X == resolution.Y ? Format(resolution.X) : $"{Format(resolution.X)}×{Format(resolution.Y)}";
-                messages.Add($"{from}→{Format(target)} ppi ({source.Width}×{source.Height} → {newSize.Value.Width}×{newSize.Value.Height}, {options.Filter})");
-
-                var factor = Math.Max(target / resolution.X, target / resolution.Y);
-                if (factor > LargeFactor)
+                var raiseX = stored.X < target - PpiTolerance;
+                var raiseY = stored.Y < target - PpiTolerance;
+                if (raiseX || raiseY)
                 {
-                    messages.Add($"upscale factor {Format(factor)}× is above {Format(LargeFactor)}×");
-                    warning = true;
+                    // Per axis (spec 8.2), and only the axes below the target are raised; an axis at or above the
+                    // target keeps its ppi and pixel count, so nothing is ever downsampled (ruling R13).
+                    var factorX = raiseX ? target / stored.X : 1;
+                    var factorY = raiseY ? target / stored.Y : 1;
+                    var raised = new Resolution(raiseX ? target : stored.X, raiseY ? target : stored.Y);
+                    newSize = (Scale(source.Width, factorX), Scale(source.Height, factorY));
+                    messages.Add($"{Format(stored)}→{Format(raised)} ppi ({source.Width}×{source.Height} → {newSize.Value.Width}×{newSize.Value.Height}, {options.Filter})");
+                    resolution = raised;
+
+                    var factor = Math.Max(factorX, factorY); // max over the raised axes (the others are 1)
+                    if (factor > LargeFactor)
+                    {
+                        messages.Add($"upscale factor {Format(factor)}× is above {Format(LargeFactor)}×");
+                        warning = true;
+                    }
                 }
             }
         }
 
         var toBaseline = options.Operations.HasFlag(Operations.Baseline) && source.Jpeg?.Coding == JpegCoding.Progressive;
-        var final = newSize is not null ? new Resolution(target, target) : resolution ?? new Resolution(AssumedPpi, AssumedPpi);
+        var final = resolution ?? new Resolution(AssumedPpi, AssumedPpi);
         return new PlanResult(to8Bit, newSize, toBaseline, final, messages, warning, null);
     }
 
-    private static string JpegReencodeMessage(SourceImage source, ProcessingOptions options) =>
-        source.Jpeg!.Coding == JpegCoding.Progressive
+    private static string JpegReencodeMessage(bool toBaseline, ProcessingOptions options) =>
+        toBaseline
             ? $"progressive→baseline (re-encoded, q{options.JpegQuality})"
             : $"re-encoded (q{options.JpegQuality})";
+
+    private static string Format(Resolution r) => r.X == r.Y ? Format(r.X) : $"{Format(r.X)}×{Format(r.Y)}";
 
     private static uint Scale(uint size, double factor) =>
         (uint)Math.Max(1, Math.Round(size * factor, MidpointRounding.AwayFromZero));

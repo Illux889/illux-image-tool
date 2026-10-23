@@ -170,6 +170,24 @@ public sealed class ImagePipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task Pipeline_ProgressiveJpeg_UpsampleWithBaselineOff_StaysProgressive()
+    {
+        // R14: re-encoding keeps the input's coding when the Baseline operation is off.
+        var input = TestImages.Write(_dir, "p.jpg", 90, 60, ColorSpace.sRGB, 8, 100, progressive: true);
+        var output = OutPath("p.jpg");
+
+        var result = await Run(input, output, Options(Operations.EightBit | Operations.Upsample));
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.Contains("re-encoded (q95)", result.Messages);
+        Assert.DoesNotContain(result.Messages, m => m.Contains("baseline"));
+        var info = JpegInspector.Inspect(output);
+        Assert.Equal(JpegCoding.Progressive, info.Coding);
+        Assert.Equal((200.0, 200.0, 1), info.JfifDensity);
+        Assert.Equal(180, info.Width);
+    }
+
+    [Fact]
     public async Task Pipeline_ReencodedJpeg_KeepsSamplingFactorAndUsesQuality()
     {
         // quality 75 makes ImageMagick subsample chroma 2x2; at q >= 90 it would default to 1x1 unless told otherwise.
@@ -357,8 +375,9 @@ public sealed class ImagePipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task Pipeline_NonSquareResolution_ResampledPerAxis()
+    public async Task Pipeline_NonSquare_OnlyLowAxisRaised()
     {
+        // R13: an axis already at or above the target keeps its ppi and pixel count (never downsampled).
         var input = TestImages.Write(_dir, "n.tif", 150, 300, ColorSpace.sRGB, 8, null);
         Rewrite(input, i => i.Density = new Density(150, 300, DensityUnit.PixelsPerInch));
         var output = OutPath("n.tif");
@@ -366,11 +385,29 @@ public sealed class ImagePipelineTests : IDisposable
         var result = await Run(input, output);
 
         Assert.Equal(Status.Ok, result.Status);
-        Assert.Contains("150×300→200 ppi (150×300 → 200×200, Lanczos)", result.Messages);
+        Assert.Contains("150×300→200×300 ppi (150×300 → 200×300, Lanczos)", result.Messages);
+        Assert.Equal(new Resolution(200, 300), result.FinalResolution);
+        using var image = new MagickImage(output);
+        Assert.Equal(200u, image.Width);
+        Assert.Equal(300u, image.Height);
+        Assert.Equal(200, PpiX(image), 0.01);
+        Assert.Equal(300, PpiY(image), 0.01);
+    }
+
+    [Fact]
+    public async Task Pipeline_NonSquare_BothAxesLow_EachRaisedToTarget()
+    {
+        var input = TestImages.Write(_dir, "n.tif", 100, 150, ColorSpace.sRGB, 8, null);
+        Rewrite(input, i => i.Density = new Density(100, 150, DensityUnit.PixelsPerInch));
+        var output = OutPath("n.tif");
+
+        var result = await Run(input, output);
+
+        Assert.Contains("100×150→200 ppi (100×150 → 200×200, Lanczos)", result.Messages);
+        Assert.Equal(new Resolution(200, 200), result.FinalResolution);
         using var image = new MagickImage(output);
         Assert.Equal(200u, image.Width);
         Assert.Equal(200u, image.Height);
-        Assert.Equal(200, PpiX(image), 0.01);
         Assert.Equal(200, PpiY(image), 0.01);
     }
 
