@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Illux.ImageTool.Core\Illux.ImageTool.Core.csproj" />
+    <ProjectReference Include="..\..\src\Illux.ImageTool.Cli\Illux.ImageTool.Cli.csproj" />
   </ItemGroup>
 
 </Project>
