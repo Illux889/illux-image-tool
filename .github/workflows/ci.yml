@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  build:
+    name: Test and build installer
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+      upgrade_version: ${{ steps.versions.outputs.upgrade_version }}
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Fetch jpegtran
+        run: ./build/fetch-jpegtran.ps1
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Versions
+        id: versions
+        # The installer of this run is 0.1.<run number>; a second build one patch higher tests the silent upgrade.
+        run: |
+          $run = [int]$env:GITHUB_RUN_NUMBER
+          # Windows PowerShell's >> would write UTF-16; the runner reads UTF-8.
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=0.1.$run`nupgrade_version=0.1.$($run + 1)`n")
+
+      - name: Install Inno Setup if missing
+        run: |
+          $iscc = @((Get-Command iscc.exe -ErrorAction SilentlyContinue | ForEach-Object Source),
+                    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+                  Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+          if ($iscc) { Write-Host "Inno Setup found: $iscc"; exit 0 }
+          choco install innosetup --version 6.7.1 -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build installer
+        run: ./build/build-installer.ps1 -Version ${{ steps.versions.outputs.version }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: IlluxImageTool-Setup-${{ steps.versions.outputs.version }}
+          path: |
+            artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.version }}.exe
+            artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.version }}.exe.sha256
+          if-no-files-found: error
+
+      - name: Build upgrade-test installer
+        run: ./build/build-installer.ps1 -Version ${{ steps.versions.outputs.upgrade_version }}
+
+      - name: Upload upgrade-test installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: upgrade-test-installer
+          path: artifacts/installer/IlluxImageTool-Setup-${{ steps.versions.outputs.upgrade_version }}.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  smoke-test:
+    name: Install, upgrade and uninstall
+    needs: build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: powershell
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      UPGRADE_VERSION: ${{ needs.build.outputs.upgrade_version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: IlluxImageTool-Setup-${{ needs.build.outputs.version }}
+          path: installers
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: upgrade-test-installer
+          path: installers
+
+      - name: Verify checksum file
+        run: |
+          $name = "IlluxImageTool-Setup-$env:VERSION.exe"
+          $expected = (Get-Content -Raw "installers/$name.sha256").Trim()
+          $actual = "$((Get-FileHash "installers/$name" -Algorithm SHA256).Hash.ToLowerInvariant())  $name"
+          if ($actual -ne $expected) { throw "Checksum file says '$expected', file is '$actual'" }
+          Write-Host $expected
+
+      - name: Smoke test (elevated runner)
+        run: >
+          ./build/smoke-test-installer.ps1
+          -Installer "installers/IlluxImageTool-Setup-$env:VERSION.exe"
+          -UpgradeInstaller "installers/IlluxImageTool-Setup-$env:UPGRADE_VERSION.exe"
+          -Version $env:VERSION -UpgradeVersion $env:UPGRADE_VERSION
+          -WorkDir "$env:RUNNER_TEMP\smoke"
+
+      - name: Upload smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-logs
+          path: |
+            ${{ runner.temp }}/smoke/*.log
+            C:/ProgramData/Illux Image Tool/logs/
+          if-no-files-found: ignore
+          retention-days: 7
