@@ -5,4 +5,8 @@
     <AssemblyName>Illux.ImageTool.Core</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Magick.NET-Q16-HDRI-x64" Version="14.17.2" />
+  </ItemGroup>
+
 </Project>
