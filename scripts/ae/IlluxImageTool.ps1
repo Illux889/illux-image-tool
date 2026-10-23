@@ -52,5 +52,16 @@ if ($OutputFolder -and $OutputFolder.EndsWith('\')) { $OutputFolder += '.' }
 $arguments = @('ae', $Inputs, $OutputFolder)
 if ($Rest) { $arguments += $Rest }
 
-& $exe @arguments
-exit $LASTEXITCODE
+$global:LASTEXITCODE = $null
+try {
+    & $exe @arguments
+}
+catch {
+    # The exe exists but could not be started (damaged file, wrong platform, blocked).
+    Write-Output "ERROR: $_"
+    exit 2
+}
+
+# AE knows 0 = OK, 1 = Warning, 2 = Error; anything else (a crash, a missing DLL, no exit code at all) is an Error.
+if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 1) { exit $LASTEXITCODE }
+exit 2

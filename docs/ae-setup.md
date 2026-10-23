@@ -7,11 +7,13 @@ Illux Image Tool runs from a **Run Script** task. It converts images to 8 bit, u
 1. **Install the tool on the machine that runs the scripts**, not on the Automation Engine (AE) server. This is the Windows machine with the Esko Script Runner. Run `IlluxImageTool-Setup-<version>.exe` there.
 2. **Install the Esko Script Runner** on that machine, if it is not there yet.
 3. **Register the Script Runner in Pilot:** Tools > Configure > Scripts. Add the machine name and port `1983`.
-4. **Copy one script** from `scripts\ae` into the Script Runner folder:
+4. **Copy one script** into the Script Runner folder. The installer puts the scripts in `%ProgramFiles%\Illux Image Tool\scripts\ae`:
    - `IlluxImageTool.ps1` into `C:\Esko\bg_data_fastserverscrrunnt_v100\Scripts\PowerShell`
    - or `IlluxImageTool.bat` into `C:\Esko\bg_data_fastserverscrrunnt_v100\Scripts\BatchFile`
 
    You only need one of them. PowerShell is the better choice: Esko says it reports errors more reliably than a batch file.
+
+   If the PowerShell script is blocked, the execution policy of the Script Runner machine must allow local scripts (for example `RemoteSigned`).
 5. **Set up the Run Script task** in your ticket:
 
    | Field | Value |

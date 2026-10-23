@@ -10,7 +10,7 @@ rem   ILLUX_IMAGETOOL_EXE                 path of the exe to run instead of the 
 rem   ILLUX_IMAGETOOL_ROOT                folder that holds updating.flag instead of C:\ProgramData\Illux Image Tool
 rem   ILLUX_IMAGETOOL_WAIT_SECONDS        seconds between two checks of updating.flag (default 5)
 rem   ILLUX_IMAGETOOL_WAIT_MAX_SECONDS    seconds to wait for an update at most (default 600 = 10 minutes)
-setlocal EnableExtensions
+setlocal EnableExtensions DisableDelayedExpansion
 
 set "EXE=%ILLUX_IMAGETOOL_EXE%"
 if defined EXE goto exe_known
@@ -59,13 +59,41 @@ shift
 shift
 
 rem --- collect the Script Parameters (%3, %4, ... ) one by one; a batch file can only name %1-%9 directly ---
+rem cmd splits an unquoted name=value at the "=" (output=pdf arrives as "output" and "pdf"), so these are joined again:
+rem output, quality, filter and missingppi take the next token; upsample only when the next token is all digits.
 set "REST="
 :collect
 if [%1]==[] goto run
+if /i "%~1"=="output" goto join_value
+if /i "%~1"=="quality" goto join_value
+if /i "%~1"=="filter" goto join_value
+if /i "%~1"=="missingppi" goto join_value
+if /i "%~1"=="upsample" goto join_number
+:plain
 set REST=%REST% %1
+shift
+goto collect
+
+:join_value
+if [%2]==[] goto plain
+set REST=%REST% %1=%2
+shift
+shift
+goto collect
+
+:join_number
+if [%2]==[] goto plain
+if "%~2"=="" goto plain
+for /f "delims=0123456789" %%a in ("%~2") do goto plain
+set REST=%REST% %1=%2
+shift
 shift
 goto collect
 
 :run
 "%EXE%" ae "%INPUTS%" "%OUTDIR%"%REST%
-exit /b %errorlevel%
+set "RC=%errorlevel%"
+rem AE knows 0 = OK, 1 = Warning, 2 = Error; anything else (a crash, a missing DLL) is an Error.
+if "%RC%"=="0" exit /b 0
+if "%RC%"=="1" exit /b 1
+exit /b 2
