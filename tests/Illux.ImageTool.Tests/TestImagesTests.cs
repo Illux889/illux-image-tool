@@ -24,6 +24,15 @@ public sealed class TestImagesTests : IDisposable
     }
 
     [Fact]
+    public void Write_GrayAlphaPng_KeepsAlpha()
+    {
+        var path = TestImages.Write(_dir, "ga.png", 20, 10, ColorSpace.Gray, 16, 300, alpha: true);
+        using var image = new MagickImage(path);
+        Assert.Equal(ColorSpace.Gray, image.ColorSpace);
+        Assert.True(image.HasAlpha);
+    }
+
+    [Fact]
     public void Write_ContainsGradientAndNoise()
     {
         var path = TestImages.Write(_dir, "g.png", 64, 64, ColorSpace.sRGB, 8, 72);

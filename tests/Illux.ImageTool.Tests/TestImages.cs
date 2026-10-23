@@ -54,7 +54,7 @@ internal static class TestImages
                 image.TransformColorSpace(ColorProfiles.SRGB, ColorProfiles.USWebCoatedSWOP);
                 break;
             case ColorSpace.Gray:
-                image.ColorType = ColorType.Grayscale;
+                image.ColorType = alpha ? ColorType.GrayscaleAlpha : ColorType.Grayscale;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(cs), cs, "Only sRGB, Gray and CMYK are supported.");
