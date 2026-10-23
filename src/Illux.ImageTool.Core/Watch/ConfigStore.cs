@@ -15,7 +15,10 @@ public static class ConfigStore
         AllowTrailingCommas = true,
     };
 
-    /// <summary>A missing file gives the default configuration; unreadable JSON throws <see cref="ConfigException"/>.</summary>
+    /// <summary>
+    /// A missing file gives the default configuration; unreadable JSON or a <c>PollSeconds</c> below 1 throws
+    /// <see cref="ConfigException"/> (a zero or negative poll interval would make the watcher spin or fail).
+    /// </summary>
     public static WatcherConfig Load(string? path = null)
     {
         path ??= AppPaths.ConfigFile;
@@ -26,6 +29,8 @@ public static class ConfigStore
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             var config = JsonSerializer.Deserialize<WatcherConfig>(stream, Json)
                 ?? throw new ConfigException($"Configuration file '{path}' is empty.");
+            if (config.PollSeconds < 1)
+                throw new ConfigException($"Configuration file '{path}': pollSeconds must be at least 1 (found {config.PollSeconds}).");
             config.Folders ??= [];
             foreach (var folder in config.Folders) folder.Parameters ??= [];
             return config;

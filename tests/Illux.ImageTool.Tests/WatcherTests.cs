@@ -8,6 +8,7 @@ public sealed class WatcherTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "illux-watch-" + Guid.NewGuid().ToString("N"));
     private readonly CapturingLogger _log = new();
+    private readonly FakeClock _clock = new();
 
     public void Dispose()
     {
@@ -24,7 +25,7 @@ public sealed class WatcherTests : IDisposable
         Name = "test", In = In, Out = Out, Error = Error, Parameters = [.. parameters],
     };
 
-    private FolderScanner Scanner(WatchedFolder? folder = null) => new(folder ?? Folder(), _log);
+    private FolderScanner Scanner(WatchedFolder? folder = null) => new(folder ?? Folder(), _log, _clock);
 
     private string Jpeg(string name, double? ppi = 200) => TestImages.Write(In, name, 60, 40, ColorSpace.sRGB, 8, ppi);
 
@@ -259,6 +260,210 @@ public sealed class WatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task Scan_OriginalsBlocked_FileParked_NotReprocessedEveryPoll_BacksOff()
+    {
+        var input = Jpeg("a.jpg", ppi: 300);
+        var bytes = File.ReadAllBytes(input);
+        File.WriteAllBytes(Originals, [1]); // a FILE where the Originals folder should be
+        var scanner = Scanner();
+
+        await ScanTwice(scanner); // scan 2 processes and fails to put the original away
+        Assert.Equal(1, Count(LogLevel.Information, "processing"));
+        Assert.Equal(1, Count(LogLevel.Error));
+        Assert.Equal(bytes, File.ReadAllBytes(input));
+        Assert.Empty(Names(Out));
+        Assert.Empty(Names(Error));
+
+        await scanner.ScanOnceAsync(CancellationToken.None); // scans 3 and 4: parked
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        Assert.Equal(1, Count(LogLevel.Information, "processing"));
+        Assert.Equal(1, Count(LogLevel.Error));
+
+        _clock.Advance(TimeSpan.FromSeconds(61)); // first retry after 1 minute: fails again, only logged at Debug
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        Assert.Equal(2, Count(LogLevel.Information, "processing"));
+        Assert.Equal(1, Count(LogLevel.Error));
+        Assert.Equal(1, Count(LogLevel.Debug));
+        Assert.Empty(Names(Out));
+
+        _clock.Advance(TimeSpan.FromSeconds(61)); // the delay has doubled to 2 minutes: too early
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        Assert.Equal(2, Count(LogLevel.Information, "processing"));
+
+        File.Delete(Originals); // fixed by the administrator
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        Assert.Equal(["a.jpg"], Names(Originals));
+        Assert.Equal(bytes, File.ReadAllBytes(Path.Combine(Originals, "a.jpg")));
+        Assert.Equal(["a.jpg"], Names(Out));
+        Assert.Empty(Names(In));
+    }
+
+    [Fact]
+    public async Task Scan_ParkedFile_ThatChanges_IsRetriedAtOnce()
+    {
+        var input = Jpeg("a.jpg", ppi: 300);
+        File.WriteAllBytes(Originals, [1]);
+        var scanner = Scanner();
+        await ScanTwice(scanner);
+        File.Delete(Originals);
+
+        await using (var append = new FileStream(input, FileMode.Append, FileAccess.Write))
+            append.Write([0]);
+        await scanner.ScanOnceAsync(CancellationToken.None); // new size: stability check restarts
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        Assert.Equal(["a.jpg"], Names(Originals));
+    }
+
+    [Fact]
+    public async Task Scan_OneFailingFile_DoesNotStarveTheOthers()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        Jpeg("b.jpg", ppi: 300);
+        var scanner = Scanner();
+        scanner.OutputVerifier = outputs =>
+            outputs.Any(o => Path.GetFileName(o) == "a.jpg") ? throw new InvalidOperationException("boom") : null;
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(["a.jpg"], Names(In));
+        Assert.Equal(["b.jpg"], Names(Originals));
+        Assert.Equal(["b.jpg"], Names(Out)); // the output of the failing file was removed again
+        Assert.Contains(_log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("boom"));
+    }
+
+    [Fact]
+    public async Task Scan_OutputVerificationFails_OutputsRemoved_OriginalToError()
+    {
+        var input = Jpeg("a.jpg", ppi: 300);
+        var bytes = File.ReadAllBytes(input);
+        var scanner = Scanner();
+        scanner.OutputVerifier = _ => "output 'a.jpg' could not be re-opened";
+
+        await ScanTwice(scanner);
+
+        Assert.Empty(Names(Out));
+        Assert.Empty(Names(Originals));
+        Assert.Empty(Names(In));
+        Assert.Equal(["a.jpg", "a.jpg.error.txt"], Names(Error));
+        Assert.Equal(bytes, File.ReadAllBytes(Path.Combine(Error, "a.jpg")));
+        Assert.Contains("could not be re-opened", File.ReadAllText(Path.Combine(Error, "a.jpg.error.txt")));
+    }
+
+    [Fact]
+    public void VerifyOutputs_AcceptsGoodFiles_RejectsBadOnes()
+    {
+        Directory.CreateDirectory(_dir);
+        var good = TestImages.Write(_dir, "good.jpg", 20, 10, ColorSpace.sRGB, 8, 200);
+        var garbage = Path.Combine(_dir, "garbage.jpg");
+        File.WriteAllBytes(garbage, [1, 2, 3, 4, 5, 6, 7, 8]);
+        var empty = Path.Combine(_dir, "empty.jpg");
+        File.WriteAllBytes(empty, []);
+        var pdf = Path.Combine(_dir, "good.pdf");
+        File.WriteAllText(pdf, "%PDF-1.6\n1 0 obj\n<<>>\nendobj\n%%EOF\r\n \n");
+        var truncatedPdf = Path.Combine(_dir, "truncated.pdf");
+        File.WriteAllText(truncatedPdf, "%PDF-1.6\n1 0 obj\n<<>>\nendobj\n");
+        var wrongVersion = Path.Combine(_dir, "old.pdf");
+        File.WriteAllText(wrongVersion, "%PDF-1.4\n%%EOF");
+
+        Assert.Null(FolderScanner.VerifyOutputs([good, pdf]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([garbage]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([empty]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([truncatedPdf]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([wrongVersion]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([good, garbage]));
+    }
+
+    [Fact]
+    public async Task Scan_FileVanishesBetweenScans_IsForgottenWithoutErrors()
+    {
+        var input = Jpeg("a.jpg", ppi: 300);
+        var scanner = Scanner();
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        File.Delete(input);
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        // A new file with the same name starts the stability check from scratch.
+        Jpeg("a.jpg", ppi: 300);
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        Assert.Equal(["a.jpg"], Names(In));
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        Assert.Equal(["a.jpg"], Names(Originals));
+        Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task Scan_FileLockedForMoreThanFiveMinutes_LoggedOnce()
+    {
+        var input = Jpeg("a.jpg", ppi: 300);
+        var scanner = Scanner();
+
+        await using var held = new FileStream(input, FileMode.Open, FileAccess.Read, FileShare.Read);
+        await ScanTwice(scanner);
+        Assert.DoesNotContain(_log.Entries, e => e.Message.Contains("locked"));
+
+        _clock.Advance(TimeSpan.FromMinutes(6));
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        Assert.Single(_log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("locked"));
+    }
+
+    [Theory]
+    [InlineData("In")]
+    [InlineData("Out")]
+    [InlineData("Error")]
+    [InlineData("Originals")]
+    public async Task Scan_RelativePath_IsMisconfigured_NoFilesMoved(string which)
+    {
+        Jpeg("a.jpg");
+        var folder = Folder();
+        var relative = Path.Combine("some", "relative");
+        if (which == "In") folder.In = relative;
+        if (which == "Out") folder.Out = relative;
+        if (which == "Error") folder.Error = relative;
+        if (which == "Originals") folder.Originals = relative;
+
+        await ScanTwice(Scanner(folder));
+
+        Assert.Equal(["a.jpg"], Names(In));
+        Assert.Empty(Names(Out));
+        Assert.Empty(Names(Error));
+        Assert.Contains(_log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("full path"));
+    }
+
+    [Fact]
+    public async Task Scan_OutSameAsOriginals_IsMisconfigured_NoFilesMoved()
+    {
+        Jpeg("a.jpg");
+        var folder = Folder();
+        folder.Originals = Out + Path.DirectorySeparatorChar;
+
+        await ScanTwice(Scanner(folder));
+
+        Assert.Equal(["a.jpg"], Names(In));
+        Assert.Empty(Names(Out));
+        Assert.Contains(_log.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("Originals"));
+    }
+
+    [Fact]
+    public async Task Scan_DirectoryTakesTheName_FileGetsNextFreeName()
+    {
+        Directory.CreateDirectory(Path.Combine(Originals, "a.jpg")); // a folder named like the file counts as taken
+        Jpeg("a.jpg", ppi: 300);
+
+        await ScanTwice(Scanner());
+
+        Assert.True(File.Exists(Path.Combine(Originals, "a (2).jpg")));
+        Assert.Equal(["a.jpg"], Names(Out));
+    }
+
+    private int Count(LogLevel level, string? contains = null) =>
+        _log.Entries.Count(e => e.Level == level && (contains is null || e.Message.Contains(contains)));
+
+    [Fact]
     public void OriginalsOrDefault_IsSiblingOfIn_EvenWithTrailingSeparator()
     {
         var folder = new WatchedFolder { In = Path.Combine(_dir, "customer", "In") + Path.DirectorySeparatorChar };
@@ -318,6 +523,19 @@ public sealed class WatcherTests : IDisposable
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void ConfigStore_PollSecondsBelowOne_ThrowsConfigException(int seconds)
+    {
+        Directory.CreateDirectory(_dir);
+        var path = Path.Combine(_dir, "poll.json");
+        File.WriteAllText(path, "{ \"pollSeconds\": " + seconds + " }");
+
+        var ex = Assert.Throws<ConfigException>(() => ConfigStore.Load(path));
+        Assert.Contains("pollSeconds", ex.Message);
+    }
+
+    [Theory]
     [InlineData("{ not json")]
     [InlineData("")]
     [InlineData("null")]
@@ -328,6 +546,15 @@ public sealed class WatcherTests : IDisposable
         File.WriteAllText(path, content);
 
         Assert.Throws<ConfigException>(() => ConfigStore.Load(path));
+    }
+
+    private sealed class FakeClock : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 10, 23, 12, 0, 0, TimeSpan.Zero);
+
+        public void Advance(TimeSpan by) => _now += by;
+
+        public override DateTimeOffset GetUtcNow() => _now;
     }
 
     private sealed class CapturingLogger : ILogger

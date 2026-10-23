@@ -106,7 +106,7 @@ public sealed class AeScriptTests : AppRootTestBase
     }
 
     [Fact]
-    public void Bat_WaitsForUpdatingFlag()
+    public async Task Bat_WaitsForUpdatingFlag()
     {
         var a = Tiff16("a.tif");
         Directory.CreateDirectory(AppRoot);
@@ -114,7 +114,7 @@ public sealed class AeScriptTests : AppRootTestBase
         var remover = Task.Run(async () => { await Task.Delay(2000); File.Delete(UpdatingFlag); });
 
         var (exit, output) = Run(Script("IlluxImageTool.bat"), [a, Out], ("ILLUX_IMAGETOOL_WAIT_SECONDS", "1"));
-        remover.Wait();
+        await remover;
 
         Assert.Equal(0, exit);
         Assert.Contains("Result: OK", output);
@@ -138,7 +138,7 @@ public sealed class AeScriptTests : AppRootTestBase
     }
 
     [Fact]
-    public void Ps1_WaitsForUpdatingFlag()
+    public async Task Ps1_WaitsForUpdatingFlag()
     {
         var a = Tiff16("a.tif");
         Directory.CreateDirectory(AppRoot);
@@ -146,7 +146,7 @@ public sealed class AeScriptTests : AppRootTestBase
         var remover = Task.Run(async () => { await Task.Delay(2000); File.Delete(UpdatingFlag); });
 
         var (exit, output) = Run(Script("IlluxImageTool.ps1"), [a, Out], ("ILLUX_IMAGETOOL_WAIT_SECONDS", "1"));
-        remover.Wait();
+        await remover;
 
         Assert.Equal(0, exit);
         Assert.Contains("Result: OK", output);
@@ -188,7 +188,7 @@ public sealed class AeScriptTests : AppRootTestBase
 
         Assert.Equal(0, exit);
         Assert.Contains("Result: OK", output);
-        Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(Path.GetFileName).ToArray());
+        Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(p => Path.GetFileName(p)!).ToArray());
     }
 
     [Theory]
@@ -216,7 +216,7 @@ public sealed class AeScriptTests : AppRootTestBase
         var (exit, _) = Run(Script("IlluxImageTool.bat"), [a, Out, "output=pdf", "8bit", "upsample=300"], quoted);
 
         Assert.Equal(0, exit);
-        Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(Path.GetFileName).ToArray());
+        Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(p => Path.GetFileName(p)!).ToArray());
     }
 
     [Fact]
