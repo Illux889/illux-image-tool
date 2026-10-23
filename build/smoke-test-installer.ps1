@@ -324,9 +324,18 @@ $state = Get-Content -Raw -LiteralPath (Join-Path $Data 'update-state.json') | C
 Check ($state.phase -eq 'Idle') "update-state.json phase is Idle (found '$($state.phase)')"
 Test-DataAcls 'after upgrade'
 Test-UserWrites 'after upgrade'
-if (Test-Path -LiteralPath $upgradeLog) {
-    $trayLine = Select-String -LiteralPath $upgradeLog -Pattern 'tray helper' | Select-Object -Last 1
-    Write-Host "Tray restart after the SYSTEM upgrade: $($trayLine.Line)"
+
+Section 'Tray helper after the SYSTEM upgrade'
+# As SYSTEM the installer starts the tray through a scheduled task for the Users group (one copy per logged-on user).
+$trayLine = if (Test-Path -LiteralPath $upgradeLog) { (Select-String -LiteralPath $upgradeLog -Pattern 'tray helper' | Select-Object -Last 1).Line }
+Check ($trayLine -match 'Started the tray helper for the logged-on users') "the upgrade started the tray helper for the logged-on users ($trayLine)"
+$trayTask = Get-ScheduledTask -TaskName 'Illux Image Tool tray helper' -ErrorAction SilentlyContinue
+Check ($trayTask -and $trayTask.Principal.GroupId -match 'S-1-5-32-545|Users') "tray scheduled task registered for the Users group (group: $($trayTask.Principal.GroupId))"
+if ($trayTask) { Write-Host "Tray task last result: $((Get-ScheduledTaskInfo -InputObject $trayTask).LastTaskResult)" }
+if (Wait-Until { [bool](Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'") } 15) {
+    Write-Host 'A tray helper is running again after the SYSTEM upgrade.'
+} else {
+    Write-Host "::warning::No tray helper is running after the SYSTEM upgrade (logged-on users: $((cmd.exe /d /c 'query user 2>&1') -join ' | '))"
 }
 
 Section 'Watched folder after the upgrade'
@@ -356,6 +365,7 @@ Check ($null -eq (Get-ItemProperty -Path $RunKey -Name IlluxImageToolTray -Error
 Check (-not (Test-Path -LiteralPath $EventKey)) 'Event Log source removed'
 Check (-not (Test-Path -LiteralPath $StartMenu)) 'Start menu folder removed'
 Check (-not (Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'")) 'no tray helper left running'
+Check (-not (Get-ScheduledTask -TaskName 'Illux Image Tool tray helper' -ErrorAction SilentlyContinue)) 'tray scheduled task removed'
 Check ((Get-FileHash -LiteralPath (Join-Path $Data 'config.json')).Hash -eq $configHash) 'ProgramData config.json kept'
 
 Remove-LocalUser -Name $TestUser -ErrorAction SilentlyContinue

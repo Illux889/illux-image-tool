@@ -275,28 +275,35 @@ end;
 procedure StartTrayForLoggedOnUsers;
 var
   Service, Folder, Definition, Action, Task: Variant;
+  Step: String;
 begin
   try
+    Step := 'connect to the Task Scheduler';
     Service := CreateOleObject('Schedule.Service');
     Service.Connect();
     Folder := Service.GetFolder('\');
+    Step := 'define the task';
     Definition := Service.NewTask(0);
     Definition.RegistrationInfo.Description := 'Starts the Illux Image Tool tray helper for the logged-on users after an update.';
     Definition.Principal.GroupId := 'S-1-5-32-545';
-    Definition.Principal.RunLevel := 0;
+    Definition.Principal.LogonType := 4;    { TASK_LOGON_GROUP }
+    Definition.Principal.RunLevel := 0;     { TASK_RUNLEVEL_LUA }
     Definition.Settings.ExecutionTimeLimit := 'PT0S';
     Definition.Settings.DisallowStartIfOnBatteries := False;
     Definition.Settings.StopIfGoingOnBatteries := False;
-    Definition.Settings.MultipleInstances := 0;
+    Definition.Settings.MultipleInstances := 0;    { TASK_INSTANCES_PARALLEL }
     Definition.Settings.Priority := 5;
-    Action := Definition.Actions.Create(0);
+    Action := Definition.Actions.Create(0);    { TASK_ACTION_EXEC }
     Action.Path := ExpandConstant('{app}\{#SettingsExe}');
     Action.Arguments := '--tray';
-    Task := Folder.RegisterTaskDefinition(TrayTaskName, Definition, 6, Null, Null, 4, Null);
-    Task.Run(Null);
+    Step := 'register the task';
+    { No user or password: the principal of the definition (the Users group) is used. }
+    Task := Folder.RegisterTaskDefinition(TrayTaskName, Definition, 6, Unassigned, Unassigned, 4, Unassigned);
+    Step := 'run the task';
+    Task.Run(Unassigned);
     Log('Started the tray helper for the logged-on users.');
   except
-    Log('Could not start the tray helper for the logged-on users: ' + GetExceptionMessage);
+    Log('Could not start the tray helper for the logged-on users (' + Step + '): ' + GetExceptionMessage);
   end;
 end;
 
