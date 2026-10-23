@@ -6,7 +6,11 @@ public enum JpegCoding { Baseline, ExtendedSequential, Progressive, Lossless, Ar
 
 /// <param name="AdobeTransform">Adobe APP14 transform byte, or -1 when there is no Adobe marker.</param>
 /// <param name="JfifDensity">JFIF density as stored; <c>Units</c> is 0 none, 1 dpi, 2 dpcm. Null without a JFIF APP0 marker.</param>
-/// <param name="IccProfile">ICC profile reassembled from all APP2 chunks, or null.</param>
+/// <param name="IccProfile">
+/// ICC profile reassembled from the APP2 "ICC_PROFILE" chunks. Chunks may appear in any order, but their
+/// sequence numbers must be exactly 1..N, each once, and every chunk's count byte must equal N. Any violation
+/// (missing or duplicate chunk, sequence 0, count mismatch) yields null, i.e. the profile is treated as absent.
+/// </param>
 public sealed record JpegInfo(
     JpegCoding Coding,
     int Precision,
@@ -41,7 +45,7 @@ public static class JpegInspector
         var hasAdobe = false;
         var adobeTransform = -1;
         (double X, double Y, int Units)? density = null;
-        var iccChunks = new SortedDictionary<int, byte[]>();
+        var iccChunks = new List<(int Seq, int Count, byte[] Data)>();
 
         while (true)
         {
@@ -80,8 +84,7 @@ public static class JpegInspector
             }
             else if (marker == 0xE2 && StartsWith(data, IccSignature) && data.Length > IccSignature.Length + 2)
             {
-                var seq = data[IccSignature.Length];
-                iccChunks[seq] = data[(IccSignature.Length + 2)..];
+                iccChunks.Add((data[IccSignature.Length], data[IccSignature.Length + 1], data[(IccSignature.Length + 2)..]));
             }
             else if (marker == 0xEE && StartsWith(data, AdobeSignature) && data.Length >= 12)
             {
@@ -92,19 +95,32 @@ public static class JpegInspector
 
         if (coding is null) throw new InvalidDataException("JPEG has no frame header.");
 
-        byte[]? icc = null;
-        if (iccChunks.Count > 0)
-        {
-            icc = new byte[iccChunks.Values.Sum(c => c.Length)];
-            var offset = 0;
-            foreach (var chunk in iccChunks.Values)
-            {
-                chunk.CopyTo(icc, offset);
-                offset += chunk.Length;
-            }
-        }
+        var icc = AssembleIcc(iccChunks);
 
         return new JpegInfo(coding.Value, precision, width, height, components, hasAdobe, adobeTransform, density, icc);
+    }
+
+    private static byte[]? AssembleIcc(List<(int Seq, int Count, byte[] Data)> chunks)
+    {
+        if (chunks.Count == 0) return null;
+        var count = chunks[0].Count;
+        if (count != chunks.Count || chunks.Any(c => c.Count != count)) return null;
+
+        var ordered = new byte[count][];
+        foreach (var (seq, _, data) in chunks)
+        {
+            if (seq < 1 || seq > count || ordered[seq - 1] != null) return null; // out of range or duplicate
+            ordered[seq - 1] = data;
+        }
+
+        var icc = new byte[ordered.Sum(c => c.Length)];
+        var offset = 0;
+        foreach (var chunk in ordered)
+        {
+            chunk.CopyTo(icc, offset);
+            offset += chunk.Length;
+        }
+        return icc;
     }
 
     /// <summary>Skips to the next marker (0xFF followed by a non-0x00, non-0xFF byte) and returns its code.</summary>

@@ -48,12 +48,16 @@ internal static class TestImages
 
         switch (cs)
         {
+            case ColorSpace.sRGB:
+                break;
             case ColorSpace.CMYK:
                 image.TransformColorSpace(ColorProfiles.SRGB, ColorProfiles.USWebCoatedSWOP);
                 break;
             case ColorSpace.Gray:
                 image.ColorType = ColorType.Grayscale;
                 break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(cs), cs, "Only sRGB, Gray and CMYK are supported.");
         }
 
         image.RemoveProfile("icc");
