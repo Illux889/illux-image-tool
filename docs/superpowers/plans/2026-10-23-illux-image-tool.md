@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A small Windows program that converts images to 8-bit, upsamples to 200 ppi, makes JPEGs baseline and optionally wraps them in PDF 1.6. It can be called from Esko AE's Run Script task or used through watched folders, and installs and updates itself from GitHub Releases.
+**Goal:** A small Windows program that converts images to 8-bit, upsamples to 200 ppi, makes JPEGs baseline and optionally wraps them in PDF 1.6. It can be called from Esko AE's Run Script task or used through watched folders, and offers new versions from GitHub Releases with a popup / "Update now" button (never installs without a click).
 
-**Architecture:** One core library (`Illux.ImageTool.Core`) holds all image, PDF, batch, watcher, config and update logic. It has three thin front ends: a CLI exe (called by AE wrapper scripts), a Windows-service exe (watched folders + auto-update), and a WinForms settings exe. An Inno Setup installer, built by GitHub Actions on a version tag, ships everything self-contained.
+**Architecture:** One core library (`Illux.ImageTool.Core`) holds all image, PDF, batch, watcher, config and update logic. It has three thin front ends: a CLI exe (called by AE wrapper scripts), a Windows-service exe (watched folders + auto-update), and a WinForms settings exe that also runs as a tray helper (`--tray`) for update popups. An Inno Setup installer, built by GitHub Actions on a version tag, ships everything self-contained.
 
 **Tech Stack:** C# / .NET 10 (SDK 10.0.300 present locally), Magick.NET-Q16-HDRI-x64 (pin the newest 14.x on NuGet with no open advisory; ≥ 14.15.0), libjpeg-turbo 3.2.0 `jpegtran.exe` + `jpeg62.dll` (vc-x64), Microsoft.Extensions.Hosting.WindowsServices, xUnit, UglyToad.PdfPig (tests only), Inno Setup 6, GitHub Actions `windows-latest`.
 
@@ -22,7 +22,7 @@
 - Outputs are written to a temp name in the destination folder and renamed when complete; on failure nothing is left behind.
 - Watcher never deletes customer files; originals go to `Originals` (default: sibling of In) only after the output re-opens successfully.
 - Shared paths: `C:\ProgramData\Illux Image Tool\` holds `config.json`, `logs\`, `runs\`, `updating.flag`.
-- Updates: GitHub repo `Illux889/illux-image-tool`, full releases only, asset `IlluxImageTool-Setup-<version>.exe` + `<same>.sha256`, check at start + every 6 h, install only when idle, silent args `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`.
+- Updates: GitHub repo `Illux889/illux-image-tool`, full releases only, asset `IlluxImageTool-Setup-<version>.exe` + `<same>.sha256`, check at start + every 6 h. **Never install without a user click** (popup or settings window "Update now"). After the click: download, verify SHA-256, wait until idle, silent args `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`.
 - Commit messages: conventional (`feat:`, `fix:`, `test:`, `build:`, `docs:`), ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Work on branch `feat/v1`.
 
 ## Review Focus
@@ -54,7 +54,7 @@ src/Illux.ImageTool.Core/
   Batch/BatchRunner.cs                 # many files → worst status, log lines
   Runtime/AppPaths.cs, RunLock.cs      # ProgramData paths, active-run locks
   Watch/WatcherConfig.cs, ConfigStore.cs, FolderScanner.cs
-  Update/ReleaseClient.cs, Updater.cs
+  Update/ReleaseClient.cs, Updater.cs, UpdateState.cs
 src/Illux.ImageTool.Cli/Program.cs     # exe: IlluxImageTool.exe
 src/Illux.ImageTool.Watcher/           # exe: IlluxImageToolWatcher.exe (service)
 src/Illux.ImageTool.Settings/          # exe: IlluxImageToolSettings.exe (WinForms)
@@ -298,7 +298,7 @@ Test images are generated in code (`tests/.../TestImages.cs`) with Magick.NET, n
 - Consumes: `FileProcessor` (with `NamePolicy.Suffix`), `ParameterParser`, `AppPaths`.
 - Produces:
   - `sealed class WatchedFolder { string Name; string In; string Out; string Error; string? Originals; List<string> Parameters; bool Enabled = true; string OriginalsOrDefault => Originals ?? Path.Combine(Path.GetDirectoryName(In)!, "Originals"); }`
-  - `sealed class WatcherConfig { List<WatchedFolder> Folders = []; bool AutoUpdate = true; int PollSeconds = 5; }`
+  - `sealed class WatcherConfig { List<WatchedFolder> Folders = []; bool CheckForUpdates = true; int PollSeconds = 5; }`
   - `static class ConfigStore { WatcherConfig Load(string? path = null); void Save(WatcherConfig c, string? path = null); }` — JSON (System.Text.Json, indented); missing file → default config; invalid JSON → throws `ConfigException`.
   - `sealed class FolderScanner { FolderScanner(WatchedFolder folder, ILogger log); bool Busy { get; } Task ScanOnceAsync(CancellationToken ct); }` — a file is processed once it was seen with the same size and last-write time on two consecutive scans **and** opens with `FileShare.None`. Skips hidden/system files, names starting with `~$` or `.`, extensions `.tmp .part .crdownload`, and the `.illux-tmp-*` folder. Success → output(s) in Out, original moved to Originals (suffix on clash) after re-opening the output(s) with Magick/PdfPig-free check (`File.OpenRead` + length > 0 + for images `MagickImageInfo` read). Error → original moved to Error + `<name>.error.txt` with the messages. Warning → treated as success, warning text appended to `Out\_warnings.log`. Invalid `Parameters` → folder logged as misconfigured and skipped (no file moves). Missing In folder → logged once per minute, skipped.
 - [ ] **Step 1: Write failing tests** (temp dirs, call `ScanOnceAsync` twice to pass the stability check): `Scan_ProcessesStableFile_ToOut_OriginalToOriginals`, `Scan_FileStillGrowing_NotProcessed`, `Scan_CorruptFile_ToErrorWithTxt`, `Scan_OutNameClash_GetsSuffix`, `Scan_IgnoresTempAndHiddenFiles`, `Scan_BadParameters_NoFilesMoved`, `ConfigStore_RoundTrip`, `ConfigStore_Missing_ReturnsDefault`, `Scan_NeverDeletesOriginal` (after any outcome the original bytes exist in Originals or Error).
@@ -316,10 +316,13 @@ Test images are generated in code (`tests/.../TestImages.cs`) with Magick.NET, n
 - Produces:
   - `sealed record ReleaseInfo(Version Version, Uri InstallerUrl, Uri ChecksumUrl)`
   - `sealed class ReleaseClient { ReleaseClient(HttpClient http); Task<ReleaseInfo?> GetLatestAsync(CancellationToken ct); }` — `GET https://api.github.com/repos/Illux889/illux-image-tool/releases/latest` with `User-Agent: IlluxImageTool/<version>`; ignores drafts/pre-releases (the endpoint already does); tag `vX.Y.Z` → `Version`; asset names exactly `IlluxImageTool-Setup-X.Y.Z.exe` and `.exe.sha256` (file content: hex hash, optionally followed by file name). Missing assets → null.
-  - `sealed class Updater { Updater(ReleaseClient client, HttpClient http, Version current, Func<bool> watcherBusy, Func<string, Process?> startInstaller, ILogger log); Task<UpdateOutcome> RunOnceAsync(CancellationToken ct); }` — `enum UpdateOutcome { UpToDate, Disabled, Busy, ChecksumFailed, Started, Failed }`. Flow: config `AutoUpdate` false → Disabled; newer? download both to `%TEMP%\IlluxImageTool\update\`; verify SHA-256 (mismatch → delete, ChecksumFailed); wait until `!RunLock.AnyActive() && !watcherBusy()` (re-check every 10 s, give up after 30 min → Busy, retry next cycle); create `updating.flag`; start installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="<logs>\update-<version>.log"` → Started. The installer removes the flag at the end (Task 14).
-- [ ] **Step 1: Write failing tests** (fake `HttpMessageHandler`): `Latest_ParsesTagAndAssets`, `Latest_MissingAsset_Null`, `Run_SameVersion_UpToDate`, `Run_Newer_ChecksumOk_StartsInstallerWithSilentArgs` (captures args via `startInstaller`), `Run_ChecksumMismatch_NotStarted_FileDeleted`, `Run_ActiveRunLock_WaitsThenStarts` (short timeouts injectable), `Run_Disabled`.
+  - `sealed class UpdateState { string? AvailableVersion; DateTimeOffset? LastCheck; string Phase = "Idle"; string? Error; }` + `static UpdateState UpdateStateStore.Load()` / `Save(UpdateState)` at `AppPaths.Root\update-state.json`. `Phase` is one of `Idle, Downloading, WaitingForJobs, Installing, Failed`.
+  - `sealed class Updater { Updater(ReleaseClient client, HttpClient http, Version current, Func<bool> watcherBusy, Func<string, Process?> startInstaller, ILogger log); Task<ReleaseInfo?> CheckAsync(CancellationToken ct); Task<InstallOutcome> InstallAsync(ReleaseInfo release, CancellationToken ct); }`
+    - `CheckAsync`: query latest; writes `UpdateState` (`AvailableVersion` = newer version or null, `LastCheck`). **Never downloads or installs.**
+    - `InstallAsync` (only called after a user click, Task 12): `enum InstallOutcome { ChecksumFailed, Busy, Started, Failed }`. Phase Downloading: download both to `%TEMP%\IlluxImageTool\update\`; verify SHA-256 (mismatch: delete, Phase Failed + Error, ChecksumFailed). Phase WaitingForJobs: wait until `!RunLock.AnyActive() && !watcherBusy()` (re-check every 10 s, give up after 30 min: Busy, Phase Failed with "Jobs kept running, try again"). Phase Installing: create `updating.flag`; start installer with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="<logs>\update-<version>.log"`: Started. The installer removes the flag and resets Phase to Idle at the end (Task 14).
+- [ ] **Step 1: Write failing tests** (fake `HttpMessageHandler`): `Latest_ParsesTagAndAssets`, `Latest_MissingAsset_Null`, `Check_SameVersion_NoAvailableVersion`, `Check_Newer_SetsAvailableVersion_DoesNotDownloadOrStart` (no installer request recorded; `startInstaller` never called), `Install_ChecksumOk_StartsInstallerWithSilentArgs` (captures args), `Install_ChecksumMismatch_NotStarted_FileDeleted`, `Install_ActiveRunLock_WaitsThenStarts` (short timeouts injectable), `Install_PhasesWrittenInOrder`.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5:** Commit `feat: automatic updates from GitHub Releases`.
+- [ ] **Step 5:** Commit `feat: update check and click-to-install updater`.
 
 ### Task 12: Watcher Windows service
 
@@ -329,8 +332,8 @@ Test images are generated in code (`tests/.../TestImages.cs`) with Magick.NET, n
 
 **Interfaces:**
 - Consumes: `ConfigStore`, `FolderScanner`, `Updater`, `MagickSetup`.
-- Produces: service name `IlluxImageToolWatcher`, display name `Illux Image Tool Watcher`. `WatchWorker`: reloads `config.json` when its last-write time changes, keeps one `FolderScanner` per enabled folder, scans every `PollSeconds`, exposes `bool Busy` (any scanner busy). `UpdateWorker`: `Updater.RunOnceAsync` at start (after 1 min) and every 6 h, plus immediately when a file `check-now.flag` appears in `AppPaths.Root` (written by Settings; delete after reading). Logging: rolling daily file `logs\watcher-YYYYMMDD.log` (simple custom `ILoggerProvider`, keep 30 days) + EventLog source `Illux Image Tool` for Warning and above.
-- [ ] **Step 1: Write failing tests:** `Worker_PicksUpConfigChange` (add a folder to config while running, file gets processed), `Worker_BusyWhileProcessing`.
+- Produces: service name `IlluxImageToolWatcher`, display name `Illux Image Tool Watcher`. `WatchWorker`: reloads `config.json` when its last-write time changes, keeps one `FolderScanner` per enabled folder, scans every `PollSeconds`, exposes `bool Busy` (any scanner busy). `UpdateWorker`: `Updater.CheckAsync` at start (after 1 min) and every 6 h, and immediately when `check-now.flag` appears in `AppPaths.Root`. It calls `Updater.InstallAsync` **only** when `install-now.flag` appears (written by the popup / settings window after the user clicks "Update now"); flags are deleted after reading. The installer is started by the service (LocalSystem), so the user needs no admin rights to click "Update now". Logging: rolling daily file `logs\watcher-YYYYMMDD.log` (simple custom `ILoggerProvider`, keep 30 days) + EventLog source `Illux Image Tool` for Warning and above.
+- [ ] **Step 1: Write failing tests:** `Worker_PicksUpConfigChange` (add a folder to config while running, file gets processed), `Worker_BusyWhileProcessing`, `UpdateWorker_NewVersion_NoInstallWithoutFlag`, `UpdateWorker_InstallFlag_TriggersInstall`.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
 - [ ] **Step 5: Manual check:** `sc create` the built exe locally in an elevated shell, start it, drop a test JPEG into a configured In folder, confirm it appears in Out; `sc delete` afterwards.
 - [ ] **Step 6:** Commit `feat: watched-folder Windows service`.
@@ -338,19 +341,20 @@ Test images are generated in code (`tests/.../TestImages.cs`) with Magick.NET, n
 ### Task 13: Settings window
 
 **Files:**
-- Create: `src/Illux.ImageTool.Settings/Illux.ImageTool.Settings.csproj` (`net10.0-windows`, `UseWindowsForms`, `AssemblyName IlluxImageToolSettings`, manifest `requireAdministrator`), `MainForm.cs`, `FolderDialog.cs`, `ServiceControl.cs`
+- Create: `src/Illux.ImageTool.Settings/Illux.ImageTool.Settings.csproj` (`net10.0-windows`, `UseWindowsForms`, `AssemblyName IlluxImageToolSettings`, manifest `asInvoker`), `MainForm.cs`, `FolderDialog.cs`, `ServiceControl.cs`, `TrayApp.cs`
 - Test: `tests/Illux.ImageTool.Tests/ServiceControlTests.cs` (only the non-UI argument building)
 
 **Interfaces:**
 - Consumes: `ConfigStore`, `ParameterParser` (validate before save), `AppPaths`.
 - Produces: one window with:
   - Watched folders list; Add / Edit / Remove. Edit dialog: Name, In, Out, Error, Originals (browse buttons), checkboxes **8-bit**, **Upsample to [200] ppi**, **Baseline JPEG**, output dropdown (Same / PDF / Both), missing-ppi dropdown, JPEG quality. Saved as parameter strings.
-  - Service: status label, Start / Stop, **Change account…** (user + password → `ChangeServiceConfigW` P/Invoke; empty = LocalSystem).
-  - Updates: installed version, last check time (from log/state file `update-state.json` written by `UpdateWorker`), **Automatic updates** checkbox, **Check now** (writes `check-now.flag`).
+  - Service: status label, Start / Stop, **Change account…** (user + password via `ChangeServiceConfigW` P/Invoke; empty = LocalSystem). These three relaunch the exe elevated (`runas`, args `--service start|stop|account`); everything else runs without admin.
+  - Updates: installed version and last check time. When `UpdateState.AvailableVersion` is set: a coloured banner "Version X.Y.Z is ready" with a big **Update now** button (writes `install-now.flag`) and live phase text from `update-state.json` (polled every 2 s). **Check for updates** button (writes `check-now.flag`).
+  - Tray mode (`IlluxImageToolSettings.exe --tray`, no window): `NotifyIcon` in the tray; polls `update-state.json` every 5 min; when a new `AvailableVersion` appears, shows a small always-on-top popup "Illux Image Tool X.Y.Z is available." with **Update now** (writes `install-now.flag`, then shows progress) and **Later** (remembered per version in `%LOCALAPPDATA%\Illux Image Tool\tray.json`). Tray menu: Open settings, Check for updates, Exit. Single instance per user (named mutex).
   - Buttons: Open log folder, AE parameter help (shows `IlluxImageTool.exe --help` text).
 - [ ] **Step 1: Write failing tests** for `ServiceControl.BuildAccountName(string user)` (`"bob"` → `.\bob`, `"DOM\bob"` unchanged, `""` → `LocalSystem`) and `FolderDialog.ToParameters(...)`/`FromParameters(...)` round trip.
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5: Manual check:** run the exe, add a folder, confirm `config.json` contents, toggle auto-update, Check now creates the flag.
+- [ ] **Step 5: Manual check:** run the exe, add a folder, confirm `config.json` contents; write a fake `update-state.json` with a newer version: banner and tray popup appear; Update now creates `install-now.flag`; Later hides the popup for that version.
 - [ ] **Step 6:** Commit `feat: settings window`.
 
 ### Task 14: Installer
@@ -367,6 +371,8 @@ Test images are generated in code (`tests/.../TestImages.cs`) with Magick.NET, n
   - After install: `sc create` (first install) or keep (upgrade), `start= auto`, description, recovery `sc failure … restart`; start service; delete `updating.flag`.
   - Copies `scripts\ae\*` into `C:\Esko\bg_data_fastserverscrrunnt_v100\Scripts\BatchFile` and `\PowerShell` if those folders exist (task checkbox, on by default).
   - Start menu: "Illux Image Tool Settings", "AE setup guide".
+  - Tray helper at log-in for all users: `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` value `IlluxImageToolTray` = `"...\IlluxImageToolSettings.exe" --tray`. During a silent upgrade, running tray helpers are closed before file copy and restarted for the logged-in user at the end (`CloseApplications`/`RestartApplications`, or taskkill + `ExecAsOriginalUser`).
+  - At the end of install: reset `update-state.json` Phase to Idle.
   - Uninstall: stop + delete service, remove program files; keep ProgramData (config/logs).
   - `build/build-installer.ps1 -Version x.y.z`: runs `fetch-jpegtran.ps1`, `dotnet publish` ×3 with `/p:Version`, `iscc /DMyVersion=x.y.z installer\IlluxImageTool.iss`, writes the `.sha256` file (`<hex>  <filename>`).
 - [ ] **Step 1:** Install Inno Setup locally if missing (`winget install JRSoftware.InnoSetup`). Write script + build script.
@@ -388,5 +394,5 @@ Test images are generated in code (`tests/.../TestImages.cs`) with Magick.NET, n
 - [ ] **Step 1:** Write workflows + README. Push branch, confirm `ci.yml` passes on GitHub (`gh run watch`).
 - [ ] **Step 2:** Merge to `main` (after user OK), tag `v0.1.0`, push tag, confirm the release has both assets.
 - [ ] **Step 3: Manual end-to-end (user's PC):** download installer from the release page, install, run the CLI on sample files, set up a watched folder, open a produced PDF in Acrobat (check CMYK colours are not inverted, page size correct, Document Properties shows PDF 1.6).
-- [ ] **Step 4: Update test:** tag `v0.1.1` (trivial change), confirm the installed copy updates itself after "Check now".
+- [ ] **Step 4: Update test:** tag `v0.1.1` (trivial change); on the installed copy click "Check for updates": popup and banner appear, nothing installs by itself; click "Update now": version becomes 0.1.1.
 - [ ] **Step 5:** Commit `build: CI, release workflow and README`.

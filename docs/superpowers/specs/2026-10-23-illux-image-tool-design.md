@@ -37,8 +37,9 @@ freedom"): all at once, one at a time, or any combination.
 - Photoshop-grade quality for the three image operations.
 - A normal Windows **installer** downloadable from the GitHub repository's
   Releases page, built automatically by GitHub Actions.
-- **Automatic updates:** when a new version is released on GitHub, every
-  installed copy updates itself without anyone doing anything (see §11a).
+- **Easy updates:** when a new version is released on GitHub, the program
+  notices it and offers it with a popup and an "Update now" button; it only
+  installs after someone clicks (see §11a).
 - Small and focused: nothing beyond the features listed here.
 - Open source.
 
@@ -297,6 +298,10 @@ A small Windows app (Start menu: "Illux Image Tool Settings") to:
 - Start/stop the watcher service and see its status.
 - Open the log folder.
 - Show the version and the AE parameter reference.
+- Show "Update available" with an **Update now** button, and "Check for
+  updates" (see §11a).
+- Runs without admin rights; only the actions that need them (service
+  start/stop, service account) ask for elevation.
 
 Settings are stored in one JSON file under `C:\ProgramData\Illux Image Tool\`.
 
@@ -319,25 +324,37 @@ Settings are stored in one JSON file under `C:\ProgramData\Illux Image Tool\`.
   a "Windows protected your PC" prompt on first install ("More info → Run
   anyway"). Code signing can be added later with a certificate.
 
-## 11a. Automatic updates (Illux: "start with automatically")
+## 11a. Updates — checked automatically, installed only after a click
+
+Illux: "No automatic updates. We need to confirm … by popup, or clicking in
+the software … it needs to be done very easily."
 
 - The watcher service checks the GitHub Releases of
   `Illux889/illux-image-tool` (public API, no key) at start-up and every
-  6 hours.
-- If a newer version exists, it downloads the installer, checks it against the
-  published SHA-256 checksum, and installs it silently
-  (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`).
-  A download that fails the check is discarded and logged, never installed.
-- It installs only when idle: no watched-folder file in progress and no
-  command-line (AE) run active. Command-line runs register themselves (e.g.
-  with a lock file / named mutex) so the updater waits for them; the AE wrapper
-  scripts retry briefly if the executable is being replaced at that moment.
-- Watched folders keep working across an update: the service stops, the installer
-  upgrades, the service starts again and picks up any files that arrived.
-- The settings window shows the installed version, the last check, and has
-  "Check now" and an "Automatic updates on/off" switch (default **on**).
-- Every update is written to the log and the Windows Event Log.
-- Only full releases are installed, never drafts or pre-releases.
+  6 hours. It **never installs on its own**; it only records that a new
+  version is available (`update-state.json` in ProgramData).
+- **Popup:** a small tray helper (the settings app started with `--tray`, run
+  automatically at Windows log-in for every user) shows a Windows popup:
+  "Illux Image Tool X.Y.Z is available. [Update now] [Later]". "Later" hides it
+  until the next version or the next log-in.
+- **In the software:** the settings window shows a clear banner
+  "Version X.Y.Z is ready" with an **Update now** button, plus "Check for
+  updates" for an instant check. Machines where nobody is logged in (servers)
+  are updated this way.
+- Clicking **Update now** asks the service to install. The service downloads
+  the installer, checks it against the published SHA-256 checksum, waits until
+  idle (no watched-folder file in progress, no command-line/AE run active),
+  then installs silently (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`). The
+  window shows the progress: downloading → waiting for running jobs →
+  installing → done. A download that fails the check is discarded and shown as
+  an error, never installed.
+- Command-line runs register themselves (lock file) so the install waits for
+  them; the AE wrapper scripts wait while an update is being installed.
+- Watched folders keep working across an update: the service stops, the
+  installer upgrades, the service starts again and picks up any files that
+  arrived.
+- Every check and update is written to the log and the Windows Event Log.
+- Only full releases are offered, never drafts or pre-releases.
 
 ## 12. Technology (builder's starting point)
 
@@ -376,6 +393,7 @@ My calls, to be confirmed against current documentation during planning:
 - Watched folder: dropping files processes them into Out; a corrupt file lands
   in Error with an explanation; works after reboot without anyone logged in.
 - Installer installs and uninstalls cleanly on Windows Server and Windows 11.
-- Publishing a new release makes an installed copy update itself within one
-  check interval (or immediately with "Check now"), without interrupting a
-  file being processed.
+- Publishing a new release shows the popup / banner on an installed copy
+  within one check interval (or at once with "Check for updates"); nothing is
+  installed until "Update now" is clicked; the update then completes without
+  interrupting a file being processed.
