@@ -21,6 +21,9 @@ public static class PdfImageWriter
     // Uncompressed sample data handed to the deflater per call (whole rows).
     private const int StripBytes = 4 << 20;
 
+    // Largest page side in default user space units that Acrobat accepts (PDF 1.6 implementation limit).
+    private const double MaxPageUnits = 14400;
+
     /// <summary>
     /// Writes <paramref name="pdfPath"/>: one page of (pixels / ppi × 72) points showing the image of
     /// <paramref name="imagePath"/>. On any exception the partial PDF is deleted and the exception rethrown.
@@ -171,13 +174,20 @@ public static class PdfImageWriter
 
     private static void WritePage(PdfObjectWriter pdf, ImageObject image, Resolution resolution)
     {
-        var width = PdfObjectWriter.Number(image.Width / resolution.X * 72);
-        var height = PdfObjectWriter.Number(image.Height / resolution.Y * 72);
+        var widthPt = image.Width / resolution.X * 72;
+        var heightPt = image.Height / resolution.Y * 72;
+        // Ruling R19: Acrobat limits a page side to 14,400 units. For larger pages, PDF 1.6's /UserUnit makes one
+        // unit N points (smallest integer N that fits) and the boxes and image matrix are divided by N, so the
+        // physical size stays exact.
+        var userUnit = (int)Math.Max(1, Math.Ceiling(Math.Max(widthPt, heightPt) / MaxPageUnits));
+        var width = PdfObjectWriter.Number(widthPt / userUnit);
+        var height = PdfObjectWriter.Number(heightPt / userUnit);
+        var userUnitEntry = userUnit > 1 ? $" /UserUnit {userUnit}" : "";
 
         int catalog = pdf.Reserve(), pages = pdf.Reserve(), page = pdf.Reserve(), contents = pdf.Reserve(), info = pdf.Reserve();
         pdf.WriteStream(contents, "", output => output.Write(Encoding.ASCII.GetBytes($"q {width} 0 0 {height} 0 0 cm /Im0 Do Q")));
         pdf.WriteObject(page,
-            $"<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 {width} {height}] /TrimBox [0 0 {width} {height}] " +
+            $"<< /Type /Page /Parent {pages} 0 R{userUnitEntry} /MediaBox [0 0 {width} {height}] /TrimBox [0 0 {width} {height}] " +
             $"/Resources << /XObject << /Im0 {image.Number} 0 R >> >> /Contents {contents} 0 R >>");
         pdf.WriteObject(pages, $"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>");
         pdf.WriteObject(catalog, $"<< /Type /Catalog /Pages {pages} 0 R >>");

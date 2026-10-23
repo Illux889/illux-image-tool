@@ -123,6 +123,34 @@ public sealed class PdfImageWriterTests : IDisposable
     }
 
     [Fact]
+    public void Pdf_LargePage_UsesUserUnit()
+    {
+        // A 40,500 × 20,000 px image would take gigabytes to decode; JPEG embedding reads only the header, so a
+        // small JPEG with the frame size patched in its SOF0 segment is enough.
+        var path = TestImages.Write(_dir, "huge.jpg", 64, 48, ColorSpace.sRGB, 8, 200);
+        var bytes = File.ReadAllBytes(path);
+        var sof = bytes.AsSpan().IndexOf([(byte)0xFF, (byte)0xC0]);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(sof + 5), 20000);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(sof + 7), 40500);
+        File.WriteAllBytes(path, bytes);
+
+        var pdf = WritePdf(path, 200);
+
+        var raw = RawText(pdf);
+        Assert.Contains("/UserUnit 2 /MediaBox [0 0 7290 3600] /TrimBox [0 0 7290 3600]", raw);
+        Assert.Contains("q 7290 0 0 3600 0 0 cm /Im0 Do Q", raw);
+        SingleImage(pdf, out var page);
+        Assert.Equal(14580, page.Width * 2, 0.01); // physical width = box × UserUnit
+        Assert.Equal(7200, page.Height * 2, 0.01);
+    }
+
+    [Fact]
+    public void Pdf_NormalPage_NoUserUnit()
+    {
+        Assert.DoesNotContain("/UserUnit", RawText(WritePdf(TestImages.Write(_dir, "a.jpg", 64, 48, ColorSpace.sRGB, 8, 200))));
+    }
+
+    [Fact]
     public void Pdf_Jpeg_EmbeddedByteForByte()
     {
         var path = TestImages.Write(_dir, "a.jpg", 120, 80, ColorSpace.sRGB, 8, 200, icc: TestImages.SrgbIcc);
