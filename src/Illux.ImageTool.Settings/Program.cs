@@ -18,7 +18,17 @@ internal static class Program
             // One tray helper per user: a second one started at log-in exits quietly.
             using var mutex = new Mutex(initiallyOwned: true, TrayMutexName, out var first);
             if (!first) return 0;
+            TrayApp.InstallExceptionHandlers();
             Application.Run(new TrayApp(TrayMemory.CreateDefault()));
+            return 0;
+        }
+
+        // config.json is admin-only (R34): the window runs elevated; the non-elevated copy only starts it.
+        if (Elevation.ShouldSelfElevate(args, Elevation.IsElevated()))
+        {
+            if (!Elevation.RelaunchElevated())
+                MessageBox.Show("Illux Image Tool Settings needs administrator rights to change the settings.", "Illux Image Tool",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
             return 0;
         }
 
@@ -43,7 +53,7 @@ internal static class Program
                     using (var dialog = new AccountDialog())
                     {
                         if (dialog.ShowDialog() != DialogResult.OK) return 1;
-                        ServiceControl.ChangeAccount(dialog.User, dialog.Password);
+                        ServiceControl.ChangeAccount(dialog.User, dialog.TakePassword());
                     }
                     MessageBox.Show("The service account was changed. It is used the next time the service starts.",
                         "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -53,6 +63,7 @@ internal static class Program
         }
         catch (Exception ex) when (ex is Win32Exception or TimeoutException or InvalidOperationException)
         {
+            SettingsLog.Write($"Service action {action} failed.", ex);
             MessageBox.Show(ex.Message, "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 2;
         }

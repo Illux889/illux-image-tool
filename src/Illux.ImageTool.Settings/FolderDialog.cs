@@ -219,8 +219,24 @@ internal sealed class FolderDialog : Form
         if (string.IsNullOrWhiteSpace(folder.Out)) return "Choose the Out folder.";
         if (string.IsNullOrWhiteSpace(folder.Error)) return "Choose the Error folder.";
 
-        var paths = new List<(string Label, string Path)> { ("In", Normalize(folder.In)), ("Out", Normalize(folder.Out)), ("Error", Normalize(folder.Error)) };
-        if (!string.IsNullOrWhiteSpace(folder.Originals)) paths.Add(("Originals", Normalize(folder.Originals)));
+        var given = new List<(string Label, string Path)> { ("In", folder.In), ("Out", folder.Out), ("Error", folder.Error) };
+        if (!string.IsNullOrWhiteSpace(folder.Originals)) given.Add(("Originals", folder.Originals));
+
+        // Relative paths would be resolved against whatever folder the service runs in, and the watcher skips such a folder.
+        var paths = new List<(string Label, string Path)>();
+        foreach (var (label, path) in given)
+        {
+            var trimmed = path.Trim();
+            string? full = null;
+            try
+            {
+                if (Path.IsPathFullyQualified(trimmed)) full = Normalize(trimmed);
+            }
+            catch (ArgumentException) { }
+            catch (NotSupportedException) { }
+            if (full is null) return $@"The {label} folder is not a full path (for example C:\Folder or \\server\share\Folder).";
+            paths.Add((label, full));
+        }
         for (var i = 0; i < paths.Count; i++)
         for (var j = i + 1; j < paths.Count; j++)
         {

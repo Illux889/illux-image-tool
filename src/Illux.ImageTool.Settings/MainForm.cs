@@ -32,6 +32,8 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 2000 };
     private WatcherConfig _config = new();
     private bool _configUsable;
+    private PendingRequest? _pendingCheck;
+    private PendingRequest? _pendingUpdate;
 
     public MainForm()
     {
@@ -149,7 +151,7 @@ internal sealed class MainForm : Form
             _config = ConfigStore.Load();
             _configUsable = true;
         }
-        catch (ConfigException ex)
+        catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
         {
             // Never save over a file this window could not read.
             _config = new WatcherConfig();
@@ -176,7 +178,11 @@ internal sealed class MainForm : Form
     {
         using var dialog = new FolderDialog(new WatchedFolder());
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        Modify(config => config.Folders.Add(dialog.Result));
+        Modify(config =>
+        {
+            config.Folders.Add(dialog.Result);
+            return true;
+        });
     }
 
     private void EditSelected()
@@ -185,11 +191,16 @@ internal sealed class MainForm : Form
         var index = _folders.SelectedIndices[0];
         if (index >= _config.Folders.Count) return;
 
-        using var dialog = new FolderDialog(_config.Folders[index]);
+        var original = _config.Folders[index];
+        using var dialog = new FolderDialog(original);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         Modify(config =>
         {
-            if (index < config.Folders.Count) config.Folders[index] = dialog.Result;
+            // The file is re-read first; find the folder again by name and In folder, not by its old position.
+            var at = FolderMatch.IndexOf(config.Folders, original.Name, original.In);
+            if (at < 0) return false;
+            config.Folders[at] = dialog.Result;
+            return true;
         });
     }
 
@@ -199,24 +210,31 @@ internal sealed class MainForm : Form
         var index = _folders.SelectedIndices[0];
         if (index >= _config.Folders.Count) return;
 
-        var name = _config.Folders[index].Name;
+        var original = _config.Folders[index];
+        var name = original.Name;
         var answer = MessageBox.Show(this, $"Stop watching \"{name}\"? Its files are not deleted.", "Illux Image Tool",
             MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
         if (answer != DialogResult.Yes) return;
         Modify(config =>
         {
-            if (index < config.Folders.Count) config.Folders.RemoveAt(index);
+            var at = FolderMatch.IndexOf(config.Folders, original.Name, original.In);
+            if (at < 0) return false;
+            config.Folders.RemoveAt(at);
+            return true;
         });
     }
 
     /// <summary>Re-reads the file first so a change made elsewhere meanwhile is not lost, then saves.</summary>
-    private void Modify(Action<WatcherConfig> change)
+    private void Modify(Func<WatcherConfig, bool> change)
     {
         try
         {
             var config = ConfigStore.Load();
-            change(config);
-            ConfigStore.Save(config);
+            if (change(config))
+                ConfigStore.Save(config);
+            else
+                MessageBox.Show(this, "That folder was changed or removed somewhere else. The list was refreshed.", "Illux Image Tool",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
         {
@@ -244,6 +262,7 @@ internal sealed class MainForm : Form
     private void UpdateNow()
     {
         if (!TryWriteFlag(RequestFlags.RequestInstallNow)) return;
+        _pendingUpdate = new PendingRequest(DateTimeOffset.Now);
         _updateNow.Enabled = false;
         _phase.Text = "Asking the service to update...";
     }
@@ -251,6 +270,7 @@ internal sealed class MainForm : Form
     private void CheckNow()
     {
         if (!TryWriteFlag(RequestFlags.RequestCheckNow)) return;
+        _pendingCheck = new PendingRequest(DateTimeOffset.Now);
         _updateNote.Text = "Checking...";
     }
 
@@ -277,16 +297,41 @@ internal sealed class MainForm : Form
         _account.Enabled = status != "Not installed";
 
         var state = UpdateStateStore.Load();
-        var view = UpdateView.From(state, AppVersion.Current);
+        var view = UpdateView.From(state, AppVersion.Current, status == "Running");
         _installed.Text = "Installed version: " + AppVersion.Current.ToString(3);
         _lastCheck.Text = "Last check: " + (state.LastCheck is { } last ? last.LocalDateTime.ToString("g") : "never");
-        if (_updateNote.Text == "Checking..." && state.LastCheck is { } checkedAt && DateTimeOffset.Now - checkedAt < TimeSpan.FromSeconds(10))
-            _updateNote.Text = view.ShowBanner ? "" : "You have the latest version.";
+
+        var now = DateTimeOffset.Now;
+        if (_pendingCheck is { } check)
+        {
+            if (check.IsAnsweredByCheckAt(state.LastCheck))
+            {
+                _pendingCheck = null;
+                _updateNote.Text = view.ShowBanner ? "" : "You have the latest version.";
+            }
+            else if (check.IsExpired(now))
+            {
+                _pendingCheck = null;
+                _updateNote.Text = "No answer from the service. Is it running?";
+            }
+        }
+
+        var phaseText = view.PhaseText;
+        if (_pendingUpdate is { } update)
+        {
+            if (view.Busy || !view.ShowBanner) _pendingUpdate = null;
+            else if (update.IsExpired(now))
+            {
+                _pendingUpdate = null;
+                phaseText = "No answer from the service. Is it running?";
+            }
+            else phaseText = "Asking the service to update...";
+        }
 
         _banner.Visible = view.ShowBanner;
         _bannerText.Text = view.BannerText;
-        _updateNow.Enabled = view.CanUpdate;
-        if (view.PhaseText.Length > 0 || !_phase.Text.StartsWith("Asking", StringComparison.Ordinal)) _phase.Text = view.PhaseText;
+        _updateNow.Enabled = view.CanUpdate && _pendingUpdate is null;
+        _phase.Text = phaseText;
     }
 
     private void OpenLogFolder()
@@ -296,6 +341,13 @@ internal sealed class MainForm : Form
             MessageBox.Show(this, "There are no logs yet.", "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
-        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppPaths.LogsDir}\"") { UseShellExecute = false });
+        try
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AppPaths.LogsDir}\"") { UseShellExecute = false });
+        }
+        catch (Win32Exception ex)
+        {
+            MessageBox.Show(this, "Could not open the log folder.\r\n" + ex.Message, "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 }

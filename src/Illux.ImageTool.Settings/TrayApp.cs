@@ -41,6 +41,15 @@ internal sealed class TrayApp : ApplicationContext
         Poll();
     }
 
+    /// <summary>Logs unexpected errors (best effort) and keeps the tray alive where Windows allows it. Call before creating any window.</summary>
+    public static void InstallExceptionHandlers()
+    {
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => SettingsLog.Write("Unexpected error in the tray helper.", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            SettingsLog.Write("Fatal error in the tray helper.", e.ExceptionObject as Exception);
+    }
+
     private static Icon LoadIcon()
     {
         try

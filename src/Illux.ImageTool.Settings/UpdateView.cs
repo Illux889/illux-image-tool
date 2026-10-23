@@ -5,7 +5,7 @@ namespace Illux.ImageTool.Settings;
 /// <summary>What the settings window shows for one <see cref="UpdateState"/>.</summary>
 internal sealed record UpdateView(bool ShowBanner, string BannerText, bool CanUpdate, string PhaseText, bool Busy, string? VersionText)
 {
-    public static UpdateView From(UpdateState state, Version installed)
+    public static UpdateView From(UpdateState state, Version installed, bool serviceRunning = true)
     {
         ArgumentNullException.ThrowIfNull(state);
 
@@ -20,9 +20,11 @@ internal sealed record UpdateView(bool ShowBanner, string BannerText, bool CanUp
         };
 
         var version = NewerVersion(state, installed);
-        return version is null
-            ? new UpdateView(false, "", false, phaseText, busy, null)
-            : new UpdateView(true, $"Version {version} is ready", !busy, phaseText, busy, version.ToString());
+        if (version is null) return new UpdateView(false, "", false, phaseText, busy, null);
+
+        // Only the running service can act on the request flag.
+        if (!serviceRunning && !busy && phaseText.Length == 0) phaseText = "The service is not running. Start it to update.";
+        return new UpdateView(true, $"Version {version} is ready", !busy && serviceRunning, phaseText, busy, version.ToString());
     }
 
     /// <summary>The offered version, or null when none is offered or it is not newer than the installed one (stale state after an update).</summary>

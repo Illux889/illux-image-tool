@@ -12,7 +12,7 @@ public sealed class ConfigStoreSaveTests : IDisposable
     }
 
     [Fact]
-    public void Save_RetriesWhileAReaderHasTheFileOpen()
+    public async Task Save_RetriesWhileAReaderHasTheFileOpen()
     {
         var path = Path.Combine(_dir, "config.json");
         ConfigStore.Save(new WatcherConfig { PollSeconds = 5 }, path);
@@ -22,10 +22,10 @@ public sealed class ConfigStoreSaveTests : IDisposable
         var release = Task.Run(async () => { await Task.Delay(200); reader.Dispose(); });
 
         ConfigStore.Save(new WatcherConfig { PollSeconds = 9 }, path);
-        release.Wait();
+        await release;
 
         Assert.Equal(9, ConfigStore.Load(path).PollSeconds);
-        Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(Path.GetFileName).ToArray());
+        Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(f => Path.GetFileName(f)!).ToArray());
     }
 
     [Fact]
@@ -38,6 +38,6 @@ public sealed class ConfigStoreSaveTests : IDisposable
 
         var ex = Record.Exception(() => ConfigStore.Save(new WatcherConfig { PollSeconds = 9 }, path));
         Assert.True(ex is IOException or UnauthorizedAccessException, $"unexpected: {ex}");
-        Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(Path.GetFileName).ToArray()); // temp file cleaned up
+        Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(f => Path.GetFileName(f)!).ToArray()); // temp file cleaned up
     }
 }

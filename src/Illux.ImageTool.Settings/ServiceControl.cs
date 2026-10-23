@@ -20,9 +20,23 @@ internal static class ServiceControl
     public static string BuildAccountName(string? user)
     {
         var name = user?.Trim() ?? "";
-        if (name.Length == 0) return "LocalSystem";
+        if (name.Length == 0 || name.Equals(LocalSystem, StringComparison.OrdinalIgnoreCase)) return LocalSystem;
         return name.Contains('\\') || name.Contains('@') ? name : @".\" + name;
     }
+
+    private const string LocalSystem = "LocalSystem";
+
+    /// <summary>Accounts Windows manages itself: no password, and they already have the "Log on as a service" right.</summary>
+    public static bool IsBuiltInAccount(string account) =>
+        account.Equals(LocalSystem, StringComparison.OrdinalIgnoreCase)
+        || account.Equals(@"NT AUTHORITY\NetworkService", StringComparison.OrdinalIgnoreCase)
+        || account.Equals(@"NT AUTHORITY\LocalService", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Built-in accounts and group managed service accounts (name ends with <c>$</c>) have no password to enter.</summary>
+    public static bool NeedsPassword(string account) => !IsBuiltInAccount(account) && !account.EndsWith('$');
+
+    /// <summary>Every account except the built-in ones needs the "Log on as a service" right granted.</summary>
+    public static bool NeedsLogonRight(string account) => !IsBuiltInAccount(account);
 
     /// <summary>The command line of the elevated copy. The account password is never part of it; that copy asks for it itself.</summary>
     public static string BuildElevatedArguments(ServiceAction action) => $"{ServiceArgument} {action.ToString().ToLowerInvariant()}";
@@ -117,13 +131,25 @@ internal static class ServiceControl
     public static void ChangeAccount(string? user, string? password)
     {
         var account = BuildAccountName(user);
-        var local = account == "LocalSystem";
+        var withPassword = NeedsPassword(account);
         WithService(ServiceChangeConfig, service =>
         {
             if (!ChangeServiceConfigW(service, ServiceNoChange, ServiceNoChange, ServiceNoChange, null, null, IntPtr.Zero, null,
-                    account, local ? null : password ?? "", null))
+                    account, withPassword ? password ?? "" : null, null))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
         });
+
+        if (!NeedsLogonRight(account)) return;
+        try
+        {
+            LogonRight.Grant(account);
+        }
+        catch (Win32Exception ex)
+        {
+            // Shown to the user by the caller: without the right the service would not start.
+            throw new InvalidOperationException(
+                $"The account was changed, but Windows would not give it the \"Log on as a service\" right ({ex.Message}). Grant it in Local Security Policy, or the service will not start.", ex);
+        }
     }
 
     private static void WithService(uint access, Action<IntPtr> action)

@@ -21,7 +21,7 @@ internal sealed class AccountDialog : Form
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260));
 
-        var hint = new Label { Text = "The watcher runs as this account. Leave the user empty for the Local System account.\r\nUse an account that can reach your network folders.", AutoSize = true, MaximumSize = new Size(380, 0), Margin = new Padding(0, 0, 0, 8) };
+        var hint = new Label { Text = "The watcher runs as this account. Leave the user empty for the Local System account. A user ending in $ (managed service account) needs no password.\r\nUse an account that can reach your network folders.", AutoSize = true, MaximumSize = new Size(380, 0), Margin = new Padding(0, 0, 0, 8) };
         table.Controls.Add(hint, 0, 0);
         table.SetColumnSpan(hint, 2);
         table.Controls.Add(new Label { Text = "User", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
@@ -33,7 +33,7 @@ internal sealed class AccountDialog : Form
         var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90 };
         ok.Click += (_, _) =>
         {
-            if (User.Length > 0 && Password.Length == 0)
+            if (ServiceControl.NeedsPassword(ServiceControl.BuildAccountName(User)) && _password.Text.Length == 0)
             {
                 MessageBox.Show(this, "Enter the password for this account.", "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -52,5 +52,11 @@ internal sealed class AccountDialog : Form
 
     public string User => _user.Text.Trim();
 
-    public string Password => _password.Text;
+    /// <summary>The typed password; the box is cleared so it does not linger on screen or in the control.</summary>
+    public string TakePassword()
+    {
+        var password = _password.Text;
+        _password.Clear();
+        return password;
+    }
 }
