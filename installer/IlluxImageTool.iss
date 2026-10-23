@@ -147,6 +147,15 @@ function ConvertSecurityDescriptorToStringSecurityDescriptorW(SecurityDescriptor
 function ConvertStringSecurityDescriptorToSecurityDescriptorW(StringSecurityDescriptor: String; StringSDRevision: Cardinal;
   var SecurityDescriptor: Cardinal; SecurityDescriptorSize: Cardinal): Integer;
   external 'ConvertStringSecurityDescriptorToSecurityDescriptorW@advapi32.dll stdcall';
+function CreateFileW(lpFileName: String; dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition,
+  dwFlagsAndAttributes, hTemplateFile: Cardinal): Cardinal;
+  external 'CreateFileW@kernel32.dll stdcall';
+{ Windows only reads from the string here. }
+function WriteFileFromString(hFile: Cardinal; lpBuffer: String; nNumberOfBytesToWrite: Cardinal;
+  var lpNumberOfBytesWritten: Cardinal; lpOverlapped: Cardinal): Integer;
+  external 'WriteFile@kernel32.dll stdcall';
+function CloseHandle(hObject: Cardinal): Integer;
+  external 'CloseHandle@kernel32.dll stdcall';
 function lstrlenW(lpString: Cardinal): Integer;
   external 'lstrlenW@kernel32.dll stdcall';
 function LocalFree(hMem: Cardinal): Cardinal;
@@ -362,6 +371,25 @@ begin
   StringChangeEx(Result, '>', '&gt;', True);
 end;
 
+{ schtasks.exe only reads task XML as UTF-16 (with a byte order mark). }
+function SaveUtf16File(const FileName, Text: String): Boolean;
+var
+  Handle, Written: Cardinal;
+  Data: String;
+begin
+  Result := False;
+  Data := #$FEFF + Text;
+  Handle := CreateFileW(FileName, $40000000 { GENERIC_WRITE }, 0, 0, 2 { CREATE_ALWAYS }, $80 { NORMAL }, 0);
+  if Handle = $FFFFFFFF then
+    Exit;
+  try
+    Written := 0;
+    Result := (WriteFileFromString(Handle, Data, Length(Data) * 2, Written, 0) <> 0) and (Written = Length(Data) * 2);
+  finally
+    CloseHandle(Handle);
+  end;
+end;
+
 function Schtasks(const Params: String): Integer;
 var
   Output: TExecOutput;
@@ -387,36 +415,36 @@ end;
   heap corruption when Setup exited). }
 procedure StartTrayForLoggedOnUsers;
 var
-  Xml: TArrayOfString;
-  FileName: String;
+  Xml, FileName: String;
   Code: Integer;
 begin
-  SetArrayLength(Xml, 23);
-  Xml[0] := '<?xml version="1.0" encoding="UTF-8"?>';
-  Xml[1] := '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">';
-  Xml[2] := '  <RegistrationInfo>';
-  Xml[3] := '    <Description>Starts the Illux Image Tool tray helper for the logged-on users after an update.</Description>';
-  Xml[4] := '  </RegistrationInfo>';
-  Xml[5] := '  <Principals>';
-  Xml[6] := '    <Principal id="Users">';
-  Xml[7] := '      <GroupId>S-1-5-32-545</GroupId>';
-  Xml[8] := '      <RunLevel>LeastPrivilege</RunLevel>';
-  Xml[9] := '    </Principal>';
-  Xml[10] := '  </Principals>';
-  Xml[11] := '  <Settings>';
-  Xml[12] := '    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>';
-  Xml[13] := '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>';
-  Xml[14] := '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>';
-  Xml[15] := '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>';
-  Xml[16] := '    <Priority>5</Priority>';
-  Xml[17] := '  </Settings>';
-  Xml[18] := '  <Actions Context="Users">';
-  Xml[19] := '    <Exec><Command>' + XmlEscape(ExpandConstant('{app}\{#SettingsExe}')) + '</Command><Arguments>--tray</Arguments></Exec>';
-  Xml[20] := '  </Actions>';
-  Xml[21] := '</Task>';
-  Xml[22] := '';
+  Xml := '<?xml version="1.0" encoding="UTF-16"?>' + #13#10
+    + '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10
+    + '  <RegistrationInfo>' + #13#10
+    + '    <Description>Starts the Illux Image Tool tray helper for the logged-on users after an update.</Description>' + #13#10
+    + '  </RegistrationInfo>' + #13#10
+    + '  <Principals>' + #13#10
+    + '    <Principal id="Users">' + #13#10
+    + '      <GroupId>S-1-5-32-545</GroupId>' + #13#10
+    + '      <RunLevel>LeastPrivilege</RunLevel>' + #13#10
+    + '    </Principal>' + #13#10
+    + '  </Principals>' + #13#10
+    + '  <Settings>' + #13#10
+    + '    <MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>' + #13#10
+    + '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>' + #13#10
+    + '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>' + #13#10
+    + '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>' + #13#10
+    + '    <Priority>5</Priority>' + #13#10
+    + '  </Settings>' + #13#10
+    + '  <Actions Context="Users">' + #13#10
+    + '    <Exec>' + #13#10
+    + '      <Command>' + XmlEscape(ExpandConstant('{app}\{#SettingsExe}')) + '</Command>' + #13#10
+    + '      <Arguments>--tray</Arguments>' + #13#10
+    + '    </Exec>' + #13#10
+    + '  </Actions>' + #13#10
+    + '</Task>' + #13#10;
   FileName := ExpandConstant('{tmp}\tray-task.xml');
-  if not SaveStringsToUTF8File(FileName, Xml, False) then
+  if not SaveUtf16File(FileName, Xml) then
   begin
     Log('Could not write ' + FileName);
     Exit;
