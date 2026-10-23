@@ -12,7 +12,8 @@ namespace Illux.ImageTool.Pdf;
 /// <summary>
 /// Wraps one image in a one-page PDF 1.6 without changing it (spec 9): JPEG data is embedded byte for byte
 /// (DCTDecode), other formats as lossless FlateDecode samples; an embedded ICC profile becomes an ICCBased colour
-/// space, alpha becomes a soft mask. No colour conversion.
+/// space, alpha becomes a soft mask. No colour conversion. An EXIF orientation (2-8) is shown the way viewers show
+/// it, through the page's transformation matrix and a turned page size; the image data itself is not touched (R41).
 /// </summary>
 public static class PdfImageWriter
 {
@@ -53,7 +54,8 @@ public static class PdfImageWriter
         }
     }
 
-    private sealed record ImageObject(int Number, int Width, int Height);
+    /// <param name="Orientation">EXIF orientation 1-8 (1 = as stored).</param>
+    private sealed record ImageObject(int Number, int Width, int Height, int Orientation);
 
     private static ImageObject WriteJpegImage(PdfObjectWriter pdf, string path)
     {
@@ -74,7 +76,7 @@ public static class PdfImageWriter
                 using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                 input.CopyTo(output);
             });
-        return new ImageObject(number, info.Width, info.Height);
+        return new ImageObject(number, info.Width, info.Height, ExifOrientation.ReadJpeg(path));
     }
 
     private static ImageObject WriteRasterImage(PdfObjectWriter pdf, string path)
@@ -114,7 +116,8 @@ public static class PdfImageWriter
         var number = pdf.Reserve();
         pdf.WriteStream(number, ImageEntries(width, height, colorSpace, bits) + " /Filter /FlateDecode" + softMask,
             output => WriteSamples(output, image, mapping, bits));
-        return new ImageObject(number, width, height);
+        var orientation = (int)image.Orientation is var o and >= 1 and <= 8 ? o : 1;
+        return new ImageObject(number, width, height, orientation);
     }
 
     /// <summary>Exports the channels in <paramref name="mapping"/> row strip by row strip into a zlib stream (FlateDecode).</summary>
@@ -180,12 +183,16 @@ public static class PdfImageWriter
         // unit N points (smallest integer N that fits) and the boxes and image matrix are divided by N, so the
         // physical size stays exact.
         var userUnit = (int)Math.Max(1, Math.Ceiling(Math.Max(widthPt, heightPt) / MaxPageUnits));
-        var width = PdfObjectWriter.Number(widthPt / userUnit);
-        var height = PdfObjectWriter.Number(heightPt / userUnit);
+        var w = widthPt / userUnit;
+        var h = heightPt / userUnit;
+        var turned = image.Orientation >= 5;
+        var width = PdfObjectWriter.Number(turned ? h : w);
+        var height = PdfObjectWriter.Number(turned ? w : h);
         var userUnitEntry = userUnit > 1 ? $" /UserUnit {userUnit}" : "";
+        var matrix = string.Join(' ', Matrix(image.Orientation, w, h).Select(PdfObjectWriter.Number));
 
         int catalog = pdf.Reserve(), pages = pdf.Reserve(), page = pdf.Reserve(), contents = pdf.Reserve(), info = pdf.Reserve();
-        pdf.WriteStream(contents, "", output => output.Write(Encoding.ASCII.GetBytes($"q {width} 0 0 {height} 0 0 cm /Im0 Do Q")));
+        pdf.WriteStream(contents, "", output => output.Write(Encoding.ASCII.GetBytes($"q {matrix} cm /Im0 Do Q")));
         pdf.WriteObject(page,
             $"<< /Type /Page /Parent {pages} 0 R{userUnitEntry} /MediaBox [0 0 {width} {height}] /TrimBox [0 0 {width} {height}] " +
             $"/Resources << /XObject << /Im0 {image.Number} 0 R >> >> /Contents {contents} 0 R >>");
@@ -195,6 +202,23 @@ public static class PdfImageWriter
             $"<< /Producer {PdfObjectWriter.LiteralString("Illux Image Tool " + Version())} /CreationDate {PdfDate(DateTimeOffset.Now)} >>");
         pdf.WriteTrailer(catalog, info);
     }
+
+    /// <summary>
+    /// The <c>cm</c> matrix that draws the image (the unit square, stored row 0 at the top) of <paramref name="w"/> ×
+    /// <paramref name="h"/> units the way EXIF <paramref name="orientation"/> says it is meant to be seen: 2-4 mirror
+    /// or turn it half, 5-8 swap the axes (the page is then <paramref name="h"/> wide and <paramref name="w"/> high).
+    /// </summary>
+    internal static double[] Matrix(int orientation, double w, double h) => orientation switch
+    {
+        2 => [-w, 0, 0, h, w, 0],   // mirrored left-right
+        3 => [-w, 0, 0, -h, w, h],  // turned 180°
+        4 => [w, 0, 0, -h, 0, h],   // mirrored top-bottom
+        5 => [0, -w, -h, 0, h, w],  // mirrored along the top-left diagonal
+        6 => [0, -w, h, 0, 0, w],   // turned 90° clockwise
+        7 => [0, w, h, 0, 0, 0],    // mirrored along the top-right diagonal
+        8 => [0, w, -h, 0, h, 0],   // turned 90° counter-clockwise
+        _ => [w, 0, 0, h, 0, 0],
+    };
 
     /// <summary>The product version without the source revision suffix that the SDK appends ("1.2.3+abc123").</summary>
     private static string Version()

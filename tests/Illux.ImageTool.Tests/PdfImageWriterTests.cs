@@ -382,6 +382,96 @@ public sealed class PdfImageWriterTests : IDisposable
         Assert.EndsWith("%%EOF\n", raw);
     }
 
+    /// <summary>Sets the EXIF Orientation of <paramref name="path"/> (re-encodes it once; the PDF then embeds the result as it is).</summary>
+    private static void SetOrientation(string path, int orientation)
+    {
+        using var image = new MagickImage(path);
+        var exif = image.GetExifProfile() ?? new ExifProfile();
+        exif.SetValue(ExifTag.Orientation, (ushort)orientation);
+        image.SetProfile(exif);
+        image.Orientation = (OrientationType)orientation;
+        image.Write(path);
+    }
+
+    // A 300 × 200 px image at 150 ppi is 144 × 96 pt; 5-8 turn it a quarter, so the page becomes 96 × 144 pt.
+    [Theory]
+    [InlineData(1, "144 96", "144 0 0 96 0 0")]
+    [InlineData(2, "144 96", "-144 0 0 96 144 0")]
+    [InlineData(3, "144 96", "-144 0 0 -96 144 96")]
+    [InlineData(4, "144 96", "144 0 0 -96 0 96")]
+    [InlineData(5, "96 144", "0 -144 -96 0 96 144")]
+    [InlineData(6, "96 144", "0 -144 96 0 0 144")]
+    [InlineData(7, "96 144", "0 144 96 0 0 0")]
+    [InlineData(8, "96 144", "0 144 -96 0 96 0")]
+    public void Pdf_Jpeg_ExifOrientation_InPageSizeAndMatrix_BytesUntouched(int orientation, string size, string matrix)
+    {
+        var path = TestImages.Write(_dir, $"o{orientation}.jpg", 300, 200, ColorSpace.sRGB, 8, 150);
+        SetOrientation(path, orientation);
+
+        var pdf = WritePdf(path, 150);
+
+        var raw = RawText(pdf);
+        Assert.Contains($"/MediaBox [0 0 {size}] /TrimBox [0 0 {size}]", raw);
+        Assert.Contains($"q {matrix} cm /Im0 Do Q", raw);
+        var image = SingleImage(pdf, out var page);
+        Assert.Equal(File.ReadAllBytes(path), image.RawBytes.ToArray()); // the JPEG is still embedded byte for byte
+        Assert.Equal(300, image.WidthInSamples);
+
+        // Where the stored image's corners land (EXIF 2.32, Orientation): checked independently of the matrix text.
+        var m = matrix.Split(' ').Select(t => double.Parse(t, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        (double X, double Y) At(double u, double v) => (m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]);
+        var corners = new Dictionary<string, (double, double)> { ["TL"] = (0, page.Height), ["TR"] = (page.Width, page.Height), ["BL"] = (0, 0), ["BR"] = (page.Width, 0) };
+        var expected = orientation switch
+        {
+            1 => ("TL", "TR", "BL"), 2 => ("TR", "TL", "BR"), 3 => ("BR", "BL", "TR"), 4 => ("BL", "BR", "TL"),
+            5 => ("TL", "BL", "TR"), 6 => ("TR", "BR", "TL"), 7 => ("BR", "TR", "BL"), _ => ("BL", "TL", "BR"),
+        };
+        Assert.Equal(corners[expected.Item1], At(0, 1)); // first pixel of the first stored row
+        Assert.Equal(corners[expected.Item2], At(1, 1)); // last pixel of the first stored row
+        Assert.Equal(corners[expected.Item3], At(0, 0)); // first pixel of the last stored row
+    }
+
+    [Fact]
+    public void Pdf_Tiff_ExifOrientation_TurnsThePage()
+    {
+        var path = TestImages.Write(_dir, "o6.tif", 300, 200, ColorSpace.sRGB, 8, 150);
+        using (var image = new MagickImage(path))
+        {
+            image.Orientation = OrientationType.RightTop;
+            image.Write(path);
+        }
+
+        var raw = RawText(WritePdf(path, 150));
+
+        Assert.Contains("/MediaBox [0 0 96 144]", raw);
+        Assert.Contains("q 0 -144 96 0 0 144 cm /Im0 Do Q", raw);
+    }
+
+    [Fact]
+    public void Pdf_LargeTurnedPage_UserUnitAppliesToTheMatrixToo()
+    {
+        var path = TestImages.Write(_dir, "huge6.jpg", 64, 48, ColorSpace.sRGB, 8, 200);
+        SetOrientation(path, 6);
+        var bytes = File.ReadAllBytes(path);
+        var sof = bytes.AsSpan().IndexOf([(byte)0xFF, (byte)0xC0]);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(sof + 5), 20000);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(sof + 7), 40500);
+        File.WriteAllBytes(path, bytes);
+
+        var raw = RawText(WritePdf(path, 200));
+
+        Assert.Contains("/UserUnit 2 /MediaBox [0 0 3600 7290] /TrimBox [0 0 3600 7290]", raw);
+        Assert.Contains("q 0 -7290 3600 0 0 7290 cm /Im0 Do Q", raw);
+    }
+
+    [Theory]
+    [InlineData(new byte[] { (byte)'M', (byte)'M', 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0 }, 6)]
+    [InlineData(new byte[] { (byte)'I', (byte)'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 8, 0, 0, 0, 0, 0 }, 8)]
+    [InlineData(new byte[] { (byte)'I', (byte)'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 9, 0, 0, 0, 0, 0 }, 1)] // out of range
+    [InlineData(new byte[] { (byte)'I', (byte)'I', 42, 0, 200, 0, 0, 0 }, 1)] // IFD offset past the end
+    [InlineData(new byte[] { 1, 2, 3 }, 1)]
+    public void ExifOrientation_FromTiff(byte[] tiff, int expected) => Assert.Equal(expected, ExifOrientation.FromTiff(tiff));
+
     [Fact]
     public void Pdf_UnreadableInput_LeavesNoFile()
     {

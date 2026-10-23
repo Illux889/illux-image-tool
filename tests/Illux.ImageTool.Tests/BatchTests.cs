@@ -72,6 +72,30 @@ public sealed class BatchTests : IDisposable
     }
 
     [Fact]
+    public async Task Batch_PhoneJpegRotated90_UpsampledPdfPageIsUpright()
+    {
+        // 60 × 40 px stored, EXIF orientation 6 (shown 40 wide, 60 high), 100 ppi: upsampled to 200 ppi and re-encoded.
+        var input = Jpeg("phone.jpg", ppi: 100);
+        using (var image = new MagickImage(input))
+        {
+            var exif = image.GetExifProfile() ?? new ExifProfile();
+            exif.SetValue(ExifTag.Orientation, (ushort)6);
+            image.SetProfile(exif);
+            image.Orientation = OrientationType.RightTop;
+            image.Write(input);
+        }
+        using (var source = new MagickImage(input)) Assert.Equal(OrientationType.RightTop, source.Orientation);
+
+        var status = await Run([input], Out, new StringWriter(), ProcessingOptions.Default with { Output = OutputMode.Both });
+
+        Assert.Equal(Status.Ok, status);
+        using (var written = new MagickImage(Path.Combine(Out, "phone.jpg")))
+            Assert.Equal(OrientationType.RightTop, written.Orientation); // the image itself is not turned
+        var raw = System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(Path.Combine(Out, "phone.pdf")));
+        Assert.Contains("/MediaBox [0 0 28.8 43.2]", raw); // 40 × 60 pt shown at 100 ppi = 28.8 × 43.2 pt
+    }
+
+    [Fact]
     public async Task Batch_OutputBoth_WritesImageAndPdf()
     {
         var input = Jpeg("a.jpg");
