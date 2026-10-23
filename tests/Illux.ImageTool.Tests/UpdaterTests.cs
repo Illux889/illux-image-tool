@@ -250,7 +250,7 @@ public sealed class UpdaterTests : AppRootTestBase
         var started = Assert.Single(rig.Started);
         Assert.Equal(Path.Combine(DownloadDir, "IlluxImageTool-Setup-1.2.3.exe"), started.Path);
         Assert.Equal(
-            $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{Path.Combine(AppPaths.LogsDir, "update-1.2.3.log")}\"",
+            $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{Path.Combine(DownloadDir, "update-1.2.3.log")}\"",
             started.Args);
         Assert.Equal(InstallerBytes, bytesSeenByInstaller);
         Assert.Equal("present", flagSeen); // flag is written before the installer starts

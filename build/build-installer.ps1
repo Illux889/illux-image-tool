@@ -18,7 +18,10 @@ param(
     [string]$Version,
 
     # Path of ISCC.exe; found on the PATH or in the usual Inno Setup 6 folders when not given.
-    [string]$Iscc
+    [string]$Iscc,
+
+    # CI only: an installer that always fails before copying files, to test the recovery of a failed update.
+    [switch]$FailPrepareForTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -130,7 +133,9 @@ Publish-Apps
 
 $installerDir = Join-Path $Artifacts 'installer'
 New-Item -ItemType Directory -Force -Path $installerDir | Out-Null
-& $compiler /Qp "/DMyVersion=$Version" (Join-Path $RepoRoot 'installer\IlluxImageTool.iss')
+$defines = @("/DMyVersion=$Version")
+if ($FailPrepareForTest) { $defines += '/DFailPrepare' }
+& $compiler /Qp @defines (Join-Path $RepoRoot 'installer\IlluxImageTool.iss')
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed (exit code $LASTEXITCODE)." }
 
 $name = "IlluxImageTool-Setup-$Version.exe"

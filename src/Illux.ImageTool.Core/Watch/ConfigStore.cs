@@ -42,7 +42,10 @@ public static class ConfigStore
     }
 
     /// <summary>Writes through a temporary file so a reader never sees a half-written configuration.</summary>
-    public static void Save(WatcherConfig config, string? path = null)
+    public static void Save(WatcherConfig config, string? path = null) => Save(config, path, onRetry: null);
+
+    /// <param name="onRetry">Called with the attempt number after a replace failed and before waiting; for tests.</param>
+    internal static void Save(WatcherConfig config, string? path, Action<int>? onRetry)
     {
         ArgumentNullException.ThrowIfNull(config);
         path ??= AppPaths.ConfigFile;
@@ -62,6 +65,7 @@ public static class ConfigStore
                 }
                 catch (Exception ex) when (attempt < 20 && ex is IOException or UnauthorizedAccessException)
                 {
+                    onRetry?.Invoke(attempt);
                     Thread.Sleep(50);
                 }
             }

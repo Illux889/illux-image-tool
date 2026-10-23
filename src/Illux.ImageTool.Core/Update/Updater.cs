@@ -301,12 +301,13 @@ public sealed partial class Updater
         if (!HashesEqual(expectedHash, actual))
             return Fail(release, InstallOutcome.ChecksumFailed, "The installer changed on disk after it was verified and was discarded.");
 
-        var logFile = Path.Combine(AppPaths.LogsDir, $"update-{release.Version}.log");
+        // R36: the installer runs as SYSTEM, so its log goes into the vetted download folder (SYSTEM/Administrators
+        // only), never into logs\ where users may write and could plant a link under the log's name.
+        var logFile = Path.Combine(_downloadDirectory, $"update-{release.Version}.log");
         var args = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{logFile}\"";
         string? error;
         try
         {
-            Directory.CreateDirectory(AppPaths.LogsDir);
             File.WriteAllText(AppPaths.UpdatingFlag, release.Version.ToString());
 
             // A run that began just before the flag appeared would not have seen it (AE scripts wait for the flag).

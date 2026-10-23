@@ -9,16 +9,20 @@
   2. Checks the service, files, version, shortcuts, Run key, Event Log source, ProgramData owner/ACLs (also by
      writing as a standard user) and that the untrusted folder was moved aside.
   3. Runs both AE scripts end to end on a generated JPEG (image output and PDF output).
-  4. Sets up a watched folder, plants updating.flag + an "Installing" update state, then upgrades silently to
-     -UpgradeInstaller as SYSTEM (as the updater in the service does): new version, service restarted,
-     config.json unchanged, flag removed, state Idle, the watched folder still works.
-  5. Uninstalls silently: service, Run key, Event Log source and program files gone, ProgramData kept.
+  4. Sets up a watched folder, plants updating.flag + an "Installing" update state, loosens the ACL of logs\, then
+     upgrades silently to -UpgradeInstaller as SYSTEM (as the updater in the service does): new version, service
+     restarted, config.json unchanged, flag removed, state Idle, logs\ replaced, tray restarted for the logged-on
+     user, the watched folder still works.
+  5. Runs -FailingInstaller (built with -FailPrepareForTest) as SYSTEM with a planted flag: it fails before copying
+     files, and the old version keeps running with the flag removed and the state Idle with an error.
+  6. Uninstalls silently: service, Run key, Event Log source and program files gone, ProgramData kept.
   Exits 1 if any check failed.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Installer,
     [Parameter(Mandatory)][string]$UpgradeInstaller,
+    [Parameter(Mandatory)][string]$FailingInstaller,
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$UpgradeVersion,
     [Parameter(Mandatory)][string]$WorkDir
@@ -41,6 +45,7 @@ if (-not ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Pri
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $Installer = (Resolve-Path -LiteralPath $Installer).Path
 $UpgradeInstaller = (Resolve-Path -LiteralPath $UpgradeInstaller).Path
+$FailingInstaller = (Resolve-Path -LiteralPath $FailingInstaller).Path
 
 function Check($Condition, [string]$Message) {
     if ([bool]$Condition) { Write-Host "PASS  $Message" }
@@ -89,6 +94,39 @@ function Invoke-Installer([string]$Path, [string]$LogName) {
     return $code
 }
 
+# Runs an installer as SYSTEM through a scheduled task, as the updater in the service does; returns its exit code.
+function Invoke-InstallerAsSystem([string]$Path, [string]$LogName) {
+    $log = Join-Path $WorkDir $LogName
+    $taskName = 'IlluxSmokeInstaller'
+    $action = New-ScheduledTaskAction -Execute $Path -Argument "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$log`""
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force | Out-Null
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 3
+    $finished = Wait-Until { (Get-ScheduledTask -TaskName $taskName).State -ne 'Running' } 900
+    $result = (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    Show-Log $log
+    if (-not $finished) { return 'timeout' }
+    return $result
+}
+
+function Get-TrayOwners {
+    @(Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'" | ForEach-Object {
+        $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+        "$($o.Domain)\$($o.User) (session $($_.SessionId))"
+    })
+}
+
+function Test-TrayRestarted([string]$When) {
+    $running = Wait-Until { [bool](Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'") } 20
+    $owners = Get-TrayOwners
+    Check $running "$($When): a tray helper is running again (logged-on users: $((cmd.exe /d /c 'query user 2>&1') -join ' | '))"
+    if ($running) {
+        Check (-not ($owners | Where-Object { $_ -match '\\SYSTEM ' })) "$($When): the tray helper runs as the logged-on user, not as SYSTEM ($($owners -join ', '))"
+    }
+}
+
 function Sid([string]$Value) { New-Object Security.Principal.SecurityIdentifier($Value) }
 $SidSystem = 'S-1-5-18'; $SidAdmins = 'S-1-5-32-544'; $SidUsers = 'S-1-5-32-545'
 $WriteRights = [Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, WriteAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
@@ -110,15 +148,24 @@ function Test-DataAcls([string]$When) {
     $users = @($rules | Where-Object { $_.IdentityReference.Value -eq $SidUsers })
     Check ($users.Count -gt 0 -and -not ($users | Where-Object { ($_.FileSystemRights -band $WriteRights) -ne 0 })) "$($When): Users can only read the data folder"
 
+    $modify = [Security.AccessControl.FileSystemRights]::Modify
+    $createHere = [Security.AccessControl.FileSystemRights]'CreateFiles, CreateDirectories'
     foreach ($sub in 'runs', 'logs', 'requests') {
-        $explicit = @(Get-Rules (Join-Path $Data $sub) $false | Where-Object {
-            $_.IdentityReference.Value -eq $SidUsers -and $_.AccessControlType -eq 'Allow' -and
-            ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Modify) -eq [Security.AccessControl.FileSystemRights]::Modify })
-        Check ($explicit.Count -gt 0) "$($When): explicit Users modify grant on $sub\"
+        $path = Join-Path $Data $sub
+        Check ((Get-Acl -LiteralPath $path).AreAccessRulesProtected) "$($When): $sub\ ACL is protected"
+        $userRules = @(Get-Rules $path $true | Where-Object { $_.IdentityReference.Value -eq $SidUsers -and $_.AccessControlType -eq 'Allow' })
+        $contents = @($userRules | Where-Object {
+            $_.PropagationFlags -eq 'InheritOnly' -and $_.InheritanceFlags -eq 'ContainerInherit, ObjectInherit' -and
+            ($_.FileSystemRights -band $modify) -eq $modify })
+        Check ($contents.Count -gt 0) "$($When): Users may modify what is inside $sub\ (inherit-only grant)"
+        $here = @($userRules | Where-Object { $_.InheritanceFlags -eq 'None' -and ($_.FileSystemRights -band $createHere) -eq $createHere })
+        Check ($here.Count -gt 0) "$($When): Users may create files and folders in $sub\"
+        $folderWrite = @($userRules | Where-Object { $_.PropagationFlags -ne 'InheritOnly' -and ([int]$_.FileSystemRights -band [int]$WriteRights -band (-bnot [int]$createHere)) -ne 0 })
+        Check ($folderWrite.Count -eq 0) "$($When): Users cannot delete or change $sub\ itself"
     }
 
     $update = Join-Path $Data 'update'
-    Check ((Get-Acl -LiteralPath $update).AreAccessRulesProtected)"$($When): update\ ACL is protected"
+    Check ((Get-Acl -LiteralPath $update).AreAccessRulesProtected) "$($When): update\ ACL is protected"
     $updateSids = @(Get-Rules $update $true | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
     Check (($updateSids -join ',') -eq (@($SidSystem, $SidAdmins) | Sort-Object) -join ',') "$($When): update\ grants only SYSTEM and Administrators (found $($updateSids -join ', '))"
 }
@@ -137,8 +184,9 @@ public static class SmokeImpersonation
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out SafeAccessTokenHandle token);
 
-    // "ok" when the user could create (and delete) the file, otherwise the exception type.
-    public static string TryWrite(string user, string password, string path, bool overwriteExisting)
+    // "ok" when the user could do it, otherwise the exception type. Modes: create (and delete) a file, open an
+    // existing file for writing, delete an (empty) folder.
+    public static string TryWrite(string user, string password, string path, string mode)
     {
         SafeAccessTokenHandle token;
         if (!LogonUser(user, ".", password, 3 /* network */, 0, out token)) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -148,7 +196,8 @@ public static class SmokeImpersonation
             {
                 try
                 {
-                    if (overwriteExisting) { using (var s = new FileStream(path, FileMode.Open, FileAccess.Write)) { } return "ok"; }
+                    if (mode == "open") { using (var s = new FileStream(path, FileMode.Open, FileAccess.Write)) { } return "ok"; }
+                    if (mode == "rmdir") { Directory.Delete(path); return "ok"; }
                     File.WriteAllText(path, "x");
                     File.Delete(path);
                     return "ok";
@@ -165,16 +214,17 @@ New-LocalUser -Name $TestUser -Password (ConvertTo-SecureString $TestPassword -A
 
 function Test-UserWrites([string]$When) {
     $cases = @(
-        @{ Path = (Join-Path $Data 'user-test.txt');            Expect = $false; Existing = $false; Name = 'create a file in the data folder' },
-        @{ Path = (Join-Path $Data 'update\user-test.txt');     Expect = $false; Existing = $false; Name = 'create a file in update\' },
-        @{ Path = (Join-Path $Data 'config.json');              Expect = $false; Existing = $true;  Name = 'write config.json' },
-        @{ Path = (Join-Path $Data 'requests\user-test.txt');   Expect = $true;  Existing = $false; Name = 'create a file in requests\' },
-        @{ Path = (Join-Path $Data 'runs\user-test.txt');       Expect = $true;  Existing = $false; Name = 'create a file in runs\' },
-        @{ Path = (Join-Path $Data 'logs\user-test.txt');       Expect = $true;  Existing = $false; Name = 'create a file in logs\' }
+        @{ Path = (Join-Path $Data 'user-test.txt');            Expect = $false; Mode = 'create'; Name = 'create a file in the data folder' },
+        @{ Path = (Join-Path $Data 'update\user-test.txt');     Expect = $false; Mode = 'create'; Name = 'create a file in update\' },
+        @{ Path = (Join-Path $Data 'config.json');              Expect = $false; Mode = 'open';   Name = 'write config.json' },
+        @{ Path = (Join-Path $Data 'requests\user-test.txt');   Expect = $true;  Mode = 'create'; Name = 'create (and delete) a file in requests\' },
+        @{ Path = (Join-Path $Data 'runs\user-test.txt');       Expect = $true;  Mode = 'create'; Name = 'create (and delete) a file in runs\' },
+        @{ Path = (Join-Path $Data 'logs\user-test.txt');       Expect = $true;  Mode = 'create'; Name = 'create (and delete) a file in logs\' },
+        @{ Path = (Join-Path $Data 'requests');                 Expect = $false; Mode = 'rmdir';  Name = 'delete the requests\ folder' }
     )
     foreach ($c in $cases) {
-        if ($c.Existing -and -not (Test-Path -LiteralPath $c.Path)) { Check $false "$($When): $($c.Path) exists for the write test"; continue }
-        $result = [SmokeImpersonation]::TryWrite($TestUser, $TestPassword, $c.Path, $c.Existing)
+        if ($c.Mode -ne 'create' -and -not (Test-Path -LiteralPath $c.Path)) { Check $false "$($When): $($c.Path) exists for the write test"; continue }
+        $result = [SmokeImpersonation]::TryWrite($TestUser, $TestPassword, $c.Path, $c.Mode)
         $verb = if ($c.Expect) { 'can' } else { 'cannot' }
         Check (($result -eq 'ok') -eq $c.Expect) "$($When): a standard user $verb $($c.Name) (result: $result)"
     }
@@ -266,15 +316,7 @@ Test-DataAcls 'after install'
 Test-UserWrites 'after install'
 
 Section 'Tray helper'
-$tray = @(Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'")
-if ($tray.Count -gt 0) { Write-Host "Tray helper started by the installer: $($tray.CommandLine -join ' | ')" }
-else {
-    Write-Host '::warning::The installer did not leave a tray helper running (no interactive session?); starting one to test that it loads.'
-    Start-Process -FilePath (Join-Path $App 'IlluxImageToolSettings.exe') -ArgumentList '--tray' | Out-Null
-    Start-Sleep -Seconds 5
-    $tray = @(Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'")
-}
-Check ($tray.Count -gt 0) 'IlluxImageToolSettings.exe --tray starts and keeps running'
+Check (Wait-Until { [bool](Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'") } 20) "the installer started the tray helper ($((Get-TrayOwners) -join ', '))"
 
 # =====================================================================================================
 Section 'AE scripts end to end'
@@ -285,7 +327,7 @@ Check ($code -eq 0) "PowerShell AE script exit code 0 (got $code)"
 $result = Join-Path $out1 'test.jpg'
 if (Test-Path -LiteralPath $result) {
     $info = Get-ImageInfo $result
-    Check ($info.Ppi -eq 200 -and $info.Width -eq 250 -and $info.Height -eq 167)"AE output upsampled to 200 ppi, 250 x 167 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
+    Check ($info.Ppi -eq 200 -and $info.Width -eq 250 -and $info.Height -eq 167) "AE output upsampled to 200 ppi, 250 x 167 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
 } else { Check $false "AE script wrote $result" }
 
 $out2 = Join-Path $Smoke 'out-bat'; New-Item -ItemType Directory -Force -Path $out2 | Out-Null
@@ -299,19 +341,12 @@ Check (Test-PdfHeader (Join-Path $out2 'test.pdf')) 'Batch AE script wrote test.
 Section "Upgrade to $UpgradeVersion as SYSTEM (like the updater)"
 Set-Content -LiteralPath (Join-Path $Data 'updating.flag') -Value $UpgradeVersion
 [IO.File]::WriteAllText((Join-Path $Data 'update-state.json'), "{ `"availableVersion`": `"$UpgradeVersion`", `"phase`": `"Installing`" }")
+# A kept folder whose ACL is no longer the installer's must be replaced, not trusted.
+& icacls.exe (Join-Path $Data 'logs') /grant '*S-1-1-0:(OI)(CI)F' | Out-Null
 $pidBefore = Get-ServicePid
 $upgradeLog = Join-Path $WorkDir 'upgrade.log'
-$taskName = 'IlluxSmokeUpgrade'
-$action = New-ScheduledTaskAction -Execute $UpgradeInstaller -Argument "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$upgradeLog`""
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force | Out-Null
-Start-ScheduledTask -TaskName $taskName
-Start-Sleep -Seconds 3
-$finished = Wait-Until { (Get-ScheduledTask -TaskName $taskName).State -ne 'Running' } 900
-$taskResult = (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
-Show-Log $upgradeLog
-Check ($finished -and $taskResult -eq 0) "upgrade installer as SYSTEM finished with exit code 0 (finished: $finished, result: $taskResult)"
+$taskResult = Invoke-InstallerAsSystem $UpgradeInstaller 'upgrade.log'
+Check ($taskResult -eq 0) "upgrade installer as SYSTEM finished with exit code 0 (result: $taskResult)"
 
 Check (Wait-Until { (Get-ServiceState) -eq 'Running' } 60) "service is running after the upgrade (state: $(Get-ServiceState))"
 $pidAfter = Get-ServicePid
@@ -322,6 +357,8 @@ Check ((Get-FileHash -LiteralPath (Join-Path $Data 'config.json')).Hash -eq $con
 Check (-not (Test-Path -LiteralPath (Join-Path $Data 'updating.flag'))) 'updating.flag removed'
 $state = Get-Content -Raw -LiteralPath (Join-Path $Data 'update-state.json') | ConvertFrom-Json
 Check ($state.phase -eq 'Idle') "update-state.json phase is Idle (found '$($state.phase)')"
+$logsAside = @(Get-ChildItem -LiteralPath $Data -Directory -Filter 'logs (untrusted *')
+Check ($logsAside.Count -eq 1) "logs\ with a loosened ACL was moved aside (found: $($logsAside.Name -join ', '))"
 Test-DataAcls 'after upgrade'
 Test-UserWrites 'after upgrade'
 
@@ -332,16 +369,7 @@ Check ($trayLine -match 'Started the tray helper for the logged-on users') "the 
 $trayTask = Get-ScheduledTask -TaskName 'Illux Image Tool tray helper' -ErrorAction SilentlyContinue
 Check ($trayTask -and $trayTask.Principal.GroupId -match 'S-1-5-32-545|Users') "tray scheduled task registered for the Users group (group: $($trayTask.Principal.GroupId))"
 if ($trayTask) { Write-Host "Tray task last result: $((Get-ScheduledTaskInfo -InputObject $trayTask).LastTaskResult)" }
-if (Wait-Until { [bool](Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'") } 15) {
-    $owners = @(Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'" | ForEach-Object {
-        $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
-        "$($o.Domain)\$($o.User) (session $($_.SessionId))"
-    })
-    Write-Host "A tray helper is running again after the SYSTEM upgrade: $($owners -join ', ')"
-    Check (-not ($owners | Where-Object { $_ -match '\\SYSTEM ' })) 'the restarted tray helper runs as the logged-on user, not as SYSTEM'
-} else {
-    Write-Host "::warning::No tray helper is running after the SYSTEM upgrade (logged-on users: $((cmd.exe /d /c 'query user 2>&1') -join ' | '))"
-}
+Test-TrayRestarted 'after the SYSTEM upgrade'
 
 Section 'Watched folder after the upgrade'
 Copy-Item -LiteralPath $TestJpeg -Destination (Join-Path $watch 'In\watched.jpg')
@@ -355,6 +383,23 @@ if (Test-Path -LiteralPath $watchedOut) {
 $originals = Join-Path $watch 'Originals\watched.jpg'
 Check (Wait-Until { Test-Path -LiteralPath $originals } 30) 'the original was moved to Originals'
 Show-Log (Get-ChildItem -LiteralPath (Join-Path $Data 'logs') -Filter 'watcher*.log' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+
+# =====================================================================================================
+Section 'Failed update (installer that fails before copying files)'
+Set-Content -LiteralPath (Join-Path $Data 'updating.flag') -Value 'failing'
+[IO.File]::WriteAllText((Join-Path $Data 'update-state.json'), "{ `"availableVersion`": `"9.9.9`", `"phase`": `"Installing`" }")
+$pidBefore = Get-ServicePid
+$failResult = Invoke-InstallerAsSystem $FailingInstaller 'failed-update.log'
+Check ($failResult -eq 7) "failing installer exits with code 7 (preparing failed) (result: $failResult)"
+Check (Wait-Until { (Get-ServiceState) -eq 'Running' } 60) "service is running again after the failed update (state: $(Get-ServiceState))"
+$pidAfter = Get-ServicePid
+Check ($pidAfter -and $pidAfter -ne $pidBefore) "service was stopped and started again (process $pidBefore -> $pidAfter)"
+$cliVersion = (& $Cli --version | Out-String).Trim()
+Check ($cliVersion -eq $UpgradeVersion) "the installed version is still $UpgradeVersion (got '$cliVersion')"
+Check (-not (Test-Path -LiteralPath (Join-Path $Data 'updating.flag'))) 'updating.flag removed after the failed update'
+$state = Get-Content -Raw -LiteralPath (Join-Path $Data 'update-state.json') | ConvertFrom-Json
+Check ($state.phase -eq 'Idle' -and $state.error -match 'failed') "update-state.json is Idle with an error (phase '$($state.phase)', error '$($state.error)')"
+Test-TrayRestarted 'after the failed update'
 
 # =====================================================================================================
 Section 'Uninstall'
