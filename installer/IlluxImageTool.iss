@@ -363,8 +363,22 @@ begin
 end;
 
 function Schtasks(const Params: String): Integer;
+var
+  Output: TExecOutput;
+  I: Integer;
 begin
-  Result := RunHidden(ExpandConstant('{sys}\schtasks.exe'), Params);
+  Result := -1;
+  try
+    if not ExecAndCaptureOutput(ExpandConstant('{sys}\schtasks.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, Result, Output) then
+      Result := -1;
+    for I := 0 to GetArrayLength(Output.StdOut) - 1 do
+      Log('schtasks: ' + Output.StdOut[I]);
+    for I := 0 to GetArrayLength(Output.StdErr) - 1 do
+      Log('schtasks: ' + Output.StdErr[I]);
+  except
+    Log('schtasks failed: ' + GetExceptionMessage);
+  end;
+  Log(Format('schtasks.exe %s -> %d', [Params, Result]));
 end;
 
 { As SYSTEM (an update started by the service) there is no "original user": a scheduled task for the Users group
