@@ -2,6 +2,7 @@ using System.Text;
 using ImageMagick;
 using Illux.ImageTool.Batch;
 using Illux.ImageTool.Options;
+using Illux.ImageTool.Runtime;
 using Microsoft.Extensions.Logging;
 
 namespace Illux.ImageTool.Watch;
@@ -11,7 +12,8 @@ namespace Illux.ImageTool.Watch;
 /// consecutive scans and can be opened exclusively. Originals are only ever moved (to Originals after success, to
 /// Error after failure), never deleted, and only after the output has been re-opened successfully.
 /// A file that keeps failing (for example because Originals is unreachable) is parked and retried with a growing
-/// delay instead of being reprocessed on every poll.
+/// delay instead of being reprocessed on every poll. While an update is pending (<c>updating.flag</c>) no new file is
+/// started (R42).
 /// </summary>
 public sealed class FolderScanner
 {
@@ -21,11 +23,14 @@ public sealed class FolderScanner
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan LockedLogAfter = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan StaleTempAge = TimeSpan.FromHours(1);
     private static readonly string[] IgnoredExtensions = [".tmp", ".part", ".crdownload"];
 
     private readonly WatchedFolder _folder;
     private readonly ILogger _log;
     private readonly TimeProvider _clock;
+    private readonly Func<bool> _isUpdating;
+    private bool _pausedLogged;
     private readonly Dictionary<string, (long Length, DateTime LastWriteUtc)> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Parked> _parked = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LockedFile> _locked = new(StringComparer.OrdinalIgnoreCase);
@@ -42,13 +47,15 @@ public sealed class FolderScanner
         public bool Logged { get; set; }
     }
 
-    public FolderScanner(WatchedFolder folder, ILogger log, TimeProvider? clock = null)
+    /// <param name="isUpdating">True while an update is pending; defaults to "<see cref="AppPaths.UpdatingFlag"/> exists".</param>
+    public FolderScanner(WatchedFolder folder, ILogger log, TimeProvider? clock = null, Func<bool>? isUpdating = null)
     {
         ArgumentNullException.ThrowIfNull(folder);
         ArgumentNullException.ThrowIfNull(log);
         _folder = folder;
         _log = log;
         _clock = clock ?? TimeProvider.System;
+        _isUpdating = isUpdating ?? (() => File.Exists(AppPaths.UpdatingFlag));
     }
 
     /// <summary>True only while a file is being processed.</summary>
@@ -125,6 +132,15 @@ public sealed class FolderScanner
             }
             _locked.Remove(path);
 
+            // Busy is claimed before the flag is looked at: the updater writes the flag and then checks Busy again, so
+            // either it sees this file being processed or this scanner sees its flag (the CLI does the same, R30).
+            _busy = true;
+            if (IsUpdatePending())
+            {
+                _busy = false;
+                return;
+            }
+
             try
             {
                 await ProcessFileAsync(path, options, ct).ConfigureAwait(false);
@@ -140,6 +156,65 @@ public sealed class FolderScanner
                 // One failing file must not starve the others; the original is still in In.
                 Park(path, current, ex.Message);
             }
+        }
+    }
+
+    private bool IsUpdatePending()
+    {
+        bool updating;
+        try
+        {
+            updating = _isUpdating();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            updating = true; // cannot tell: wait rather than risk being cut off by the installer
+        }
+
+        if (!updating)
+        {
+            _pausedLogged = false;
+            return false;
+        }
+        if (!_pausedLogged)
+        {
+            _pausedLogged = true;
+            _log.LogInformation("Watched folder '{Name}': an update is being installed; new files wait until it is finished.", _folder.Name);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Removes temporary output folders (<c>.illux-tmp-*</c>) older than an hour from Out: a service that was killed
+    /// in the middle of a file (for example by an installer after its time-out) leaves one behind. A link is never
+    /// followed or removed. Best effort.
+    /// </summary>
+    public void RemoveStaleTempFolders()
+    {
+        try
+        {
+            var outFolder = new DirectoryInfo(_folder.Out);
+            if (!outFolder.Exists || outFolder.Attributes.HasFlag(FileAttributes.ReparsePoint)) return;
+            var now = NowUtc;
+            foreach (var temp in outFolder.EnumerateDirectories(FileProcessor.TempPrefix + "*"))
+            {
+                if (temp.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+                var latest = temp.LastWriteTimeUtc > temp.CreationTimeUtc ? temp.LastWriteTimeUtc : temp.CreationTimeUtc;
+                if (now - latest < StaleTempAge) continue;
+                try
+                {
+                    temp.Delete(recursive: true); // .NET removes links inside without following them
+                    _log.LogInformation("Watched folder '{Name}': removed the unfinished temporary folder '{Temp}'.", _folder.Name, temp.Name);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    _log.LogWarning("Watched folder '{Name}': could not remove '{Temp}': {Message}", _folder.Name, temp.FullName, ex.Message);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            _log.LogDebug("Watched folder '{Name}': temporary folders in Out not checked: {Message}", _folder.Name, ex.Message);
         }
     }
 

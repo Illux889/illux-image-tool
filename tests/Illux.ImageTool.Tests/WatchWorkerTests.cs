@@ -64,6 +64,7 @@ public sealed class WatchWorkerTests : IDisposable
             ConfigPath = ConfigPath,
             PollInterval = TimeSpan.FromMilliseconds(30),
             ScannerFactory = scannerFactory,
+            IsUpdating = () => false,
         });
         _workers.Add(worker);
         await worker.StartAsync(CancellationToken.None);
@@ -108,7 +109,7 @@ public sealed class WatchWorkerTests : IDisposable
 
         var worker = await StartAsync(f =>
         {
-            var scanner = new FolderScanner(f, NullLogger.Instance);
+            var scanner = new FolderScanner(f, NullLogger.Instance, isUpdating: () => false);
             scanner.OutputVerifier = _ =>
             {
                 inVerifier.Set();
@@ -187,7 +188,7 @@ public sealed class WatchWorkerTests : IDisposable
 
         var worker = await StartAsync(f =>
         {
-            var scanner = new FolderScanner(f, NullLogger.Instance);
+            var scanner = new FolderScanner(f, NullLogger.Instance, isUpdating: () => false);
             scanner.OutputVerifier = _ =>
             {
                 inVerifier.Set();
@@ -208,13 +209,29 @@ public sealed class WatchWorkerTests : IDisposable
     }
 
     [Fact]
+    public async Task Worker_AtStart_RemovesOldTempFoldersFromOut()
+    {
+        var folder = Folder("cleanup");
+        Directory.CreateDirectory(folder.In);
+        var stale = Directory.CreateDirectory(Path.Combine(folder.Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        File.WriteAllText(Path.Combine(stale.FullName, "half.jpg"), "left by a killed service");
+        Directory.SetLastWriteTimeUtc(stale.FullName, DateTime.UtcNow - TimeSpan.FromHours(2));
+        Directory.SetCreationTimeUtc(stale.FullName, DateTime.UtcNow - TimeSpan.FromHours(2));
+        SaveConfig(new WatcherConfig { Folders = [folder] });
+
+        await StartAsync();
+
+        Assert.True(await WaitUntil(() => !Directory.Exists(stale.FullName)), "the stale temp folder was not removed");
+    }
+
+    [Fact]
     public async Task Worker_Reload_KeepsUnchangedScanner_AndDropsRemovedOrDisabledFolders()
     {
         var created = new Dictionary<string, int>();
         FolderScanner Create(WatchedFolder f)
         {
             lock (created) created[f.Name] = created.GetValueOrDefault(f.Name) + 1;
-            return new FolderScanner(f, NullLogger.Instance);
+            return new FolderScanner(f, NullLogger.Instance, isUpdating: () => false);
         }
         int Created(string name)
         {

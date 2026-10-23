@@ -24,7 +24,8 @@ public sealed record FileResult(string Input, Status Status, IReadOnlyList<strin
 /// </summary>
 public static class FileProcessor
 {
-    private const string TempPrefix = ".illux-tmp-";
+    /// <summary>Name prefix of the temporary folder made in the destination for each file.</summary>
+    internal const string TempPrefix = ".illux-tmp-";
 
     /// <param name="claimedNames">
     /// File names already written in this batch (compared as given; use a case-insensitive set). A target name in it is

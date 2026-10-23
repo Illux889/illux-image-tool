@@ -9,6 +9,7 @@ public sealed class WatcherTests : IDisposable
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "illux-watch-" + Guid.NewGuid().ToString("N"));
     private readonly CapturingLogger _log = new();
     private readonly FakeClock _clock = new();
+    private volatile bool _updating;
 
     public void Dispose()
     {
@@ -25,7 +26,7 @@ public sealed class WatcherTests : IDisposable
         Name = "test", In = In, Out = Out, Error = Error, Parameters = [.. parameters],
     };
 
-    private FolderScanner Scanner(WatchedFolder? folder = null) => new(folder ?? Folder(), _log, _clock);
+    private FolderScanner Scanner(WatchedFolder? folder = null) => new(folder ?? Folder(), _log, _clock, () => _updating);
 
     private string Jpeg(string name, double? ppi = 200) => TestImages.Write(In, name, 60, 40, ColorSpace.sRGB, 8, ppi);
 
@@ -67,6 +68,88 @@ public sealed class WatcherTests : IDisposable
         Assert.False(scanner.Busy);
         Assert.Empty(Names(In));
     }
+
+    [Fact]
+    public async Task Scan_WhileAnUpdateIsPending_PicksUpNothing_ThenResumes()
+    {
+        var input = Jpeg("a.jpg", ppi: 300);
+        var scanner = Scanner();
+        _updating = true;
+
+        await ScanTwice(scanner);
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        Assert.True(File.Exists(input));
+        Assert.Empty(Names(Out));
+        Assert.False(scanner.Busy);
+        Assert.Single(_log.Entries, e => e.Message.Contains("update", StringComparison.OrdinalIgnoreCase)); // said once
+
+        _updating = false;
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        Assert.Equal(["a.jpg"], Names(Out));
+        Assert.Equal(["a.jpg"], Names(Originals));
+    }
+
+    [Fact]
+    public async Task Scan_ClaimsBusyBeforeLookingForTheUpdatingFlag()
+    {
+        // The updater writes updating.flag and then checks Busy again (like the CLI, R30): a scanner must say it is
+        // busy before it looks for the flag, or a file could start right after the updater's second look.
+        Jpeg("a.jpg", ppi: 300);
+        FolderScanner? scanner = null;
+        var busyWhenAsked = new List<bool>();
+        scanner = new FolderScanner(Folder(), _log, _clock, () =>
+        {
+            busyWhenAsked.Add(scanner!.Busy);
+            return true;
+        });
+
+        await ScanTwice(scanner);
+
+        Assert.Equal([true], busyWhenAsked);
+        Assert.False(scanner.Busy);
+    }
+
+    [Fact]
+    public void RemoveStaleTempFolders_OnlyOldTempFoldersInOut()
+    {
+        Directory.CreateDirectory(Out);
+        var old = Directory.CreateDirectory(Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        File.WriteAllText(Path.Combine(old.FullName, "half.jpg"), "partial");
+        var fresh = Directory.CreateDirectory(Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        var customer = Directory.CreateDirectory(Path.Combine(Out, "illux-tmp-not-ours"));
+        var hour = TimeSpan.FromHours(1);
+        Directory.SetLastWriteTimeUtc(old.FullName, _clock.GetUtcNow().UtcDateTime - hour - TimeSpan.FromMinutes(1));
+        Directory.SetCreationTimeUtc(old.FullName, _clock.GetUtcNow().UtcDateTime - hour - TimeSpan.FromMinutes(1));
+        Directory.SetLastWriteTimeUtc(fresh.FullName, _clock.GetUtcNow().UtcDateTime - TimeSpan.FromMinutes(5));
+        Directory.SetLastWriteTimeUtc(customer.FullName, _clock.GetUtcNow().UtcDateTime - TimeSpan.FromDays(3));
+
+        Scanner().RemoveStaleTempFolders();
+
+        Assert.False(Directory.Exists(old.FullName));
+        Assert.True(Directory.Exists(fresh.FullName)); // may belong to a file being written right now
+        Assert.True(Directory.Exists(customer.FullName));
+    }
+
+    [FactWhenJunctionsWork]
+    public void RemoveStaleTempFolders_NeverFollowsALink()
+    {
+        Directory.CreateDirectory(Out);
+        var elsewhere = Directory.CreateDirectory(Path.Combine(_dir, "elsewhere"));
+        File.WriteAllText(Path.Combine(elsewhere.FullName, "keep.txt"), "not ours");
+        var link = Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N"));
+        Assert.True(FactWhenJunctionsWorkAttribute.TryCreateJunction(link, elsewhere.FullName));
+        _clock.Advance(TimeSpan.FromDays(1));
+
+        Scanner().RemoveStaleTempFolders();
+
+        Assert.True(File.Exists(Path.Combine(elsewhere.FullName, "keep.txt")));
+        Assert.True(Directory.Exists(link)); // a link is left alone altogether
+    }
+
+    [Fact]
+    public void RemoveStaleTempFolders_MissingOut_DoesNothing() => Scanner().RemoveStaleTempFolders();
 
     [Fact]
     public async Task Scan_FileStillGrowing_NotProcessed()

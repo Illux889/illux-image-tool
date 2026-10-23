@@ -16,11 +16,15 @@ public sealed class WatchWorkerOptions
 
     /// <summary>Tests only: creates the scanner of an enabled folder.</summary>
     public Func<WatchedFolder, FolderScanner>? ScannerFactory { get; init; }
+
+    /// <summary>Tests only: replaces "updating.flag exists" for the scanners this worker creates.</summary>
+    public Func<bool>? IsUpdating { get; init; }
 }
 
 /// <summary>
 /// Scans every enabled watched folder every <c>PollSeconds</c>. <c>config.json</c> is reloaded when its last-write
-/// time or size changes; an invalid file keeps the last good configuration (logged once per change).
+/// time or size changes; an invalid file keeps the last good configuration (logged once per change). When a folder's
+/// scanner is created (at start and after a change) old temporary folders are removed from its Out folder (R42).
 /// </summary>
 public sealed class WatchWorker : BackgroundService
 {
@@ -191,7 +195,9 @@ public sealed class WatchWorker : BackgroundService
             {
                 try
                 {
-                    next.Add(new ScannerEntry(key, folder.Name, _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(folder, _log)));
+                    var scanner = _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(folder, _log, isUpdating: _options.IsUpdating);
+                    scanner.RemoveStaleTempFolders();
+                    next.Add(new ScannerEntry(key, folder.Name, scanner));
                 }
                 catch (Exception ex)
                 {
