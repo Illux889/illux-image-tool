@@ -50,6 +50,19 @@ public class ParameterParserTests
     }
 
     [Fact]
+    public void Parse_MissingPpi72_IsAssume72()
+    {
+        Assert.Equal(MissingPpiPolicy.Assume72, ParameterParser.Parse(["missingppi=72"]).MissingPpi);
+    }
+
+    [Fact]
+    public void Parse_MissingPpi_BadValue_ListsDocumentedValues()
+    {
+        var ex = Assert.Throws<ParameterException>(() => ParameterParser.Parse(["missingppi=96"]));
+        Assert.Contains("expected one of 72, skip, error", ex.Message);
+    }
+
+    [Fact]
     public void Parse_Unknown_Throws()
     {
         var ex = Assert.Throws<ParameterException>(() => ParameterParser.Parse(["8bitt"]));

@@ -42,7 +42,7 @@ public static class ParameterParser
                     options = options with { Output = ParseEnum<OutputMode>(raw, value) };
                     break;
                 case "missingppi":
-                    options = options with { MissingPpi = ParseEnum<MissingPpiPolicy>(raw, value) };
+                    options = options with { MissingPpi = ParseMissingPpi(raw, value) };
                     break;
                 case "filter":
                     options = options with { Filter = ParseEnum<ResampleFilter>(raw, value) };
@@ -57,6 +57,15 @@ public static class ParameterParser
 
         return operations == Operations.None ? options : options with { Operations = operations };
     }
+
+    // The documented value is "72"; the enum member is Assume72.
+    private static MissingPpiPolicy ParseMissingPpi(string raw, string? value) => value switch
+    {
+        "72" => MissingPpiPolicy.Assume72,
+        _ when string.Equals(value, "skip", StringComparison.OrdinalIgnoreCase) => MissingPpiPolicy.Skip,
+        _ when string.Equals(value, "error", StringComparison.OrdinalIgnoreCase) => MissingPpiPolicy.Error,
+        _ => throw new ParameterException($"Invalid value in '{raw}': expected one of 72, skip, error."),
+    };
 
     private static int ParseInt(string raw, string? value, int min, int max)
     {
