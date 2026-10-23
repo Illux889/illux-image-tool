@@ -333,7 +333,12 @@ $trayTask = Get-ScheduledTask -TaskName 'Illux Image Tool tray helper' -ErrorAct
 Check ($trayTask -and $trayTask.Principal.GroupId -match 'S-1-5-32-545|Users') "tray scheduled task registered for the Users group (group: $($trayTask.Principal.GroupId))"
 if ($trayTask) { Write-Host "Tray task last result: $((Get-ScheduledTaskInfo -InputObject $trayTask).LastTaskResult)" }
 if (Wait-Until { [bool](Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'") } 15) {
-    Write-Host 'A tray helper is running again after the SYSTEM upgrade.'
+    $owners = @(Get-CimInstance Win32_Process -Filter "Name='IlluxImageToolSettings.exe'" | ForEach-Object {
+        $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+        "$($o.Domain)\$($o.User) (session $($_.SessionId))"
+    })
+    Write-Host "A tray helper is running again after the SYSTEM upgrade: $($owners -join ', ')"
+    Check (-not ($owners | Where-Object { $_ -match '\\SYSTEM ' })) 'the restarted tray helper runs as the logged-on user, not as SYSTEM'
 } else {
     Write-Host "::warning::No tray helper is running after the SYSTEM upgrade (logged-on users: $((cmd.exe /d /c 'query user 2>&1') -join ' | '))"
 }
