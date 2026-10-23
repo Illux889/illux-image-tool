@@ -9,4 +9,16 @@
     <PackageReference Include="Magick.NET-Q16-HDRI-x64" Version="14.17.2" />
   </ItemGroup>
 
+  <!-- jpegtran comes from third_party/ (git-ignored); run build/fetch-jpegtran.ps1 to populate it. -->
+  <ItemGroup>
+    <Content Include="..\..\third_party\libjpeg-turbo\jpegtran.exe" Link="tools\jpegtran\jpegtran.exe"
+             CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\jpegtran.exe')" />
+    <Content Include="..\..\third_party\libjpeg-turbo\jpeg62.dll" Link="tools\jpegtran\jpeg62.dll"
+             CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\jpeg62.dll')" />
+    <Content Include="..\..\third_party\libjpeg-turbo\LICENSE.md" Link="tools\jpegtran\LICENSE.md"
+             CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\LICENSE.md')" />
+    <Content Include="..\..\third_party\libjpeg-turbo\README.ijg" Link="tools\jpegtran\README.ijg"
+             CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\README.ijg')" />
+  </ItemGroup>
+
 </Project>
