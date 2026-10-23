@@ -398,7 +398,8 @@ public sealed class FolderScanner
                 .AppendLine(fileName);
             foreach (var message in messages) text.AppendLine(message);
             var txt = UniquePath(_folder.Error, Path.GetFileName(moved) + ".error.txt");
-            File.WriteAllText(txt, text.ToString(), new UTF8Encoding(false));
+            using var note = new FileStream(txt, FileMode.CreateNew, FileAccess.Write, FileShare.Read); // never through an existing link (R44)
+            note.Write(new UTF8Encoding(false).GetBytes(text.ToString()));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -414,7 +415,9 @@ public sealed class FolderScanner
             var text = new StringBuilder();
             text.AppendLine($"{_clock.GetLocalNow():yyyy-MM-dd HH:mm:ss} {fileName}");
             foreach (var message in messages) text.AppendLine("  " + message);
-            File.AppendAllText(Path.Combine(_folder.Out, WarningsLogName), text.ToString(), new UTF8Encoding(false));
+            var log = Path.Combine(_folder.Out, WarningsLogName);
+            LinkGuard.ThrowIfLinkedFile(log); // R44
+            File.AppendAllText(log, text.ToString(), new UTF8Encoding(false));
         }
         catch (Exception ex) // best effort: the original is already safe, so this must never undo the outputs
         {

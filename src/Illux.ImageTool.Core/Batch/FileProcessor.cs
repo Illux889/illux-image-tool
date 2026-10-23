@@ -2,6 +2,7 @@ using ImageMagick;
 using Illux.ImageTool.Imaging;
 using Illux.ImageTool.Options;
 using Illux.ImageTool.Pdf;
+using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Batch;
 
@@ -62,6 +63,7 @@ public static class FileProcessor
                 return Failed(inputPath, "output would replace the input file; choose a different output folder");
 
             Directory.CreateDirectory(tempDir);
+            LinkGuard.ThrowIfLinkedFolder(tempDir); // R44: nothing is written through a folder swapped for a link
             var tempImage = Path.Combine(tempDir, fileName);
             var result = await ImagePipeline.RunAsync(inputPath, tempImage, options, ct).ConfigureAwait(false);
             if (result.Status == Status.Error)
@@ -77,6 +79,7 @@ public static class FileProcessor
             }
 
             ct.ThrowIfCancellationRequested();
+            LinkGuard.ThrowIfLinkedFolder(tempDir);
             var overwrite = namePolicy == NamePolicy.Overwrite;
             if (targetImage is not null) moved.Add(MoveIntoPlace(tempImage, Path.Combine(outputFolder, targetImage), overwrite));
             if (targetPdf is not null) moved.Add(MoveIntoPlace(tempPdf, Path.Combine(outputFolder, targetPdf), overwrite));
@@ -124,6 +127,7 @@ public static class FileProcessor
     /// <summary>With <see cref="NamePolicy.Suffix"/> a file that appeared since the name was chosen is never replaced: the move fails and the file is retried later.</summary>
     private static string MoveIntoPlace(string from, string to, bool overwrite)
     {
+        LinkGuard.ThrowIfLinkedFile(to);
         File.Move(from, to, overwrite);
         return to;
     }
