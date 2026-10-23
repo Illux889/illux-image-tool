@@ -15,6 +15,7 @@ jobs:
   build:
     name: Test and build installer
     runs-on: windows-latest
+    timeout-minutes: 40
     outputs:
       version: ${{ steps.versions.outputs.version }}
       upgrade_version: ${{ steps.versions.outputs.upgrade_version }}
@@ -78,6 +79,7 @@ jobs:
     name: Install, upgrade and uninstall
     needs: build
     runs-on: windows-latest
+    timeout-minutes: 40
     defaults:
       run:
         shell: powershell
@@ -113,13 +115,17 @@ jobs:
           -Version $env:VERSION -UpgradeVersion $env:UPGRADE_VERSION
           -WorkDir "$env:RUNNER_TEMP\smoke"
 
+      - name: Collect logs
+        if: always()
+        run: |
+          $logs = Join-Path $env:ProgramData 'Illux Image Tool\logs'
+          if (Test-Path $logs) { Copy-Item -Recurse -Force $logs "$env:RUNNER_TEMP\smoke\programdata-logs" }
+
       - name: Upload smoke-test logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: smoke-test-logs
-          path: |
-            ${{ runner.temp }}/smoke/*.log
-            C:/ProgramData/Illux Image Tool/logs/
+          path: ${{ runner.temp }}/smoke/**/*.log
           if-no-files-found: ignore
           retention-days: 7

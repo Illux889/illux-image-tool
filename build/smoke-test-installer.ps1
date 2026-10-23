@@ -73,11 +73,20 @@ function Show-Log([string]$Path) {
     }
 }
 
+function Start-AndWait([string]$FilePath, $ArgumentList) {
+    # Not Start-Process -Wait: Windows PowerShell then also waits for child processes, such as the tray helper the
+    # installer starts, which never exit.
+    $p = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -NoNewWindow
+    $null = $p.Handle # keeps the handle so ExitCode is available after the exit
+    if (-not $p.WaitForExit(900000)) { throw "$FilePath did not finish within 15 minutes." }
+    return $p.ExitCode
+}
+
 function Invoke-Installer([string]$Path, [string]$LogName) {
     $log = Join-Path $WorkDir $LogName
-    $p = Start-Process -FilePath $Path -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"" -Wait -PassThru
+    $code = Start-AndWait $Path @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
     Show-Log $log
-    return $p.ExitCode
+    return $code
 }
 
 function Sid([string]$Value) { New-Object Security.Principal.SecurityIdentifier($Value) }
@@ -282,8 +291,7 @@ if (Test-Path -LiteralPath $result) {
 $out2 = Join-Path $Smoke 'out-bat'; New-Item -ItemType Directory -Force -Path $out2 | Out-Null
 # cmd /c strips the outer quotes, leaving:  "<bat>" "<input>" "<output folder>" output=pdf
 $bat = Join-Path $App 'scripts\ae\IlluxImageTool.bat'
-$p = Start-Process -FilePath cmd.exe -ArgumentList "/d /c `"`"$bat`" `"$TestJpeg`" `"$out2`" output=pdf`"" -Wait -PassThru -NoNewWindow
-$code = $p.ExitCode
+$code = Start-AndWait cmd.exe "/d /c `"`"$bat`" `"$TestJpeg`" `"$out2`" output=pdf`""
 Check ($code -eq 0) "Batch AE script exit code 0 (got $code)"
 Check (Test-PdfHeader (Join-Path $out2 'test.pdf')) 'Batch AE script wrote test.pdf with a %PDF-1.6 header'
 
@@ -337,8 +345,8 @@ Show-Log (Get-ChildItem -LiteralPath (Join-Path $Data 'logs') -Filter 'watcher*.
 # =====================================================================================================
 Section 'Uninstall'
 $uninstallLog = Join-Path $WorkDir 'uninstall.log'
-$p = Start-Process -FilePath (Join-Path $App 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$uninstallLog`"" -Wait -PassThru
-Check ($p.ExitCode -eq 0) "uninstaller exit code 0 (got $($p.ExitCode))"
+$code = Start-AndWait (Join-Path $App 'unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$uninstallLog`"")
+Check ($code -eq 0) "uninstaller exit code 0 (got $code)"
 # The uninstaller finishes in a copy of itself; wait for it to remove its own folder.
 Check (Wait-Until { -not (Test-Path -LiteralPath (Join-Path $App 'unins000.exe')) } 120) 'uninstaller finished'
 Show-Log $uninstallLog
