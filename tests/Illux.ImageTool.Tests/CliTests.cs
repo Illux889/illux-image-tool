@@ -41,6 +41,20 @@ public sealed class CliTests : AppRootTestBase
     }
 
     [Fact]
+    public async Task Cli_Ae_LogsRawInputsAndOutputFolder()
+    {
+        var a = Jpeg("a.jpg");
+        var b = Jpeg("b.jpg");
+        var rawInputs = $"{a};{b}";
+
+        var (_, output) = await Run("ae", rawInputs, Out);
+
+        var lines = output.ReplaceLineEndings().Split(Environment.NewLine);
+        Assert.Equal($"Inputs: {rawInputs}", lines[0]);
+        Assert.Equal($"Output folder: {Out}", lines[1]);
+    }
+
+    [Fact]
     public async Task Cli_Ae_PassesParametersOn()
     {
         var a = Jpeg("a.jpg");

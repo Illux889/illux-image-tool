@@ -64,6 +64,10 @@ public static class CliApp
             throw new UsageException("'ae' needs the input files and the output folder: IlluxImageTool.exe ae \"<input files>\" \"<output folder>\" [parameters].");
         }
 
+        // First two lines of the AE task log: they show what AE really passed as %1 and %2.
+        stdout.WriteLine($"Inputs: {args[1]}");
+        stdout.WriteLine($"Output folder: {args[2]}");
+
         var inputs = InputListParser.Split(args[1]);
         var options = ParameterParser.Parse(args.Skip(3));
         return ExecuteAsync(inputs, args[2], options, stdout, ct);
