@@ -21,8 +21,11 @@ internal static class MagickRewriter
     public static bool Rewrite(string inputPath, string outputPath, SourceImage source, RewriteSpec spec)
     {
         // Magick.NET never auto-orients on read; EXIF Orientation is written back unchanged.
+        // Files are opened by .NET (not by ImageMagick's C file API) so long (> 260) and UNC paths work.
         using var image = new MagickImage();
-        image.Read(inputPath, source.ReadSettings());
+        using (var input = new FileStream(inputPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            image.Read(input, source.ReadSettings());
+        var colorType = OutputColorType(image.ColorType);
         var compression = image.Compression;
         var samplingFactor = image.GetAttribute("jpeg:sampling-factor");
 
@@ -44,6 +47,11 @@ internal static class MagickRewriter
         // the flattened image (which is what we want: the old layers would no longer match). Report it.
         var droppedLayers = image.GetProfile(PhotoshopLayersProfile) is not null;
 
+        // Never convert colour: without an explicit type ImageMagick's writers inspect the pixels and store neutral
+        // RGB content as grayscale (JPEG 1 component, TIFF min-is-black, PNG colour type 0) while an RGB ICC
+        // profile is still embedded.
+        if (colorType != ColorType.Undefined) image.Settings.ColorType = colorType;
+
         // ImageMagick's TIFF writer does not reuse the compression it read, so keep it explicitly.
         if (source.IsTiff) image.Settings.Compression = compression;
 
@@ -56,9 +64,39 @@ internal static class MagickRewriter
                 image.Settings.SetDefine(MagickFormat.Jpeg, "sampling-factor", samplingFactor);
         }
 
-        image.Write(outputPath, source.Format);
+        if (source.Format == MagickFormat.Png)
+        {
+            if (PngColorType(colorType) is { } pngType) image.Settings.SetDefine(MagickFormat.Png, "color-type", pngType);
+            // Otherwise a known sRGB profile is replaced by an sRGB chunk and the embedded ICC bytes are lost.
+            image.Settings.SetDefine(MagickFormat.Png, "preserve-iCCP", true);
+        }
+
+        using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            image.Write(output, source.Format);
         return droppedLayers;
     }
+
+    /// <summary>
+    /// The colour model to write: the one that was read, except that palette and bilevel images become
+    /// true colour / grayscale, because resampling creates colours and grey levels a palette cannot hold.
+    /// </summary>
+    private static ColorType OutputColorType(ColorType read) => read switch
+    {
+        ColorType.Bilevel => ColorType.Grayscale,
+        ColorType.Palette => ColorType.TrueColor,
+        ColorType.PaletteAlpha or ColorType.PaletteBilevelAlpha => ColorType.TrueColorAlpha,
+        ColorType.Optimize => ColorType.Undefined,
+        _ => read,
+    };
+
+    private static string? PngColorType(ColorType type) => type switch
+    {
+        ColorType.Grayscale => "0",
+        ColorType.TrueColor => "2",
+        ColorType.GrayscaleAlpha => "4",
+        ColorType.TrueColorAlpha => "6",
+        _ => null,
+    };
 
     /// <remarks>
     /// "Bicubic" maps to Catmull-Rom (Keys cubic, a = -0.5), the usual meaning of bicubic in image editors;

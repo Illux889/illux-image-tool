@@ -49,7 +49,8 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         var jpeg = format is MagickFormat.Jpeg or MagickFormat.Jpg ? InspectJpeg(path) : null;
 
         using var frames = new MagickImageCollection();
-        frames.Ping(path, CreateReadSettings(format));
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            frames.Ping(stream, CreateReadSettings(format)); // .NET opens the file: long and UNC paths work
         if (frames.Count > 1)
         {
             throw new UnsupportedImageException(format switch

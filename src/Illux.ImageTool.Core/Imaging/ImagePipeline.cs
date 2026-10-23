@@ -20,12 +20,16 @@ public static class ImagePipeline
     private const double AssumedPpi = 72;
     private const double LargeFactor = 4;
 
+    /// <summary>Largest output side in pixels (JPEG's hard limit is 65,535); checked before resampling.</summary>
+    internal const uint MaxDimension = 65000;
+
     // PNG pHYs stores whole pixels per metre, so e.g. 200 ppi reads back as 199.9996; don't resample for that.
     private const double PpiTolerance = 0.05;
 
     /// <summary>
     /// Writes exactly one image file at <paramref name="outputPath"/> in the input's format, or none when the
-    /// result is an Error. Throws <see cref="UnsupportedImageException"/> for rejected inputs; on any exception no
+    /// result is an Error. Throws <see cref="UnsupportedImageException"/> for rejected inputs and
+    /// <see cref="ImageTooLargeException"/> when upsampling would exceed <see cref="MaxDimension"/>; on any exception no
     /// file is left at <paramref name="outputPath"/>.
     /// </summary>
     public static async Task<PipelineResult> RunAsync(string inputPath, string outputPath, ProcessingOptions options, CancellationToken ct)
@@ -128,6 +132,12 @@ public static class ImagePipeline
                     var factorY = raiseY ? target / stored.Y : 1;
                     var raised = new Resolution(raiseX ? target : stored.X, raiseY ? target : stored.Y);
                     newSize = (Scale(source.Width, factorX), Scale(source.Height, factorY));
+                    if (newSize.Value.Width > MaxDimension || newSize.Value.Height > MaxDimension)
+                    {
+                        throw new ImageTooLargeException(
+                            $"upsampling {Format(stored)}→{Format(raised)} ppi would make the image " +
+                            $"{newSize.Value.Width}×{newSize.Value.Height} px; the limit is {MaxDimension} px per side");
+                    }
                     messages.Add($"{Format(stored)}→{Format(raised)} ppi ({source.Width}×{source.Height} → {newSize.Value.Width}×{newSize.Value.Height}, {options.Filter})");
                     resolution = raised;
 
