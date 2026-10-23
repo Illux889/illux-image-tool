@@ -310,8 +310,10 @@ Settings are stored in one JSON file under `C:\ProgramData\Illux Image Tool\`.
   `v1.0.0`) builds, tests and attaches the installer to a GitHub Release.
 - The repository is public (MIT licence), so the installer and updates can be
   downloaded without a GitHub login or key.
-- The installer is an **MSI** (WiX Toolset), so it can upgrade an existing
-  installation silently.
+- The installer is an **Inno Setup** `.exe` (free, no licence fees), which can
+  upgrade an existing installation silently (`/VERYSILENT`). WiX was dropped
+  because WiX v6+ carries a maintenance-fee EULA for companies above
+  US$10,000 revenue.
 - Every release also publishes a SHA-256 checksum file for the installer.
 - The installer is not code-signed initially, so Windows SmartScreen will show
   a "Windows protected your PC" prompt on first install ("More info → Run
@@ -322,14 +324,15 @@ Settings are stored in one JSON file under `C:\ProgramData\Illux Image Tool\`.
 - The watcher service checks the GitHub Releases of
   `Illux889/illux-image-tool` (public API, no key) at start-up and every
   6 hours.
-- If a newer version exists, it downloads the MSI, checks it against the
-  published SHA-256 checksum, and installs it silently (`msiexec /qn`).
+- If a newer version exists, it downloads the installer, checks it against the
+  published SHA-256 checksum, and installs it silently
+  (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`).
   A download that fails the check is discarded and logged, never installed.
 - It installs only when idle: no watched-folder file in progress and no
   command-line (AE) run active. Command-line runs register themselves (e.g.
   with a lock file / named mutex) so the updater waits for them; the AE wrapper
   scripts retry briefly if the executable is being replaced at that moment.
-- Watched folders keep working across an update: the service stops, the MSI
+- Watched folders keep working across an update: the service stops, the installer
   upgrades, the service starts again and picks up any files that arrived.
 - The settings window shows the installed version, the last check, and has
   "Check now" and an "Automatic updates on/off" switch (default **on**).
@@ -345,14 +348,14 @@ My calls, to be confirmed against current documentation during planning:
   bit-depth reduction, resampling and writing images. Pin to the newest
   release with no open security advisories.
 - **Lossless progressive→baseline:** libjpeg-turbo's `jpegtran` technique,
-  via a bundled `jpegtran.exe` from an official libjpeg-turbo release (or built
-  from source in CI), or a managed library if one proves reliable.
+  via `jpegtran.exe` + `jpeg62.dll` from the official libjpeg-turbo 3.2.0
+  `vc-x64` release, fetched by a build script with a pinned SHA-256.
 - **PDF writer:** a small purpose-built writer inside the project (a single
   image on a single page is a few hundred lines), so JPEG bytes and ICC
   profiles go in untouched and the output is fully under our control.
 - Watcher: .NET Worker Service hosted as a Windows service.
 - Settings window: WinForms (small, no extra runtime).
-- Installer: WiX Toolset (MSI), needed for silent upgrades.
+- Installer: Inno Setup 6 (silent upgrades, free for commercial use).
 - Automated tests with small sample images covering every operation, colour
   mode and output type, plus a check that the PDF opens and is version 1.6.
 
