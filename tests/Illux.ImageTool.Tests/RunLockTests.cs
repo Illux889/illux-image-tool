@@ -51,6 +51,9 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.Equal(Path.Combine(AppRoot, "logs"), AppPaths.LogsDir);
         Assert.Equal(Path.Combine(AppRoot, "runs"), AppPaths.RunsDir);
         Assert.Equal(Path.Combine(AppRoot, "updating.flag"), AppPaths.UpdatingFlag);
+        Assert.Equal(Path.Combine(AppRoot, "requests"), AppPaths.RequestsDir);
+        Assert.Equal(Path.Combine(AppRoot, "requests", "check-now.flag"), AppPaths.CheckNowFlag);
+        Assert.Equal(Path.Combine(AppRoot, "requests", "install-now.flag"), AppPaths.InstallNowFlag);
     }
 
     [Fact]

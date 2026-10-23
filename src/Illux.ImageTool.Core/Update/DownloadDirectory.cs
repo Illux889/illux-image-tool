@@ -12,13 +12,20 @@ namespace Illux.ImageTool.Update;
 [SupportedOSPlatform("windows")]
 internal static class DownloadDirectory
 {
-    /// <summary>Creates the folder if needed and checks it. Returns null when it is safe, otherwise the reason it is not.</summary>
+    /// <summary>
+    /// Checks every existing folder on the way (before anything is created), creates the folder if needed and checks
+    /// again. Returns null when it is safe, otherwise the reason it is not. No file in the folder is touched here.
+    /// </summary>
     public static string? PrepareTrusted(string directory)
     {
-        var info = new DirectoryInfo(directory);
+        var full = Path.GetFullPath(directory);
+        var problem = Verify(full);
+        if (problem is not null) return problem;
+
+        var info = new DirectoryInfo(full);
         if (!info.Exists) info.Create(CreateSecurity());
 
-        var problem = Verify(directory);
+        problem = Verify(full);
         if (problem is not null) return problem;
 
         info.Refresh();
@@ -26,25 +33,40 @@ internal static class DownloadDirectory
         return null;
     }
 
-    /// <summary>A reason the folder cannot be trusted (link in its path, foreign owner), or null.</summary>
+    /// <summary>
+    /// A reason the folder cannot be trusted, or null: any existing folder in its path (itself included) that is a
+    /// link, or that is not owned by SYSTEM/Administrators. A folder that does not exist yet is not an error.
+    /// </summary>
     public static string? Verify(string directory)
     {
-        var info = new DirectoryInfo(directory);
-        for (var d = info; d is not null; d = d.Parent)
+        var existing = new List<DirectoryInfo>();
+        for (var d = new DirectoryInfo(Path.GetFullPath(directory)); d is not null; d = d.Parent)
         {
-            if (d.Exists && d.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                return $"The update folder '{directory}' is (or sits below) a link ('{d.FullName}'); refusing to download there.";
+            if (d.Exists) existing.Add(d);
         }
 
-        if (!info.Exists) return $"The update folder '{directory}' does not exist.";
-        var owner = info.GetAccessControl(AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
-        return owner is not null && IsTrustedOwner(owner)
-            ? null
-            : $"The update folder '{directory}' is not owned by SYSTEM or Administrators (owner: {owner?.Value ?? "unknown"}); refusing to download there.";
+        foreach (var d in existing)
+        {
+            if (d.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                return $"The update folder '{directory}' is (or sits below) a link ('{d.FullName}'); refusing to use it.";
+        }
+
+        foreach (var d in existing)
+        {
+            var owner = d.GetAccessControl(AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            if (owner is null || !IsTrustedOwner(owner))
+                return $"The folder '{d.FullName}' on the way to the update folder is not owned by SYSTEM or Administrators (owner: {owner?.Value ?? "unknown"}); refusing to use it.";
+        }
+        return null;
     }
 
     public static bool IsTrustedOwner(SecurityIdentifier owner) =>
-        owner.IsWellKnown(WellKnownSidType.LocalSystemSid) || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid);
+        owner.IsWellKnown(WellKnownSidType.LocalSystemSid)
+        || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)
+        || owner.Value == TrustedInstallerSid;
+
+    /// <summary>NT SERVICE\TrustedInstaller owns some system folders; it is as privileged as SYSTEM.</summary>
+    private const string TrustedInstallerSid = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
     private static DirectorySecurity CreateSecurity()
     {

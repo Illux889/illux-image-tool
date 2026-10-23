@@ -239,6 +239,72 @@ public sealed class CliTests : AppRootTestBase
         Assert.Contains("ERROR: boom from the log writer", stdout.Captured.ToString());
     }
 
+    private static IDisposable SetEnv(string name, string value)
+    {
+        var previous = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, value);
+        return new Restore(() => Environment.SetEnvironmentVariable(name, previous));
+    }
+
+    private sealed class Restore(Action undo) : IDisposable
+    {
+        public void Dispose() => undo();
+    }
+
+    [Fact]
+    public async Task Cli_UpdatingFlagThatStays_WaitsThenFailsWithoutProcessing()
+    {
+        var a = Jpeg("a.jpg");
+        Directory.CreateDirectory(AppRoot);
+        File.WriteAllText(AppPaths.UpdatingFlag, "1.2.3");
+        using var step = SetEnv("ILLUX_IMAGETOOL_WAIT_SECONDS", "0.05");
+        using var max = SetEnv("ILLUX_IMAGETOOL_WAIT_MAX_SECONDS", "0.3");
+
+        var (exit, output) = await Run("ae", a, Out);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("Waiting for the update", output);
+        Assert.Contains("ERROR: update did not finish", output);
+        Assert.Empty(OutNames());
+        Assert.False(RunLock.AnyActive()); // the lock is not held while waiting or after giving up
+    }
+
+    [Fact]
+    public async Task Cli_UpdatingFlagThatGoesAway_WaitsWithoutLockThenProcesses()
+    {
+        var a = Jpeg("a.jpg");
+        Directory.CreateDirectory(AppRoot);
+        File.WriteAllText(AppPaths.UpdatingFlag, "1.2.3");
+        using var step = SetEnv("ILLUX_IMAGETOOL_WAIT_SECONDS", "0.05");
+        using var max = SetEnv("ILLUX_IMAGETOOL_WAIT_MAX_SECONDS", "30");
+        var lockHeldWhileWaiting = false;
+        var finished = Task.Run(async () =>
+        {
+            await Task.Delay(300);
+            lockHeldWhileWaiting = RunLock.AnyActive(); // an installer waiting for idle must be able to proceed
+            File.Delete(AppPaths.UpdatingFlag);
+        });
+
+        var (exit, output) = await Run("ae", a, Out);
+
+        await finished;
+        Assert.Equal(0, exit);
+        Assert.False(lockHeldWhileWaiting);
+        Assert.Contains("Waiting for the update", output);
+        Assert.Equal(["a.jpg"], OutNames());
+    }
+
+    [Fact]
+    public async Task Cli_NoUpdatingFlag_DoesNotWait()
+    {
+        var a = Jpeg("a.jpg");
+
+        var (exit, output) = await Run("ae", a, Out);
+
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain("Waiting for the update", output);
+    }
+
     /// <summary>Throws on the <c>Result:</c> line to simulate an unexpected failure inside a run.</summary>
     private sealed class ThrowingWriter : TextWriter
     {

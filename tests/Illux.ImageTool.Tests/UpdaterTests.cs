@@ -282,7 +282,7 @@ public sealed class UpdaterTests : AppRootTestBase
     [Fact]
     public async Task Install_ChecksumWithBomAndBinaryMarker_Accepted()
     {
-        var rig = NewRig(r => Route(r, "﻿" + InstallerHash + " *IlluxImageTool-Setup-1.2.3.exe\r\n"));
+        var rig = NewRig(r => Route(r, "\uFEFF" + InstallerHash + " *IlluxImageTool-Setup-1.2.3.exe\r\n"));
 
         Assert.Equal(InstallOutcome.Started, await rig.Updater.InstallAsync(Release(), CancellationToken.None));
     }
@@ -662,10 +662,6 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Equal(Path.Combine(AppRoot, "update", "IlluxImageTool-Setup-1.2.3.exe"), startedPath);
     }
 
-    private static bool IsElevated() =>
-        new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent())
-            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
-
     [Fact]
     public void DownloadDirectory_OnlySystemAndAdministratorsAreTrustedOwners()
     {
@@ -680,24 +676,24 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.False(DownloadDirectory.IsTrustedOwner(new System.Security.Principal.SecurityIdentifier("S-1-5-21-1-2-3-1001")));
     }
 
-    [Fact]
+    [FactWhenJunctionsWork]
     public void DownloadDirectory_Junction_IsRefused()
     {
         var target = Path.Combine(Dir, "target");
         var link = Path.Combine(Dir, "link");
         Directory.CreateDirectory(target);
-        if (!TryCreateJunction(link, target)) return; // mklink is unavailable: nothing to test
+        Assert.True(TryCreateJunction(link, target));
 
         Assert.Contains("link", DownloadDirectory.Verify(link));
     }
 
-    [Fact]
+    [FactWhenJunctionsWork]
     public void DownloadDirectory_BelowJunction_IsRefused()
     {
         var target = Path.Combine(Dir, "target");
         var junction = Path.Combine(Dir, "junction");
         Directory.CreateDirectory(Path.Combine(target, "update"));
-        if (!TryCreateJunction(junction, target)) return; // mklink is unavailable: nothing to test
+        Assert.True(TryCreateJunction(junction, target));
 
         var problem = DownloadDirectory.Verify(Path.Combine(junction, "update"));
 
@@ -705,19 +701,11 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Contains("link", problem);
     }
 
-    private static bool TryCreateJunction(string link, string target)
-    {
-        var psi = new ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{target}\"") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true };
-        using var p = Process.Start(psi)!;
-        p.StandardOutput.ReadToEnd();
-        p.WaitForExit();
-        return p.ExitCode == 0 && Directory.Exists(link);
-    }
+    private static bool TryCreateJunction(string link, string target) => FactWhenJunctionsWorkAttribute.TryCreateJunction(link, target);
 
-    [Fact]
+    [FactWhenNotElevated]
     public void DownloadDirectory_FolderOwnedByOrdinaryUser_IsRefused()
     {
-        if (IsElevated()) return; // an elevated user's folders are owned by Administrators, which is trusted
         var folder = Path.Combine(Dir, "mine");
         Directory.CreateDirectory(folder);
 
@@ -727,10 +715,9 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Contains("not owned by SYSTEM or Administrators", problem);
     }
 
-    [Fact]
+    [FactWhenNotElevated]
     public async Task Install_DefaultSecurity_UserOwnedFolder_Refused_NothingDownloaded()
     {
-        if (IsElevated()) return;
         Directory.CreateDirectory(DownloadDir); // pre-created by an ordinary user, as an attacker would
         var rig = NewRig(r => Route(r, InstallerHash), trust: false);
 
@@ -744,19 +731,39 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Contains("not owned", state.Error);
     }
 
-    [Fact]
-    public async Task Install_DefaultSecurity_JunctionFolder_Refused_NothingDownloaded()
+    [FactWhenJunctionsWork]
+    public async Task Install_DefaultSecurity_JunctionFolder_Refused_NothingDownloadedOrDeleted()
     {
+        // The junction points at a folder that holds files with exactly the names the updater would clean up.
         var target = Path.Combine(Dir, "elsewhere");
         Directory.CreateDirectory(target);
-        if (!TryCreateJunction(DownloadDir, target)) return;
+        var victim = Path.Combine(target, "IlluxImageTool-Setup-1.2.3.exe");
+        var victimPart = victim + ".part";
+        File.WriteAllText(victim, "someone else's file");
+        File.WriteAllText(victimPart, "someone else's partial file");
+        Assert.True(TryCreateJunction(DownloadDir, target));
         var rig = NewRig(r => Route(r, InstallerHash), trust: false);
 
         var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
 
         Assert.Equal(InstallOutcome.Failed, outcome);
         Assert.Empty(rig.Handler.Requests);
-        Assert.Empty(Directory.GetFiles(target));
+        Assert.Empty(rig.Started);
+        Assert.Equal("someone else's file", File.ReadAllText(victim));
+        Assert.Equal("someone else's partial file", File.ReadAllText(victimPart));
+        Assert.Equal(UpdatePhase.Failed, UpdateStateStore.Load().Phase);
+    }
+
+    [Fact]
+    public async Task Install_StartThrowsCancellation_FlagStillRemoved()
+    {
+        var rig = NewRig(r => Route(r, InstallerHash));
+        rig.OnStart = _ => throw new OperationCanceledException("not ours");
+
+        var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
+
+        Assert.Equal(InstallOutcome.Failed, outcome);
+        Assert.False(File.Exists(AppPaths.UpdatingFlag));
     }
 
     [Fact]

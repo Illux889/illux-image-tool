@@ -25,4 +25,13 @@ public static class AppPaths
     public static string RunsDir => Path.Combine(Root, "runs");
 
     public static string UpdatingFlag => Path.Combine(Root, "updating.flag");
+
+    /// <summary>Where the settings window and tray helper drop request flags for the service (users may write here).</summary>
+    public static string RequestsDir => Path.Combine(Root, "requests");
+
+    /// <summary>"Check for updates now".</summary>
+    public static string CheckNowFlag => Path.Combine(RequestsDir, "check-now.flag");
+
+    /// <summary>"Update now" (the user's click).</summary>
+    public static string InstallNowFlag => Path.Combine(RequestsDir, "install-now.flag");
 }

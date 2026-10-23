@@ -122,10 +122,57 @@ public static class CliApp
     private static async Task<int> ExecuteAsync(
         IReadOnlyList<string> inputs, string outputFolder, ProcessingOptions options, TextWriter stdout, CancellationToken ct)
     {
-        using var runLock = TryAcquireLock();
+        var (runLock, timedOut) = await AcquireLockWhenNotUpdatingAsync(stdout, ct).ConfigureAwait(false);
+        using var held = runLock;
+        if (timedOut)
+        {
+            stdout.WriteLine("ERROR: update did not finish");
+            return (int)Status.Error;
+        }
+
         MagickSetup.Configure();
         var status = await BatchRunner.RunAsync(inputs, outputFolder, options, stdout, ct).ConfigureAwait(false);
         return (int)status;
+    }
+
+    /// <summary>
+    /// Takes the run lock, then checks <c>updating.flag</c>: the updater writes the flag only when no lock is held, so a
+    /// lock taken just before the flag appeared must not keep a conversion running into an install. While the flag is
+    /// there the lock is released and we wait (same variables and defaults as the AE scripts; seconds may be fractional).
+    /// </summary>
+    private static async Task<(RunLock? Lock, bool TimedOut)> AcquireLockWhenNotUpdatingAsync(TextWriter stdout, CancellationToken ct)
+    {
+        var step = SecondsFromEnvironment("ILLUX_IMAGETOOL_WAIT_SECONDS", 5);
+        var max = SecondsFromEnvironment("ILLUX_IMAGETOOL_WAIT_MAX_SECONDS", 600, allowZero: true);
+        var waited = TimeSpan.Zero;
+        var announced = false;
+
+        while (true)
+        {
+            var runLock = TryAcquireLock();
+            if (!File.Exists(AppPaths.UpdatingFlag)) return (runLock, false);
+
+            runLock?.Dispose();
+            if (!announced)
+            {
+                stdout.WriteLine("Waiting for the update of Illux Image Tool to finish...");
+                announced = true;
+            }
+            if (waited >= max) return (null, true);
+
+            await Task.Delay(step, ct).ConfigureAwait(false);
+            waited += step;
+        }
+    }
+
+    private static TimeSpan SecondsFromEnvironment(string name, double fallbackSeconds, bool allowZero = false)
+    {
+        var text = Environment.GetEnvironmentVariable(name);
+        var seconds = double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+                      && (parsed > 0 || (allowZero && parsed == 0)) && parsed < 86400
+            ? parsed
+            : fallbackSeconds;
+        return TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>The lock only tells the updater we are busy; a conversion must not fail because it cannot be taken.</summary>

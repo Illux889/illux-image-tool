@@ -117,14 +117,27 @@ public sealed partial class Updater
         var installerPath = Path.Combine(_downloadDirectory, $"IlluxImageTool-Setup-{release.Version}.exe");
         var partPath = installerPath + ".part";
         var started = false;
+
+        _log.LogInformation("Update to {Version}: downloading", release.Version);
+        UpdateState(s => { s.Phase = UpdatePhase.Downloading; s.Error = null; });
+
+        // The folder is vetted before the cleanup scope below exists: nothing may be created, read or deleted in a
+        // folder that is not trusted (a junction could point SYSTEM at someone else's files).
+        string? directoryProblem;
         try
         {
-            _log.LogInformation("Update to {Version}: downloading", release.Version);
-            UpdateState(s => { s.Phase = UpdatePhase.Downloading; s.Error = null; });
+            directoryProblem = PrepareDownloadDirectory();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            _log.LogError(ex, "Could not prepare the update folder");
+            directoryProblem = $"The update folder could not be prepared: {ex.Message}";
+        }
+        if (directoryProblem is not null)
+            return Fail(release, InstallOutcome.Failed, directoryProblem);
 
-            var directoryProblem = PrepareDownloadDirectory();
-            if (directoryProblem is not null)
-                return Fail(release, InstallOutcome.Failed, directoryProblem);
+        try
+        {
             DeleteOldInstallers();
 
             var expected = ParseChecksum(await DownloadChecksumAsync(release.ChecksumUrl, ct).ConfigureAwait(false));
@@ -216,7 +229,7 @@ public sealed partial class Updater
     /// <summary>The first whitespace-separated token must be 64 hex digits; an optional file name may follow.</summary>
     private static string? ParseChecksum(string content)
     {
-        var tokens = content.TrimStart('﻿').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var tokens = content.TrimStart('\uFEFF').Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         return tokens.Length > 0 && Sha256HexPattern().IsMatch(tokens[0]) ? tokens[0] : null;
     }
 
@@ -226,6 +239,7 @@ public sealed partial class Updater
     /// <summary>Streams the installer to disk and returns its SHA-256 (hex). A failed download deletes the partial file.</summary>
     private async Task<string> DownloadInstallerAsync(Uri url, string path, CancellationToken ct)
     {
+        var created = false; // never delete a file this download did not create
         try
         {
             using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
@@ -234,7 +248,8 @@ public sealed partial class Updater
                 throw new InvalidDataException("The installer is larger than the allowed maximum.");
 
             await using var source = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await using var target = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
+            await using var target = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous);
+            created = true;
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
             var buffer = new byte[81920];
@@ -253,7 +268,7 @@ public sealed partial class Updater
         }
         catch
         {
-            TryDelete(path);
+            if (created) TryDelete(path);
             throw;
         }
     }
@@ -305,8 +320,10 @@ public sealed partial class Updater
             using var process = _startInstaller(installerPath, args);
             error = process is null ? "The installer could not be started." : null;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
+            TryDelete(AppPaths.UpdatingFlag); // whatever went wrong, no flag may be left behind
+            if (ex is OperationCanceledException && ct.IsCancellationRequested) throw;
             _log.LogError(ex, "Could not start the installer");
             error = $"The installer could not be started: {ex.Message}";
         }
