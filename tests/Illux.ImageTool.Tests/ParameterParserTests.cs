@@ -65,9 +65,19 @@ public class ParameterParserTests
     [InlineData("output=png")]
     [InlineData("missingppi=maybe")]
     [InlineData("filter=nearest")]
+    [InlineData("output=same,pdf")]
+    [InlineData("output=1,2")]
+    [InlineData("output=1")]
+    [InlineData("filter=mitchell,bicubic")]
     public void Parse_BadValues_Throw(string parameter)
     {
         Assert.Throws<ParameterException>(() => ParameterParser.Parse([parameter]));
+    }
+
+    [Fact]
+    public void Parse_EnumValues_AreCaseInsensitive()
+    {
+        Assert.Equal(OutputMode.Pdf, ParameterParser.Parse(["OUTPUT=PDF"]).Output);
     }
 
     [Fact]

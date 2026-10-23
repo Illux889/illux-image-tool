@@ -69,13 +69,13 @@ public static class ParameterParser
 
     private static T ParseEnum<T>(string raw, string? value) where T : struct, Enum
     {
-        if (!string.IsNullOrEmpty(value)
-            && !int.TryParse(value, out _)
-            && Enum.TryParse<T>(value, ignoreCase: true, out var result))
+        var names = Enum.GetNames<T>();
+        var match = names.FirstOrDefault(n => string.Equals(n, value, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
         {
-            return result;
+            return Enum.Parse<T>(match);
         }
-        var allowed = string.Join(", ", Enum.GetNames<T>().Select(n => n.ToLowerInvariant()));
+        var allowed = string.Join(", ", names.Select(n => n.ToLowerInvariant()));
         throw new ParameterException($"Invalid value in '{raw}': expected one of {allowed}.");
     }
 }
