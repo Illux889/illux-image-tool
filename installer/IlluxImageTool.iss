@@ -84,16 +84,16 @@ const
   SidAdmins = '*S-1-5-32-544';
   SidUsers = '*S-1-5-32-545';
 
-  FILE_ATTRIBUTE_REPARSE_POINT = $400;
-  INVALID_FILE_ATTRIBUTES = $FFFFFFFF;
-  SE_FILE_OBJECT = 1;
-  OWNER_SECURITY_INFORMATION = 1;
+  AttrReparsePoint = $400;
+  AttrInvalid = $FFFFFFFF;
+  SeFileObject = 1;
+  OwnerSecurityInfo = 1;
   WinLocalSystemSid = 22;
   WinBuiltinAdministratorsSid = 26;
 
-  SERVICE_NOT_INSTALLED = -1;
-  SERVICE_STOPPED = 1;
-  SERVICE_RUNNING = 4;
+  SvcNotInstalled = -1;
+  SvcStopped = 1;
+  SvcRunning = 4;
 
   DirRoot = 0;          // SYSTEM/Administrators full, Users read; protected (R29, R34)
   DirUsersModify = 1;   // inherits the root, plus an explicit Users modify grant (runs, logs, requests)
@@ -163,7 +163,7 @@ end;
 
 { ---------- service ---------- }
 
-{ The STATE line of "sc query" ("STATE : 4  RUNNING"); SERVICE_NOT_INSTALLED when there is no such service. }
+{ The STATE line of "sc query" ("STATE : 4  RUNNING"); SvcNotInstalled when there is no such service. }
 function ServiceState: Integer;
 var
   Output: TExecOutput;
@@ -181,7 +181,7 @@ begin
   end;
   if Code = 1060 then
   begin
-    Result := SERVICE_NOT_INSTALLED;
+    Result := SvcNotInstalled;
     Exit;
   end;
   for I := 0 to GetArrayLength(Output.StdOut) - 1 do
@@ -210,7 +210,7 @@ begin
   for I := 0 to Seconds * 2 do
   begin
     State := ServiceState;
-    if (State = Wanted) or ((Wanted = SERVICE_STOPPED) and (State = SERVICE_NOT_INSTALLED)) then
+    if (State = Wanted) or ((Wanted = SvcStopped) and (State = SvcNotInstalled)) then
     begin
       Result := True;
       Exit;
@@ -225,22 +225,22 @@ var
   State: Integer;
 begin
   State := ServiceState;
-  ServiceWasInstalled := State <> SERVICE_NOT_INSTALLED;
-  if (State = SERVICE_NOT_INSTALLED) or (State = SERVICE_STOPPED) then
+  ServiceWasInstalled := State <> SvcNotInstalled;
+  if (State = SvcNotInstalled) or (State = SvcStopped) then
     Exit;
   Sc('stop ' + ServiceName);
-  if not WaitForServiceState(SERVICE_STOPPED, 90) then
+  if not WaitForServiceState(SvcStopped, 90) then
   begin
     Log('The service did not stop within 90 seconds; ending its process.');
     RunHidden(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#ServiceExe}');
-    WaitForServiceState(SERVICE_STOPPED, 15);
+    WaitForServiceState(SvcStopped, 15);
   end;
 end;
 
 procedure StartService;
 begin
   Sc('start ' + ServiceName);
-  if WaitForServiceState(SERVICE_RUNNING, 60) then
+  if WaitForServiceState(SvcRunning, 60) then
     Log('The service is running.')
   else
     Log('The service did not reach the running state within 60 seconds.');
@@ -251,7 +251,7 @@ var
   BinPath: String;
 begin
   BinPath := '"\"' + ExpandConstant('{app}\{#ServiceExe}') + '\""';
-  if ServiceState = SERVICE_NOT_INSTALLED then
+  if ServiceState = SvcNotInstalled then
     Sc('create ' + ServiceName + ' binPath= ' + BinPath + ' start= auto DisplayName= "Illux Image Tool Watcher"')
   else
     { Upgrade: keep the start type and the account someone may have chosen in the settings window. }
@@ -332,7 +332,7 @@ var
   Attributes: Cardinal;
 begin
   Attributes := GetFileAttributesW(Path);
-  Result := (Attributes <> INVALID_FILE_ATTRIBUTES) and ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0);
+  Result := (Attributes <> AttrInvalid) and ((Attributes and AttrReparsePoint) <> 0);
 end;
 
 function HasTrustedOwner(const Path: String): Boolean;
@@ -342,7 +342,7 @@ begin
   Result := False;
   Owner := 0;
   Descriptor := 0;
-  if GetNamedSecurityInfoW(Path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, Owner, 0, 0, 0, Descriptor) <> 0 then
+  if GetNamedSecurityInfoW(Path, SeFileObject, OwnerSecurityInfo, Owner, 0, 0, 0, Descriptor) <> 0 then
     Exit;
   try
     Result := (IsWellKnownSid(Owner, WinLocalSystemSid) <> 0) or (IsWellKnownSid(Owner, WinBuiltinAdministratorsSid) <> 0);
@@ -398,7 +398,7 @@ var
   Aside: String;
 begin
   Result := '';
-  if GetFileAttributesW(Path) <> INVALID_FILE_ATTRIBUTES then
+  if GetFileAttributesW(Path) <> AttrInvalid then
   begin
     if DirExists(Path) and not IsReparsePoint(Path) and HasTrustedOwner(Path) then
       Exit;
@@ -463,7 +463,7 @@ begin
     Code := -1;
   Log(Format('vc_redist.x64.exe -> %d', [Code]));
   case Code of
-    0, 1638: ;                           { installed, or a newer version is already there }
+    0, 1638: Log('The VC++ runtime is installed (or a newer one already was).');
     1641, 3010: VCRedistNeedsRestart := True;
   else
     Result := Format('The Microsoft Visual C++ runtime could not be installed (error %d).', [Code]);
