@@ -52,7 +52,19 @@ public static class ConfigStore
         try
         {
             File.WriteAllText(temp, JsonSerializer.Serialize(config, Json));
-            File.Move(temp, path, overwrite: true);
+            // The service reads config.json while the window saves it; a reader holding it open makes the replace fail briefly (R33).
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(temp, path, overwrite: true);
+                    break;
+                }
+                catch (Exception ex) when (attempt < 20 && ex is IOException or UnauthorizedAccessException)
+                {
+                    Thread.Sleep(50);
+                }
+            }
         }
         finally
         {

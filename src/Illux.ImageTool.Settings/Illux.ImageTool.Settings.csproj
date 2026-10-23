@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Illux.ImageTool.Settings</RootNamespace>
+    <AssemblyName>IlluxImageToolSettings</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Core for config, parameters and update state; Cli only for CliHelp.Text, so the AE parameter help is always the same text as the command-line help. -->
+    <ProjectReference Include="..\Illux.ImageTool.Core\Illux.ImageTool.Core.csproj" />
+    <ProjectReference Include="..\Illux.ImageTool.Cli\Illux.ImageTool.Cli.csproj" />
+    <InternalsVisibleTo Include="Illux.ImageTool.Tests" />
+  </ItemGroup>
+
+</Project>
