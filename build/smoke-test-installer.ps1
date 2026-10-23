@@ -107,6 +107,11 @@ function Invoke-InstallerAsSystem([string]$Path, [string]$LogName) {
     $result = (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
     Show-Log $log
+    if ($result -ne 0 -and $result -ne 7) {
+        # A crash: show what Windows recorded about it.
+        Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000, 1001, 1026; StartTime = (Get-Date).AddMinutes(-20) } -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "Event $($_.Id): $($_.Message)" }
+    }
     if (-not $finished) { return 'timeout' }
     return $result
 }

@@ -114,13 +114,6 @@ const
   MaskModify = $1301BF;
   MaskCreateHere = $100006;
 
-type
-  TSecurityAttributes = record
-    nLength: Cardinal;
-    lpSecurityDescriptor: Cardinal;
-    bInheritHandle: Integer;
-  end;
-
 var
   VCRedistNeedsRestart: Boolean;
   ServiceWasInstalled: Boolean;   // the service existed when this setup began
@@ -135,8 +128,16 @@ var
 
 function GetFileAttributesW(lpFileName: String): Cardinal;
   external 'GetFileAttributesW@kernel32.dll stdcall';
-function CreateDirectoryW(lpPathName: String; var lpSecurityAttributes: TSecurityAttributes): Integer;
+{ Native memory is only ever touched through these calls: Pascal Script records and strings are never handed to
+  Windows to write into. }
+function CreateDirectoryW(lpPathName: String; lpSecurityAttributes: Cardinal): Integer;
   external 'CreateDirectoryW@kernel32.dll stdcall';
+function LocalAlloc(uFlags, uBytes: Cardinal): Cardinal;
+  external 'LocalAlloc@kernel32.dll stdcall';
+procedure CopyCardinalToMemory(Destination: Cardinal; var Source: Cardinal; Length: Cardinal);
+  external 'RtlMoveMemory@kernel32.dll stdcall';
+procedure CopyWordFromMemory(var Destination: Word; Source: Cardinal; Length: Cardinal);
+  external 'RtlMoveMemory@kernel32.dll stdcall';
 function GetNamedSecurityInfoW(pObjectName: String; ObjectType: Integer; SecurityInfo: Cardinal;
   ppsidOwner, ppsidGroup, ppDacl, ppSacl: Cardinal; var ppSecurityDescriptor: Cardinal): Cardinal;
   external 'GetNamedSecurityInfoW@advapi32.dll stdcall';
@@ -148,8 +149,6 @@ function ConvertStringSecurityDescriptorToSecurityDescriptorW(StringSecurityDesc
   external 'ConvertStringSecurityDescriptorToSecurityDescriptorW@advapi32.dll stdcall';
 function lstrlenW(lpString: Cardinal): Integer;
   external 'lstrlenW@kernel32.dll stdcall';
-function lstrcpyW(lpString1: String; lpString2: Cardinal): Cardinal;
-  external 'lstrcpyW@kernel32.dll stdcall';
 function LocalFree(hMem: Cardinal): Cardinal;
   external 'LocalFree@kernel32.dll stdcall';
 
@@ -433,7 +432,8 @@ end;
 function GetSddl(const Path: String; var Sddl: String): Boolean;
 var
   Descriptor, Text: Cardinal;
-  Len: Integer;
+  Len, I: Integer;
+  Ch: Word;
 begin
   Result := False;
   Sddl := '';
@@ -446,9 +446,11 @@ begin
       Exit;
     try
       Len := lstrlenW(Text);
-      SetLength(Sddl, Len);
-      if Len > 0 then
-        lstrcpyW(Sddl, Text);
+      for I := 0 to Len - 1 do
+      begin
+        CopyWordFromMemory(Ch, Text + I * 2, 2);
+        Sddl := Sddl + Chr(Ch);
+      end;
       Result := True;
     finally
       LocalFree(Text);
@@ -645,8 +647,7 @@ end;
 { Creates the folder with its final owner and DACL in one step. Returns '' or an error message. }
 function CreateSecureDir(const Path: String; Kind: Integer): String;
 var
-  Attributes: TSecurityAttributes;
-  Descriptor: Cardinal;
+  Attributes, Descriptor, Value: Cardinal;
   Sddl: String;
   Created: Boolean;
   Attempt, Error: Integer;
@@ -669,12 +670,24 @@ begin
       Exit;
     end;
     try
-      Attributes.nLength := 12;
-      Attributes.lpSecurityDescriptor := Descriptor;
-      Attributes.bInheritHandle := 0;
-      Created := CreateDirectoryW(Path, Attributes) <> 0;
-      if not Created then
-        Error := DLLGetLastError;
+      { SECURITY_ATTRIBUTES (32-bit): nLength, lpSecurityDescriptor, bInheritHandle. }
+      Attributes := LocalAlloc($40 { LPTR }, 12);
+      if Attributes = 0 then
+      begin
+        Result := 'Out of memory.';
+        Exit;
+      end;
+      try
+        Value := 12;
+        CopyCardinalToMemory(Attributes, Value, 4);
+        Value := Descriptor;
+        CopyCardinalToMemory(Attributes + 4, Value, 4);
+        Created := CreateDirectoryW(Path, Attributes) <> 0;
+        if not Created then
+          Error := DLLGetLastError;
+      finally
+        LocalFree(Attributes);
+      end;
     finally
       LocalFree(Descriptor);
     end;
