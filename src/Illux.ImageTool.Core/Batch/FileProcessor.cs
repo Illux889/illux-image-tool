@@ -57,6 +57,8 @@ public static class FileProcessor
             (targetImage, targetPdf) = ResolveNames(outputFolder, baseName, extension, targetImage, targetPdf, namePolicy);
             if (FirstClaimed(claimedNames, targetImage, targetPdf) is { } clash2)
                 return Failed(inputPath, $"output name '{clash2}' is already used by another file in this batch");
+            if (new[] { targetImage, targetPdf }.Any(t => t is not null && FileIdentity.AreSame(Path.Combine(outputFolder, t), inputPath)))
+                return Failed(inputPath, "output would replace the input file; choose a different output folder");
 
             Directory.CreateDirectory(tempDir);
             var tempImage = Path.Combine(tempDir, fileName);
@@ -74,8 +76,9 @@ public static class FileProcessor
             }
 
             ct.ThrowIfCancellationRequested();
-            if (targetImage is not null) moved.Add(MoveIntoPlace(tempImage, Path.Combine(outputFolder, targetImage)));
-            if (targetPdf is not null) moved.Add(MoveIntoPlace(tempPdf, Path.Combine(outputFolder, targetPdf)));
+            var overwrite = namePolicy == NamePolicy.Overwrite;
+            if (targetImage is not null) moved.Add(MoveIntoPlace(tempImage, Path.Combine(outputFolder, targetImage), overwrite));
+            if (targetPdf is not null) moved.Add(MoveIntoPlace(tempPdf, Path.Combine(outputFolder, targetPdf), overwrite));
 
             foreach (var name in new[] { targetImage, targetPdf }.OfType<string>()) claimedNames.Add(name);
             return new FileResult(inputPath, result.Status, messages, moved);
@@ -117,9 +120,10 @@ public static class FileProcessor
         }
     }
 
-    private static string MoveIntoPlace(string from, string to)
+    /// <summary>With <see cref="NamePolicy.Suffix"/> a file that appeared since the name was chosen is never replaced: the move fails and the file is retried later.</summary>
+    private static string MoveIntoPlace(string from, string to, bool overwrite)
     {
-        File.Move(from, to, overwrite: true);
+        File.Move(from, to, overwrite);
         return to;
     }
 

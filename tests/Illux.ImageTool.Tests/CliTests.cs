@@ -128,6 +128,82 @@ public sealed class CliTests : AppRootTestBase
         Assert.Equal(["a.pdf"], OutNames());
     }
 
+    /// <summary>A 72 ppi file: the default operations would change it, so an overwrite would be visible in its bytes.</summary>
+    private string ChangingJpeg(string name) => TestImages.Write(In, name, 60, 40, ColorSpace.sRGB, 8, 72);
+
+    private static string[] Names(string folder) =>
+        Directory.GetFileSystemEntries(folder).Select(p => Path.GetFileName(p)).Order().ToArray();
+
+    [Fact]
+    public async Task Cli_Run_OutEqualsInputFolder_ErrorAndOriginalUntouched()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+
+        var (exit, output) = await Run("run", In, "--out", In);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("ERROR: a.jpg: output would replace the input file; choose a different output folder", output);
+        Assert.Equal(before, File.ReadAllBytes(a));
+        Assert.Equal(["a.jpg"], Names(In));
+    }
+
+    [Fact]
+    public async Task Cli_Ae_OutEqualsInputFolder_DifferentCaseAndDotSegments_ErrorAndOriginalUntouched()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+        var sameFolder = Path.Combine(In.ToUpperInvariant(), "sub", "..", ".") + Path.DirectorySeparatorChar;
+
+        var (exit, output) = await Run("ae", a, sameFolder);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("output would replace the input file", output);
+        Assert.Equal(before, File.ReadAllBytes(a));
+        Assert.Equal(["a.jpg"], Names(In));
+    }
+
+    [Fact]
+    public async Task Cli_Ae_OutEqualsInputFolder_OutputBoth_ErrorAndNoPdfLeftBehind()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+
+        var (exit, _) = await Run("ae", a, In, "output=both");
+
+        Assert.Equal(2, exit);
+        Assert.Equal(before, File.ReadAllBytes(a));
+        Assert.Equal(["a.jpg"], Names(In));
+    }
+
+    [FactWhenJunctionsWork]
+    public async Task Cli_Run_OutIsAJunctionToTheInputFolder_ErrorAndOriginalUntouched()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+        var alias = Path.Combine(Dir, "alias");
+        Assert.True(FactWhenJunctionsWorkAttribute.TryCreateJunction(alias, In));
+
+        var (exit, output) = await Run("run", a, "--out", alias);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("output would replace the input file", output);
+        Assert.Equal(before, File.ReadAllBytes(a));
+    }
+
+    [Fact]
+    public async Task Cli_Ae_OutEqualsInputFolder_OutputPdf_IsAllowed()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+
+        var (exit, _) = await Run("ae", a, In, "output=pdf");
+
+        Assert.NotEqual(2, exit); // the PDF has a different name, so writing next to the input is fine
+        Assert.Equal(before, File.ReadAllBytes(a));
+        Assert.Equal(["a.jpg", "a.pdf"], Names(In));
+    }
+
     [Fact]
     public async Task Cli_Run_WithoutOut_Returns2()
     {
