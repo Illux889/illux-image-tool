@@ -51,7 +51,7 @@ Final: open — N1 (Important, security): RemoveStaleTempFolders as SYSTEM recur
 
 ## Open / parked after the final review
 
-- **Open (security, needs a fix):** the watcher's cleanup of old `.illux-tmp-*` folders in Out runs as SYSTEM and can be tricked by a user who can create folders in Out into deleting files elsewhere. Fix: only clean temp folders the service itself created with a locked-down ACL (or drop the cleanup).
+- **Fixed (N1, R46):** temp folders are created with a protected ACL (SYSTEM, Administrators, the running account; files inside still get Out's permissions) and the watcher only removes old ones that still have it, deleting depth first without following links; anything else is logged and left.
 - Parked: a user who can replace a *parent* folder of Out/Error with a link is not detected (documented risk; optional hardening: pin each folder's resolved path at start).
 - Parked: a squatted update event is not retried until service restart; release.yml also accepts v0.0.x tags; the account check runs on the UI thread.
 - Parked: recommend running Esko's Script Runner under a normal account, not LocalSystem (add to ae-setup.md).

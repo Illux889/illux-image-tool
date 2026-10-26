@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text;
+using Illux.ImageTool.Batch;
 using Illux.ImageTool.Runtime;
 using Illux.ImageTool.Update;
 using Illux.ImageTool.Watch;
@@ -213,7 +214,8 @@ public sealed class WatchWorkerTests : IDisposable
     {
         var folder = Folder("cleanup");
         Directory.CreateDirectory(folder.In);
-        var stale = Directory.CreateDirectory(Path.Combine(folder.Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        var stale = new DirectoryInfo(Path.Combine(folder.Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        TempFolder.Create(stale.FullName); // as FileProcessor makes it
         File.WriteAllText(Path.Combine(stale.FullName, "half.jpg"), "left by a killed service");
         Directory.SetLastWriteTimeUtc(stale.FullName, DateTime.UtcNow - TimeSpan.FromHours(2));
         Directory.SetCreationTimeUtc(stale.FullName, DateTime.UtcNow - TimeSpan.FromHours(2));
@@ -246,11 +248,11 @@ public sealed class WatchWorkerTests : IDisposable
         Assert.True(await WaitUntil(() => Created("a") == 1 && Created("b") == 1));
 
         // a is unchanged, b is disabled, c is new
-        TestImages.Write(b.In, "b1.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
         TestImages.Write(c.In, "c1.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
         b.Enabled = false;
         SaveConfig(new WatcherConfig { Folders = [a, b, c] });
         Assert.True(await WaitUntil(() => Exists(c.Out)));
+        TestImages.Write(b.In, "b1.jpg", 60, 40, ColorSpace.sRGB, 8, 200); // only now: b's old scanner could otherwise take it
         await Task.Delay(300);
         Assert.False(Directory.Exists(b.Out), "a disabled folder must not be scanned");
         Assert.Equal(1, Created("a"));

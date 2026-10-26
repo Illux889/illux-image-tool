@@ -186,11 +186,13 @@ public sealed class FolderScanner
 
     /// <summary>
     /// Removes temporary output folders (<c>.illux-tmp-*</c>) older than an hour from Out: a service that was killed
-    /// in the middle of a file (for example by an installer after its time-out) leaves one behind. A link is never
-    /// followed or removed. Best effort.
+    /// in the middle of a file (for example by an installer after its time-out) leaves one behind. Only a folder the tool
+    /// made itself (owner and protected ACL, see <see cref="TempFolder"/>) is removed, and no link is followed (R46);
+    /// anything else is logged and left for an administrator. Best effort.
     /// </summary>
     public void RemoveStaleTempFolders()
     {
+        if (!OperatingSystem.IsWindows()) return;
         try
         {
             var outFolder = new DirectoryInfo(_folder.Out);
@@ -198,12 +200,16 @@ public sealed class FolderScanner
             var now = NowUtc;
             foreach (var temp in outFolder.EnumerateDirectories(FileProcessor.TempPrefix + "*"))
             {
-                if (temp.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
                 var latest = temp.LastWriteTimeUtc > temp.CreationTimeUtc ? temp.LastWriteTimeUtc : temp.CreationTimeUtc;
                 if (now - latest < StaleTempAge) continue;
                 try
                 {
-                    temp.Delete(recursive: true); // .NET removes links inside without following them
+                    if (TempFolder.WhyNotOurs(temp) is { } reason)
+                    {
+                        _log.LogWarning("Watched folder '{Name}': left the old temporary folder '{Temp}' alone because {Reason}; an administrator may remove it.", _folder.Name, temp.FullName, reason);
+                        continue;
+                    }
+                    TempFolder.DeleteTree(temp.FullName);
                     _log.LogInformation("Watched folder '{Name}': removed the unfinished temporary folder '{Temp}'.", _folder.Name, temp.Name);
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

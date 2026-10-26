@@ -62,7 +62,8 @@ public static class FileProcessor
             if (new[] { targetImage, targetPdf }.Any(t => t is not null && FileIdentity.AreSame(Path.Combine(outputFolder, t), inputPath)))
                 return Failed(inputPath, "output would replace the input file; choose a different output folder");
 
-            Directory.CreateDirectory(tempDir);
+            if (OperatingSystem.IsWindows()) TempFolder.Create(tempDir); // R46: only this account, SYSTEM and Administrators may change it
+            else Directory.CreateDirectory(tempDir);
             LinkGuard.ThrowIfLinkedFolder(tempDir); // R44: nothing is written through a folder swapped for a link
             var tempImage = Path.Combine(tempDir, fileName);
             var result = await ImagePipeline.RunAsync(inputPath, tempImage, options, ct).ConfigureAwait(false);

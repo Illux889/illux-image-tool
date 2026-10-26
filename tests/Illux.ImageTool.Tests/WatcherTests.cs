@@ -1,4 +1,5 @@
 using ImageMagick;
+using Illux.ImageTool.Batch;
 using Illux.ImageTool.Watch;
 using Microsoft.Extensions.Logging;
 
@@ -111,25 +112,52 @@ public sealed class WatcherTests : IDisposable
         Assert.False(scanner.Busy);
     }
 
-    [Fact]
-    public void RemoveStaleTempFolders_OnlyOldTempFoldersInOut()
+    private string ToolTempFolder()
     {
-        Directory.CreateDirectory(Out);
-        var old = Directory.CreateDirectory(Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
-        File.WriteAllText(Path.Combine(old.FullName, "half.jpg"), "partial");
-        var fresh = Directory.CreateDirectory(Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        var path = Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N"));
+        TempFolder.Create(path); // exactly what FileProcessor does
+        return path;
+    }
+
+    private void Age(string folder)
+    {
+        var old = _clock.GetUtcNow().UtcDateTime - TimeSpan.FromHours(1) - TimeSpan.FromMinutes(1);
+        Directory.SetCreationTimeUtc(folder, old);
+        Directory.SetLastWriteTimeUtc(folder, old);
+    }
+
+    [Fact]
+    public void RemoveStaleTempFolders_OnlyOldTempFoldersMadeByTheToolInOut()
+    {
+        var old = ToolTempFolder();
+        File.WriteAllText(Path.Combine(old, "half.jpg"), "partial");
+        var fresh = ToolTempFolder();
         var customer = Directory.CreateDirectory(Path.Combine(Out, "illux-tmp-not-ours"));
-        var hour = TimeSpan.FromHours(1);
-        Directory.SetLastWriteTimeUtc(old.FullName, _clock.GetUtcNow().UtcDateTime - hour - TimeSpan.FromMinutes(1));
-        Directory.SetCreationTimeUtc(old.FullName, _clock.GetUtcNow().UtcDateTime - hour - TimeSpan.FromMinutes(1));
-        Directory.SetLastWriteTimeUtc(fresh.FullName, _clock.GetUtcNow().UtcDateTime - TimeSpan.FromMinutes(5));
+        Age(old);
+        Directory.SetLastWriteTimeUtc(fresh, _clock.GetUtcNow().UtcDateTime - TimeSpan.FromMinutes(5));
         Directory.SetLastWriteTimeUtc(customer.FullName, _clock.GetUtcNow().UtcDateTime - TimeSpan.FromDays(3));
 
         Scanner().RemoveStaleTempFolders();
 
-        Assert.False(Directory.Exists(old.FullName));
-        Assert.True(Directory.Exists(fresh.FullName)); // may belong to a file being written right now
+        Assert.False(Directory.Exists(old));
+        Assert.True(Directory.Exists(fresh)); // may belong to a file being written right now
         Assert.True(Directory.Exists(customer.FullName));
+        Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [Fact]
+    public void RemoveStaleTempFolders_PlantedFolderWithInheritedPermissions_IsLeftAlone()
+    {
+        // N1: anyone who may create folders in Out can make one with this name; the watcher (SYSTEM) must not delete it.
+        Directory.CreateDirectory(Out);
+        var planted = Directory.CreateDirectory(Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N")));
+        File.WriteAllText(Path.Combine(planted.FullName, "x.jpg"), "planted");
+        Age(planted.FullName);
+
+        Scanner().RemoveStaleTempFolders();
+
+        Assert.True(File.Exists(Path.Combine(planted.FullName, "x.jpg")));
+        Assert.Single(_log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains(planted.Name));
     }
 
     [FactWhenJunctionsWork]
@@ -140,12 +168,32 @@ public sealed class WatcherTests : IDisposable
         File.WriteAllText(Path.Combine(elsewhere.FullName, "keep.txt"), "not ours");
         var link = Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N"));
         Assert.True(FactWhenJunctionsWorkAttribute.TryCreateJunction(link, elsewhere.FullName));
-        _clock.Advance(TimeSpan.FromDays(1));
+        _clock.Advance(TimeSpan.FromDays(3650));
 
         Scanner().RemoveStaleTempFolders();
 
         Assert.True(File.Exists(Path.Combine(elsewhere.FullName, "keep.txt")));
         Assert.True(Directory.Exists(link)); // a link is left alone altogether
+        Assert.Single(_log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains(Path.GetFileName(link)));
+    }
+
+    [FactWhenJunctionsWork]
+    public void RemoveStaleTempFolders_JunctionInsideOurFolder_RemovesTheJunctionNotItsTarget()
+    {
+        var temp = ToolTempFolder();
+        var elsewhere = Directory.CreateDirectory(Path.Combine(_dir, "elsewhere"));
+        File.WriteAllText(Path.Combine(elsewhere.FullName, "canary.txt"), "must survive");
+        Directory.CreateDirectory(Path.Combine(temp, "sub"));
+        File.WriteAllText(Path.Combine(temp, "sub", "half.jpg"), "partial");
+        Assert.True(FactWhenJunctionsWorkAttribute.TryCreateJunction(Path.Combine(temp, "sub", "link"), elsewhere.FullName));
+        Assert.True(FactWhenJunctionsWorkAttribute.TryCreateJunction(Path.Combine(temp, "link"), elsewhere.FullName));
+        Age(temp);
+
+        Scanner().RemoveStaleTempFolders();
+
+        Assert.False(Directory.Exists(temp));
+        Assert.True(File.Exists(Path.Combine(elsewhere.FullName, "canary.txt")));
+        Assert.Equal(["canary.txt"], Names(elsewhere.FullName));
     }
 
     [Fact]
