@@ -56,3 +56,4 @@ Final: open — N1 (Important, security): RemoveStaleTempFolders as SYSTEM recur
 - Parked: a squatted update event is not retried until service restart; release.yml also accepts v0.0.x tags; the account check runs on the UI thread.
 - Parked: recommend running Esko's Script Runner under a normal account, not LocalSystem (add to ae-setup.md).
 - To do by Illux: one real 'Update now' test with two throw-away releases on a test PC; look at the settings window and popup once; compare enlargement quality against Photoshop on real files; check Danish letters in the AE task log.
+- Parked: the tool's own temp folder falls back to normal permissions if Out's permissions can't be read; a user with Full Control on Out could exploit that during processing (same accepted risk class: don't give ordinary users Full Control on hot folders). Easy hardening later: refuse instead of falling back.
