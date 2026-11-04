@@ -236,8 +236,9 @@ check_eq 'config.json keeps its owner and mode after the save' 'root:admin 0664'
 check 'the daemon loaded the new configuration' wait_until 30 log_has 'Configuration loaded: 1 watched folder(s) enabled'
 
 drop_and_check() { # file name, label
-    cp "$TEST_JPEG" "$WORK/$1"
-    mv "$WORK/$1" "$WATCH/In/$1"
+    mkdir -p "$WORK/drop"
+    cp "$TEST_JPEG" "$WORK/drop/$1"
+    mv "$WORK/drop/$1" "$WATCH/In/$1"
     check "$2: the daemon converted a file dropped into the watched In folder" wait_until 120 test -f "$WATCH/Out/$1"
     if [[ -f "$WATCH/Out/$1" ]]; then
         sleep 1

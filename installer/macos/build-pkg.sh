@@ -82,7 +82,9 @@ install -m 0700 "$HERE/uninstall.sh" "$PAYLOAD/$DATA_ROOT/uninstall.sh"
 # --- the settings app bundle ---
 # codesign takes every file in Contents/MacOS for code, so only Mach-O files (the main executable, the runtime's and
 # Avalonia's libraries) are real files there. The rest of the published app (managed assemblies, deps.json, folders)
-# lives in Contents/Resources/app and is linked from Contents/MacOS, where the .NET host looks for it.
+# lives in Contents/Resources/app. The two folders link to each other's files, so each looks like the complete
+# published folder: the main executable finds the app's .dll next to itself, and the .NET host (which resolves that
+# .dll's real path, Contents/Resources/app) finds the runtime libraries next to the .dll.
 APP="$PAYLOAD/Applications/$APP_NAME"
 MACOS="$APP/Contents/MacOS"
 APP_FILES="$APP/Contents/Resources/app"
@@ -94,6 +96,7 @@ for entry in "$APP_FILES"/*; do
     name="$(basename "$entry")"
     if [[ -f "$entry" ]] && file -b "$entry" | grep -q '^Mach-O'; then
         mv "$entry" "$MACOS/$name"
+        ln -s "../../MacOS/$name" "$entry"
     else
         ln -s "../Resources/app/$name" "$MACOS/$name"
     fi
@@ -170,7 +173,7 @@ for script in "$SCRIPTS"/*; do sh -n "$script"; done
 COMPONENTS="$WORK/components.plist"
 pkgbuild --analyze --root "$PAYLOAD" "$COMPONENTS"
 count=0
-while plutil -extract "$count" xml1 -o /dev/null "$COMPONENTS" 2>/dev/null; do count=$((count + 1)); done
+while plutil -extract "$count" xml1 -o /dev/null "$COMPONENTS" >/dev/null 2>&1; do count=$((count + 1)); done
 if [[ "$count" != 1 || "$(plutil -extract 0.RootRelativeBundlePath raw "$COMPONENTS")" != "Applications/$APP_NAME" ]]; then
     echo "Expected exactly one bundle (Applications/$APP_NAME) in the payload:" >&2
     plutil -p "$COMPONENTS" >&2
