@@ -11,8 +11,9 @@ DAEMON_LABEL='dk.illux.imagetool.watcher'
 DAEMON_PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
 TRAY_LABEL='dk.illux.imagetool.tray'
 TRAY_PLIST="/Library/LaunchAgents/${TRAY_LABEL}.plist"
-# For pkill -f (a regular expression): the menu-bar helper, not a settings window of the same program.
-TRAY_PATTERN='Illux Image Tool\.app/Contents/MacOS/IlluxImageToolSettings --tray'
+# For pgrep/pkill -f (regular expressions): the settings app (window or menu-bar helper), and the menu-bar helper only.
+SETTINGS_PATTERN='Illux Image Tool\.app/Contents/MacOS/IlluxImageToolSettings'
+TRAY_PATTERN="$SETTINGS_PATTERN --tray"
 
 say() { echo "Illux Image Tool ${SCRIPT_NAME:-script}: $*"; }
 

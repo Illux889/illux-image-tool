@@ -21,11 +21,13 @@ fail() { say "ERROR: $*"; exit 1; }
 # preinstall moved an untrusted Root aside before the payload went in; here it must be ours.
 reason=$(untrusted_reason "$ROOT" strict)
 [ -z "$reason" ] || fail "'$ROOT' cannot be used: $reason"
-chown root:admin "$ROOT" && chmod 0755 "$ROOT" || fail "could not set the owner and mode of '$ROOT'"
+# chmod -N: no ACL may give anyone more than the mode does (Root, bin/ and the root-only folders below are link-checked).
+chown root:admin "$ROOT" && chmod 0755 "$ROOT" && chmod -N "$ROOT" || fail "could not set the owner and mode of '$ROOT'"
 
 # A known folder that is a link, not a folder or not owned by root is moved aside and made again; a kept one gets its
-# owner and mode back. Only the folder itself is changed, never what users put into logs/ or runs/.
-ensure_dir() { # name mode
+# owner and mode back (and, for the root-only folders, loses any ACL). Only the folder itself is changed, never what
+# users put into logs/ or runs/.
+ensure_dir() { # name mode [clear-acl]
     dir="$ROOT/$1"
     if [ -e "$dir" ] || [ -L "$dir" ]; then
         reason=$(untrusted_reason "$dir")
@@ -33,15 +35,18 @@ ensure_dir() { # name mode
     fi
     if [ ! -e "$dir" ]; then mkdir "$dir" || return 1; fi
     [ -z "$(untrusted_reason "$dir")" ] || return 1
-    chown -h root:wheel "$dir" && chmod -h "$2" "$dir"
+    chown -h root:wheel "$dir" && chmod -h "$2" "$dir" || return 1
+    if [ "${3:-}" = clear-acl ]; then chmod -N "$dir" || return 1; fi
 }
-for spec in update:0700 service-logs:0700 run:0755 logs:1777 runs:1777; do
-    ensure_dir "${spec%%:*}" "${spec##*:}" || fail "could not set up '$ROOT/${spec%%:*}'"
+for spec in update:0700:clear-acl service-logs:0700:clear-acl run:0755:clear-acl logs:1777: runs:1777:; do
+    name=${spec%%:*}
+    rest=${spec#*:}
+    ensure_dir "$name" "${rest%%:*}" "${rest#*:}" || fail "could not set up '$ROOT/$name'"
 done
 
 # Program files (payload): root:wheel, nobody else may write.
 [ -z "$(untrusted_reason "$ROOT/bin")" ] || fail "'$ROOT/bin' is not a root-owned folder"
-chown -R root:wheel "$ROOT/bin" && chmod -R u+rwX,go+rX,go-w "$ROOT/bin" || fail "could not set the owner and mode of '$ROOT/bin'"
+chown -R root:wheel "$ROOT/bin" && chmod -R u+rwX,go+rX,go-w "$ROOT/bin" && chmod -R -N "$ROOT/bin" || fail "could not set the owner and mode of '$ROOT/bin'"
 [ -f "$ROOT/uninstall.sh" ] && [ ! -L "$ROOT/uninstall.sh" ] || fail "'$ROOT/uninstall.sh' is missing"
 chown root:wheel "$ROOT/uninstall.sh" && chmod 0700 "$ROOT/uninstall.sh" || fail "could not secure uninstall.sh"
 for plist in "$DAEMON_PLIST" "$TRAY_PLIST"; do

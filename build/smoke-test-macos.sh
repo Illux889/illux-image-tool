@@ -31,6 +31,7 @@ UPGRADE_PKG="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
 VERSION=$3
 UPGRADE_VERSION=$4
 WORK=$5
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 ROOT='/Library/Application Support/Illux Image Tool'
 APP='/Applications/Illux Image Tool.app'
@@ -42,6 +43,7 @@ CLI="$ROOT/bin/IlluxImageTool"
 SOCKET="$ROOT/run/control.sock"
 WATCH='/Users/Shared/illux-smoke'
 # The updater's command line on macOS (Updater.MacInstallScript), run as: /bin/sh -c <script> sh <package> <log>.
+# Checked against the source before the upgrade test uses it.
 MAC_INSTALL_SCRIPT='exec /usr/sbin/installer -pkg "$1" -target / >"$2" 2>&1'
 FAKE_PLIST='/Library/LaunchDaemons/dk.illux.imagetool.smoke-updater.plist'
 
@@ -59,6 +61,9 @@ wait_until() { # seconds command...
     done
 }
 not() { ! "$@"; }
+# A process that exists and has not ended (a child that ended stays a zombie until it is waited for).
+alive() { local stat; stat=$(ps -o stat= -p "$1" 2>/dev/null); [[ -n "$stat" && "$stat" != Z* ]]; }
+no_acl() { [[ "$(sudo ls -lde "$1" | wc -l | tr -d ' ')" == 1 ]]; }
 
 owner_mode() { stat -f '%Su:%Sg %Mp%Lp' "$1" 2>/dev/null || echo missing; }
 daemon_print() { launchctl print "system/$LABEL" 2>/dev/null; }
@@ -138,6 +143,10 @@ check_eq 'logs/' 'root:wheel 1777' "$(owner_mode "$ROOT/logs")"
 check_eq 'runs/' 'root:wheel 1777' "$(owner_mode "$ROOT/runs")"
 check_eq 'daemon plist' 'root:wheel 0644' "$(owner_mode "$DAEMON_PLIST")"
 check_eq 'tray agent plist' 'root:wheel 0644' "$(owner_mode "$TRAY_PLIST")"
+for folder in "$ROOT" "$ROOT/bin" "$ROOT/update" "$ROOT/service-logs" "$ROOT/run"; do
+    check "no ACL on ${folder#"$ROOT"}/" no_acl "$folder"
+done
+check_eq 'nothing in the app is writable by group or others' '' "$(find "$APP" -perm +022 -print)"
 check_eq 'folders every Mac has kept their owners and modes' "$SYSTEM_MODES_BEFORE" "$(system_folder_modes)"
 echo "$SYSTEM_MODES_BEFORE"
 
@@ -171,6 +180,9 @@ check_eq 'command-line tool version' "$VERSION" "$("$CLI" --version 2>&1)"
 # The app's managed files are linked from Contents/MacOS; starting the window shows that the .NET host finds them.
 console_user=$(stat -f %Su /dev/console)
 if [[ "$console_user" == "$(id -un)" ]]; then
+    # This user has a desktop session, so the menu-bar helper must have been started for them.
+    check "postinstall started the menu-bar helper for $(id -un)" grep -q "started the menu-bar helper for user $(id -u)\$" <<< "$postinstall_lines"
+    check 'the menu-bar helper is running' wait_until 20 pgrep -f 'IlluxImageToolSettings --tray'
     "$APP/Contents/MacOS/IlluxImageToolSettings" > "$WORK/settings-window.log" 2>&1 &
     window_pid=$!
     sleep 15
@@ -219,8 +231,13 @@ sips -s format jpeg -s dpiWidth 150 -s dpiHeight 150 "$WORK/print.png" --out "$W
 TEST_JPEG="$WORK/print-20x15cm-150ppi.jpg"
 check_eq 'test JPEG size and resolution' '1181 886 150 150' "$(image_value "$TEST_JPEG" pixelWidth) $(image_value "$TEST_JPEG" pixelHeight) $(image_value "$TEST_JPEG" dpiWidth) $(image_value "$TEST_JPEG" dpiHeight)"
 
-# The settings app saves config.json in place as an administrator; so does this test (no sudo).
+# V14: any local user may give the root-owned config.json a second name in the sticky logs/ folder (same volume).
 CONFIG="$ROOT/config.json"
+ln "$CONFIG" "$ROOT/logs/smoke-config-link"
+check_eq 'a user gave config.json a second name in logs/' 2 "$(stat -f %l "$CONFIG")"
+
+# The settings app saves config.json in place as an administrator (ConfigStore.SaveInPlace, covered by the unit
+# tests); this test does the same from the shell (no sudo), with the second name in place.
 inode_before=$(stat -f %i "$CONFIG")
 cat > "$CONFIG" <<EOF
 {
@@ -232,6 +249,7 @@ cat > "$CONFIG" <<EOF
 EOF
 check 'an administrator can save config.json in place (without sudo)' test $? -eq 0
 check_eq 'config.json is the same file after the save (in place)' "$inode_before" "$(stat -f %i "$CONFIG")"
+check_eq 'the second name shows the saved content' "$(sha "$CONFIG")" "$(sha "$ROOT/logs/smoke-config-link")"
 check_eq 'config.json keeps its owner and mode after the save' 'root:admin 0664' "$(owner_mode "$CONFIG")"
 check 'the daemon loaded the new configuration' wait_until 30 log_has 'Configuration loaded: 1 watched folder(s) enabled'
 
@@ -252,11 +270,21 @@ drop_and_check print-20x15cm-150ppi.jpg 'after install'
 
 # =====================================================================================================================
 section 'Upgrade the way the daemon runs it'
+shipped_script=$(sed -n 's/.*const string MacInstallScript = "\(.*\)";.*/\1/p' "$REPO_ROOT/src/Illux.ImageTool.Core/Update/Updater.cs" | sed 's/\\"/"/g')
+check_eq 'the simulated command line is Updater.MacInstallScript' "$MAC_INSTALL_SCRIPT" "$shipped_script"
 CONFIG_HASH=$(sha "$CONFIG")
 CONFIG_INODE=$(stat -f %i "$CONFIG")
 CHECKS_BEFORE=$(log_count 'Update check requested')
 PREINSTALL_BOOTOUTS=$(grep -c 'preinstall: stopped the watcher daemon' /var/log/install.log)
 UPGRADE_START_LINE=$(wc -l < /var/log/install.log)
+UPGRADE_WINDOW_PID=''
+if [[ "$console_user" == "$(id -un)" ]]; then
+    # An open settings window: preinstall must end it (its program files are replaced).
+    "$APP/Contents/MacOS/IlluxImageToolSettings" > "$WORK/window-during-upgrade.log" 2>&1 &
+    UPGRADE_WINDOW_PID=$!
+    sleep 5
+    check 'a settings window is open before the upgrade' alive "$UPGRADE_WINDOW_PID"
+fi
 
 # As the updater does before it starts the installer (and as an interrupted update could leave it).
 sudo sh -c 'printf "smoke\n" > "$1/updating.flag"; printf "{ \"availableVersion\": \"9.9.9\", \"phase\": \"Installing\" }\n" > "$1/update-state.json"' sh "$ROOT"
@@ -317,7 +345,16 @@ check_eq 'command-line tool version after the upgrade' "$UPGRADE_VERSION" "$("$C
 check_eq 'app version after the upgrade' "$UPGRADE_VERSION" "$(plist_value "$APP/Contents/Info.plist" CFBundleShortVersionString)"
 check 'app bundle signature verifies after the upgrade' codesign --verify --deep --strict "$APP"
 check_eq 'config.json unchanged by the upgrade' "$CONFIG_HASH" "$(sha "$CONFIG")"
-check_eq 'config.json is still the same file' "$CONFIG_INODE" "$(stat -f %i "$CONFIG")"
+# config.json had a second name (logs/), so postinstall gave it a file of its own with the same content.
+check 'config.json got a file of its own (new inode)' test "$(stat -f %i "$CONFIG")" != "$CONFIG_INODE"
+check_eq 'config.json link count after the upgrade' 1 "$(stat -f %l "$CONFIG")"
+check 'postinstall reported the copy' grep -q 'config.json has more than one link' <<< "$(tail -n +"$((UPGRADE_START_LINE + 1))" /var/log/install.log)"
+check_eq 'nothing in the app is writable by group or others after the upgrade' '' "$(find "$APP" -perm +022 -print)"
+if [[ -n "$UPGRADE_WINDOW_PID" ]]; then
+    check 'preinstall ended the open settings window' not alive "$UPGRADE_WINDOW_PID"
+    kill "$UPGRADE_WINDOW_PID" 2>/dev/null
+    wait "$UPGRADE_WINDOW_PID" 2>/dev/null
+fi
 check_eq 'config.json owner and mode after the upgrade' 'root:admin 0664' "$(owner_mode "$CONFIG")"
 check 'updating.flag removed' not test -e "$ROOT/updating.flag"
 check 'update state reset to Idle' grep -q '"phase": "Idle"' "$ROOT/update-state.json"
@@ -352,6 +389,7 @@ check 'package receipt forgotten' not pkgutil --pkg-info "$PACKAGE_ID"
 check_eq 'config.json kept' "$CONFIG_HASH" "$(sha "$CONFIG" 2>/dev/null)"
 check 'logs/ kept' test -d "$ROOT/logs"
 check 'service-logs/ kept' sudo test -d "$ROOT/service-logs"
+check_eq 'downloaded packages removed from update/' '' "$(sudo find "$ROOT/update" -name '*.pkg*' -print)"
 check_eq 'folders every Mac has kept their owners and modes after the uninstall' "$SYSTEM_MODES_BEFORE" "$(system_folder_modes)"
 
 dump_diagnostics

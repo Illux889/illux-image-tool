@@ -143,9 +143,8 @@ plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Ad-hoc signatures only (unsigned distribution): the libraries first, then the bundle with its main executable.
-find "$MACOS" -type f ! -name IlluxImageToolSettings | while IFS= read -r file; do
-    codesign --force -s - "$file"
-done
+# find exits non-zero (and set -e stops the build) when codesign fails on any of them.
+find "$MACOS" -type f ! -name IlluxImageToolSettings -exec codesign --force -s - {} +
 codesign --force --deep -s - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 

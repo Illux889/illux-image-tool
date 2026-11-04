@@ -1,7 +1,8 @@
 #!/bin/sh
-# Runs as root before the payload is copied: stops the watcher daemon and the menu-bar helpers, makes sure the payload
-# goes into a trusted data folder (an untrusted one is moved aside first, as on Windows) and removes the previous
-# program files, so an upgrade leaves no stale files behind. Configuration and logs are never touched here.
+# Runs as root before the payload is copied: stops the watcher daemon, the menu-bar helpers and open settings windows
+# (their program files are replaced), makes sure the payload goes into a trusted data folder (an untrusted one is moved
+# aside first, as on Windows) and removes the previous program files, so an upgrade leaves no stale files behind.
+# Configuration and logs are never touched here.
 #
 # When the daemon itself runs this upgrade (/usr/sbin/installer is its child), booting it out here does not end the
 # installer: the daemon's job has AbandonProcessGroup set.
@@ -19,7 +20,8 @@ fi
 for uid in $(gui_users) $(tray_users); do
     launchctl bootout "gui/$uid/$TRAY_LABEL" 2>/dev/null && say "stopped the menu-bar helper of user $uid"
 done
-pkill -f "$TRAY_PATTERN" 2>/dev/null && say "ended remaining menu-bar helpers"
+# Whatever is left: helpers of users without a desktop session, and open settings windows.
+pkill -f "$SETTINGS_PATTERN" 2>/dev/null && say "ended running copies of the settings app"
 
 ensure_root || exit 1
 
