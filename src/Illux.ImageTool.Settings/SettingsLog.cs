@@ -13,7 +13,9 @@ internal static class SettingsLog
 
     public static string FileFor(DateTime now, bool elevated) => Path.Combine(DirectoryFor(elevated), $"settings-{now:yyyyMMdd}.log");
 
-    public static void Write(string message, Exception? exception = null) => Write(message, exception, Elevation.IsElevated());
+    /// <summary>On macOS the app always runs as the user (it has no elevated copy).</summary>
+    public static void Write(string message, Exception? exception = null) =>
+        Write(message, exception, OperatingSystem.IsWindows() && Elevation.IsElevated());
 
     public static void Write(string message, Exception? exception, bool elevated)
     {

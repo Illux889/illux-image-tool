@@ -92,13 +92,42 @@ public sealed class UnixSocketSignals : IServiceSignals
         }
     }
 
+    /// <summary>
+    /// How often a client tries to connect while <c>control.sock</c> exists but refuses the connection: macOS refuses
+    /// at once while the daemon's listen queue is full, which clears as soon as the daemon has taken a request.
+    /// </summary>
+    public const int ConnectAttempts = 3;
+
+    /// <summary>The pause between two of the <see cref="ConnectAttempts"/>.</summary>
+    public static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromMilliseconds(200);
+
     /// <summary>For a client: sends <paramref name="command"/> as one line to the daemon below <paramref name="root"/>.</summary>
-    /// <exception cref="IOException">The daemon is not running or did not take the request.</exception>
+    /// <exception cref="IOException">The daemon is not running, is busy, or did not take the request.</exception>
     /// <exception cref="UnauthorizedAccessException">This account may not connect to the socket.</exception>
     public static void Send(string root, string command)
     {
         if (command is not (CheckCommand or InstallCommand)) throw new ArgumentException($"Unknown command '{command}'.", nameof(command));
         var path = SocketPath(root);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                SendOnce(path, command);
+                return;
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused && File.Exists(path))
+            {
+                // A socket that is there but refuses: a full listen queue (the daemon is busy with other requests), or
+                // one left behind by a daemon that was killed (a stopped daemon removes it). Retried briefly.
+                if (attempt >= ConnectAttempts) throw new IOException(ServiceRequests.BusyMessage, ex);
+                Thread.Sleep(ConnectRetryDelay);
+            }
+        }
+    }
+
+    /// <summary>One connection attempt; a refused connection to an existing socket is left to <see cref="Send"/> to retry.</summary>
+    private static void SendOnce(string path, string command)
+    {
         Socket? socket = null;
         try
         {
@@ -114,6 +143,10 @@ public sealed class UnixSocketSignals : IServiceSignals
         catch (OperationCanceledException ex)
         {
             throw new IOException("The Illux Image Tool service did not take the request in time.", ex);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused && File.Exists(path))
+        {
+            throw; // retried by Send
         }
         catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionRefused or SocketError.AddressNotAvailable || !File.Exists(path))
         {

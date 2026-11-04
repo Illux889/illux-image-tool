@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    On Windows the tests also cover the WinForms settings window (net10.0-windows). Elsewhere (macOS) they target plain
-    net10.0 without the settings window and its tests; Windows-only tests skip themselves ([WindowsFact]).
-    -p:IlluxWindowsTests=false builds the macOS shape on Windows (for checking CA1416 warnings).
+    On Windows the tests target net10.0-windows and also cover the Windows-only parts of the settings app
+    (SettingsTests.cs, SettingsHardeningTests.cs). Elsewhere (macOS) they target plain net10.0 without those two files;
+    Windows-only tests skip themselves ([WindowsFact]). -p:IlluxWindowsTests=false builds the macOS shape on Windows
+    (for checking CA1416 warnings).
   -->
   <PropertyGroup>
     <IlluxWindowsTests Condition="'$(IlluxWindowsTests)' == ''">$([MSBuild]::IsOSPlatform('Windows'))</IlluxWindowsTests>
@@ -19,6 +20,8 @@
     <PackageReference Include="PdfPig" Version="0.1.16" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Avalonia's build-time telemetry comes along with the settings app; switched off here too (see its csproj). -->
+    <PackageReference Include="Avalonia.BuildServices" Version="11.3.2" ExcludeAssets="all" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,9 +32,6 @@
     <ProjectReference Include="..\..\src\Illux.ImageTool.Core\Illux.ImageTool.Core.csproj" />
     <ProjectReference Include="..\..\src\Illux.ImageTool.Cli\Illux.ImageTool.Cli.csproj" />
     <ProjectReference Include="..\..\src\Illux.ImageTool.Watcher\Illux.ImageTool.Watcher.csproj" />
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(IlluxWindowsTests)' == 'true'">
     <ProjectReference Include="..\..\src\Illux.ImageTool.Settings\Illux.ImageTool.Settings.csproj" />
   </ItemGroup>
 

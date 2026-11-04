@@ -18,26 +18,26 @@ public sealed class FolderPathValidationTests
     [InlineData(@"\In")]
     public void RelativeOrDriveRelativePath_IsRejected(string path)
     {
-        var message = FolderDialog.Validate(Folder(inFolder: path));
+        var message = FolderSettings.Validate(Folder(inFolder: path));
         Assert.NotNull(message);
         Assert.Contains("In folder is not a full path", message);
 
-        Assert.Contains("Out folder is not a full path", FolderDialog.Validate(Folder(outFolder: path)));
-        Assert.Contains("Error folder is not a full path", FolderDialog.Validate(Folder(error: path)));
-        Assert.Contains("Originals folder is not a full path", FolderDialog.Validate(Folder(originals: path)));
+        Assert.Contains("Out folder is not a full path", FolderSettings.Validate(Folder(outFolder: path)));
+        Assert.Contains("Error folder is not a full path", FolderSettings.Validate(Folder(error: path)));
+        Assert.Contains("Originals folder is not a full path", FolderSettings.Validate(Folder(originals: path)));
     }
 
     [Fact]
     public void EmptyPath_IsStillAskedFor()
     {
-        Assert.Equal("Choose the In folder.", FolderDialog.Validate(Folder(inFolder: "")));
-        Assert.Equal("Choose the Error folder.", FolderDialog.Validate(Folder(error: "  ")));
+        Assert.Equal("Choose the In folder.", FolderSettings.Validate(Folder(inFolder: "")));
+        Assert.Equal("Choose the Error folder.", FolderSettings.Validate(Folder(error: "  ")));
     }
 
     [Fact]
     public void PathWithNul_IsRejected_NotThrown()
     {
-        var message = FolderDialog.Validate(Folder(inFolder: "C:\\A\0\\In"));
+        var message = FolderSettings.Validate(Folder(inFolder: "C:\\A\0\\In"));
 
         Assert.NotNull(message);
         Assert.Contains("not a full path", message);
@@ -46,14 +46,14 @@ public sealed class FolderPathValidationTests
     [Fact]
     public void FullAndUncPaths_AreAccepted()
     {
-        Assert.Null(FolderDialog.Validate(Folder(@"\\srv\share\In", @"\\srv\share\Out", @"\\srv\share\Error", @"\\srv\share\Originals")));
-        Assert.Null(FolderDialog.Validate(Folder(@"D:\x\In\", @"D:\x\Out\", @"D:\x\Error\")));
+        Assert.Null(FolderSettings.Validate(Folder(@"\\srv\share\In", @"\\srv\share\Out", @"\\srv\share\Error", @"\\srv\share\Originals")));
+        Assert.Null(FolderSettings.Validate(Folder(@"D:\x\In\", @"D:\x\Out\", @"D:\x\Error\")));
     }
 
     [Fact]
     public void RelativeIsReportedBeforeDuplicates()
     {
-        Assert.Contains("not a full path", FolderDialog.Validate(Folder(inFolder: "x", outFolder: "x")));
+        Assert.Contains("not a full path", FolderSettings.Validate(Folder(inFolder: "x", outFolder: "x")));
     }
 }
 

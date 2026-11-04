@@ -1,0 +1,72 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Illux.ImageTool.Settings.FolderWindow"
+        Title="Add folder"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner">
+  <Window.Styles>
+    <Style Selector="TextBlock.label">
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+    </Style>
+  </Window.Styles>
+  <Grid Margin="12" ColumnDefinitions="Auto,360,Auto" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+        RowSpacing="6" ColumnSpacing="6">
+    <TextBlock Grid.Row="0" Classes="label" Text="Name" />
+    <TextBox Grid.Row="0" Grid.Column="1" x:Name="NameBox" />
+
+    <TextBlock Grid.Row="1" Classes="label" Text="In folder" />
+    <TextBox Grid.Row="1" Grid.Column="1" x:Name="InBox" />
+    <Button Grid.Row="1" Grid.Column="2" x:Name="BrowseIn" Content="Browse..." />
+
+    <TextBlock Grid.Row="2" Classes="label" Text="Out folder" />
+    <TextBox Grid.Row="2" Grid.Column="1" x:Name="OutBox" />
+    <Button Grid.Row="2" Grid.Column="2" x:Name="BrowseOut" Content="Browse..." />
+
+    <TextBlock Grid.Row="3" Classes="label" Text="Error folder" />
+    <TextBox Grid.Row="3" Grid.Column="1" x:Name="ErrorBox" />
+    <Button Grid.Row="3" Grid.Column="2" x:Name="BrowseError" Content="Browse..." />
+
+    <TextBlock Grid.Row="4" Classes="label" Text="Originals folder" />
+    <TextBox Grid.Row="4" Grid.Column="1" x:Name="OriginalsBox" PlaceholderText="Empty: an Originals folder next to In" />
+    <Button Grid.Row="4" Grid.Column="2" x:Name="BrowseOriginals" Content="Browse..." />
+
+    <TextBlock Grid.Row="5" Classes="label" Text="Do" VerticalAlignment="Top" Margin="0,6,8,0" />
+    <StackPanel Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2">
+      <CheckBox x:Name="EightBitBox" Content="8-bit" />
+      <!-- The ppi comes from the resolution rules (config.json), not from the folder. -->
+      <CheckBox x:Name="ResampleBox" Content="Resample (ppi from the resolution rules)" />
+      <CheckBox x:Name="BaselineBox" Content="Baseline JPEG" />
+    </StackPanel>
+
+    <TextBlock Grid.Row="6" Classes="label" Text="Output" />
+    <ComboBox Grid.Row="6" Grid.Column="1" x:Name="OutputBox" Width="220">
+      <ComboBoxItem>Same (keep the format)</ComboBoxItem>
+      <ComboBoxItem>PDF</ComboBoxItem>
+      <ComboBoxItem>Both (file and PDF)</ComboBoxItem>
+    </ComboBox>
+
+    <TextBlock Grid.Row="7" Classes="label" Text="If ppi is missing" />
+    <ComboBox Grid.Row="7" Grid.Column="1" x:Name="MissingPpiBox" Width="220">
+      <ComboBoxItem>Assume 72 ppi (warning)</ComboBoxItem>
+      <ComboBoxItem>Skip the file</ComboBoxItem>
+      <ComboBoxItem>Error</ComboBoxItem>
+    </ComboBox>
+
+    <TextBlock Grid.Row="8" Classes="label" Text="JPEG quality" />
+    <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+      <NumericUpDown x:Name="QualityBox" Minimum="1" Maximum="100" Increment="1" Value="95" FormatString="0" Width="130" />
+      <TextBlock Text="(1 to 100)" VerticalAlignment="Center" />
+    </StackPanel>
+
+    <CheckBox Grid.Row="9" Grid.Column="1" x:Name="EnabledBox" Content="Watch this folder" IsChecked="True" />
+
+    <StackPanel Grid.Row="10" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right"
+                Spacing="8" Margin="0,6,0,0">
+      <Button x:Name="OkButton" Content="OK" Width="90" HorizontalContentAlignment="Center" IsDefault="True" />
+      <Button x:Name="CancelButton" Content="Cancel" Width="90" HorizontalContentAlignment="Center" IsCancel="True" />
+    </StackPanel>
+  </Grid>
+</Window>

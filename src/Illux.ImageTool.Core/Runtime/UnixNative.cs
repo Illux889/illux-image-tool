@@ -23,10 +23,14 @@ internal static class UnixNative
     private const int StatBufferSize = 256;
 
     private const int ENOENT = 2;
+    private const int EINTR = 4;
+    private const int EACCES = 13;
     private const int ENOTDIR = 20;
     private const int EWOULDBLOCK = 35;
+    private const int ELOOP = 62;
 
     private const int O_RDONLY = 0x0000;
+    private const int O_WRONLY = 0x0001;
     private const int O_NONBLOCK = 0x0004;
     private const int O_NOFOLLOW = 0x0100;
     private const int O_CLOEXEC = 0x01000000;
@@ -102,6 +106,60 @@ internal static class UnixNative
         }
     }
 
+    /// <summary>
+    /// Replaces the contents of the existing regular file <paramref name="path"/> in place: opened write-only with
+    /// O_NOFOLLOW | O_NONBLOCK (never a link, never blocking on a FIFO), then only when it is a regular file with exactly
+    /// one name: truncated, written, fsync'ed. Nothing is created, so it works in a folder the caller may not write to.
+    /// </summary>
+    /// <exception cref="FileNotFoundException">Nothing is at <paramref name="path"/>.</exception>
+    /// <exception cref="IOException">It is a link, not a regular file, has more than one name, or cannot be written.</exception>
+    /// <exception cref="UnauthorizedAccessException">This account may not write it.</exception>
+    public static void WriteInPlace(string path, ReadOnlySpan<byte> contents)
+    {
+        RequireSupported();
+        var fd = open(path, O_WRONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0)
+        {
+            var errno = Marshal.GetLastPInvokeError();
+            throw errno switch
+            {
+                ENOENT => new FileNotFoundException($"'{path}' does not exist.", path),
+                ELOOP => new IOException($"'{path}' is a link; it is left alone."),
+                EACCES => new UnauthorizedAccessException($"This account may not write '{path}'."),
+                _ => new IOException($"Cannot open '{path}' for writing (errno {errno})."),
+            };
+        }
+        try
+        {
+            var buffer = new byte[StatBufferSize];
+            if (fstat(fd, buffer) != 0) throw new IOException($"Cannot look at '{path}' (errno {Marshal.GetLastPInvokeError()}).");
+            if (!IsSingleRegularFile(Parse(buffer)))
+                throw new IOException($"'{path}' is not a regular file with a single name; it is left alone.");
+            if (ftruncate(fd, 0) != 0) throw new IOException($"Cannot truncate '{path}' (errno {Marshal.GetLastPInvokeError()}).");
+            WriteAll(fd, contents, path);
+            if (fsync(fd) != 0) throw new IOException($"Cannot flush '{path}' (errno {Marshal.GetLastPInvokeError()}).");
+        }
+        finally
+        {
+            close(fd);
+        }
+    }
+
+    private static void WriteAll(int fd, ReadOnlySpan<byte> contents, string path)
+    {
+        while (!contents.IsEmpty)
+        {
+            var written = write(fd, ref MemoryMarshal.GetReference(contents), (nuint)contents.Length);
+            if (written < 0)
+            {
+                var errno = Marshal.GetLastPInvokeError();
+                if (errno == EINTR) continue;
+                throw new IOException($"Cannot write '{path}' (errno {errno}).");
+            }
+            contents = contents[(int)written..];
+        }
+    }
+
     /// <summary>A lock file a run made: a regular file whose only name is the one in <c>runs/</c>.</summary>
     private static bool IsSingleRegularFile(Status status) => status.Type == RegularFileType && status.LinkCount == 1;
 
@@ -128,6 +186,15 @@ internal static class UnixNative
 
     [DllImport("libc", SetLastError = true)]
     private static extern int flock(int fd, int operation);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int ftruncate(int fd, long length);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern nint write(int fd, ref byte buffer, nuint count);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int fsync(int fd);
 
     [DllImport("libc", SetLastError = true)]
     private static extern int close(int fd);

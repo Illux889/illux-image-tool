@@ -403,4 +403,65 @@ public sealed class UnixSocketSignalsTests : IDisposable
         Assert.False(ServiceRequests.RequestCheckNow(out var error));
         Assert.Contains("not running", error);
     }
+
+    /// <summary>
+    /// A listener at control.sock that never accepts, with its listen queue filled until macOS refuses connections:
+    /// what a client sees while the daemon is busy with other requests.
+    /// </summary>
+    private (Socket Listener, List<Socket> Queued) FullListener()
+    {
+        Directory.CreateDirectory(RunDir);
+        var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        _cleanup.Add(listener);
+        listener.Bind(new UnixDomainSocketEndPoint(SocketPath));
+        listener.Listen(1);
+
+        var queued = new List<Socket>();
+        for (var i = 0; i < 64; i++)
+        {
+            var client = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            _cleanup.Add(client);
+            try
+            {
+                client.Connect(new UnixDomainSocketEndPoint(SocketPath));
+                queued.Add(client);
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused)
+            {
+                return (listener, queued);
+            }
+        }
+        throw new InvalidOperationException("The listen queue never filled up.");
+    }
+
+    [MacFact]
+    public void Requests_RefusedWhileTheSocketExists_AreRetried_ThenReportBusy()
+    {
+        FullListener();
+        var watch = Stopwatch.StartNew();
+
+        Assert.False(ServiceRequests.RequestCheckNow(out var error));
+
+        Assert.Equal("The service is busy, try again.", error);
+        Assert.DoesNotContain("not running", error);
+        // Three attempts with two pauses of 200 ms in between.
+        Assert.True(watch.Elapsed >= TimeSpan.FromMilliseconds(350), $"gave up after {watch.Elapsed.TotalMilliseconds} ms");
+        Assert.Equal(3, UnixSocketSignals.ConnectAttempts);
+        Assert.Equal(TimeSpan.FromMilliseconds(200), UnixSocketSignals.ConnectRetryDelay);
+    }
+
+    [MacFact]
+    public void Requests_RefusedOnce_SucceedWhenTheQueueClears()
+    {
+        var (listener, _) = FullListener();
+        // The daemon takes a waiting request shortly after the first refused attempt; the retry then gets in.
+        var draining = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            using var taken = listener.Accept();
+        });
+
+        Assert.True(ServiceRequests.RequestCheckNow(out var error), error);
+        draining.Wait(Wait);
+    }
 }

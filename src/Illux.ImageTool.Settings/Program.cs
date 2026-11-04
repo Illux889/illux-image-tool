@@ -1,7 +1,14 @@
 using System.ComponentModel;
+using System.Runtime.Versioning;
+using Avalonia;
 
 namespace Illux.ImageTool.Settings;
 
+/// <summary>
+/// One executable, several roles. No argument: the settings window. <c>--tray</c>: the tray (Windows) or menu-bar
+/// (macOS) helper, one per user. Windows only: <c>--service start|stop|account</c>, the elevated copy that does one
+/// service action and exits; the window elevates itself (R34), the tray and the service copy never do.
+/// </summary>
 internal static class Program
 {
     private const string TrayMutexName = @"Local\IlluxImageToolTray";
@@ -9,65 +16,51 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        ApplicationConfiguration.Initialize();
-
-        if (ServiceControl.TryParseArguments(args, out var action)) return RunServiceAction(action);
+        if (OperatingSystem.IsWindows() && ServiceControl.TryParseArguments(args, out var action)) return RunServiceAction(action);
 
         if (args.Contains("--tray", StringComparer.OrdinalIgnoreCase))
         {
             // One tray helper per user: a second one started at log-in exits quietly.
             using var mutex = new Mutex(initiallyOwned: true, TrayMutexName, out var first);
             if (!first) return 0;
-            TrayApp.InstallExceptionHandlers();
-            var memory = TrayMemory.CreateDefault();
-            memory.ForgetLater(); // the tray starts at log-in
-            Application.Run(new TrayApp(memory));
-            return 0;
+            TrayHelper.InstallExceptionHandlers();
+            return Run(new Launch(LaunchKind.Tray));
         }
 
-        // config.json is admin-only (R34): the window runs elevated; the non-elevated copy only starts it.
-        if (Elevation.ShouldSelfElevate(args, Elevation.IsElevated()))
+        // Windows: config.json is admin-only (R34): the window runs elevated; the non-elevated copy only starts it.
+        if (OperatingSystem.IsWindows() && Elevation.ShouldSelfElevate(args, Elevation.IsElevated()))
         {
-            if (!Elevation.RelaunchElevated())
-                MessageBox.Show("Illux Image Tool Settings needs administrator rights to change the settings.", "Illux Image Tool",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return 0;
+            return Elevation.RelaunchElevated()
+                ? 0
+                : Run(new Launch(LaunchKind.Message, "Illux Image Tool Settings needs administrator rights to change the settings."));
         }
 
-        Application.Run(new MainForm());
-        return 0;
+        return Run(new Launch(LaunchKind.Window));
     }
 
+    private static int Run(Launch launch) =>
+        AppBuilder.Configure(() => new App { Launch = launch })
+            .UsePlatformDetect()
+            // The menu-bar helper is a menu-bar icon only, without a Dock icon.
+            .With(new MacOSPlatformOptions { ShowInDock = launch.Kind != LaunchKind.Tray })
+            .LogToTrace()
+            .StartWithClassicDesktopLifetime([]);
+
     /// <summary>The elevated copy: does exactly one service action and exits.</summary>
+    [SupportedOSPlatform("windows")]
     private static int RunServiceAction(ServiceAction action)
     {
+        if (action == ServiceAction.Account) return Run(new Launch(LaunchKind.Account));
         try
         {
-            switch (action)
-            {
-                case ServiceAction.Start:
-                    ServiceControl.Start();
-                    break;
-                case ServiceAction.Stop:
-                    ServiceControl.Stop();
-                    break;
-                case ServiceAction.Account:
-                    using (var dialog = new AccountDialog())
-                    {
-                        if (dialog.ShowDialog() != DialogResult.OK) return 1;
-                        ServiceControl.ChangeAccount(dialog.User, dialog.TakePassword());
-                    }
-                    MessageBox.Show("The service account was changed. It is used the next time the service starts.",
-                        "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    break;
-            }
+            if (action == ServiceAction.Start) ServiceControl.Start();
+            else ServiceControl.Stop();
             return 0;
         }
         catch (Exception ex) when (ex is Win32Exception or TimeoutException or InvalidOperationException)
         {
             SettingsLog.Write($"Service action {action} failed.", ex);
-            MessageBox.Show(ex.Message, "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return 2;
+            return Run(new Launch(LaunchKind.Message, ex.Message, ExitCode: 2));
         }
     }
 }

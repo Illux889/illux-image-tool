@@ -9,6 +9,9 @@ public static class ServiceRequests
 {
     internal const string NotRunningMessage = "The Illux Image Tool service is not running, so it cannot receive the request.";
 
+    /// <summary>macOS: the control socket is there but kept refusing the connection for a moment.</summary>
+    internal const string BusyMessage = "The service is busy, try again.";
+
     internal const string NotAllowedMessage = "This account may not send requests to the Illux Image Tool service.";
 
     /// <summary>Asks the service to look for an update now; false when the request could not be delivered.</summary>

@@ -1,3 +1,5 @@
+using System.Runtime.Versioning;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Illux.ImageTool.Options;
@@ -96,6 +98,30 @@ public static class ConfigStore
         finally
         {
             try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>
+    /// macOS, for the settings app (V7): writes the existing <c>config.json</c> (root:admin 0664, made by the installer)
+    /// in place, because Root is root-owned 0755 and a temporary file next to it cannot be created. Never follows a
+    /// link and never creates the file; a reader may briefly see a half-written file, which it treats like any other
+    /// invalid configuration (the service keeps its last good rules).
+    /// </summary>
+    /// <exception cref="IOException">The file is missing, a link, not a regular file with one name, or cannot be written.</exception>
+    /// <exception cref="UnauthorizedAccessException">This account may not write it (not in the admin group).</exception>
+    [SupportedOSPlatform("macos")]
+    public static void SaveInPlace(WatcherConfig config, string? path = null)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        path ??= AppPaths.ConfigFile;
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Json));
+        try
+        {
+            UnixNative.WriteInPlace(path, bytes);
+        }
+        catch (FileNotFoundException ex)
+        {
+            throw new IOException($"'{path}' is missing. Reinstall Illux Image Tool to create it.", ex);
         }
     }
 }

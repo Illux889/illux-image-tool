@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Security.Principal;
 
 namespace Illux.ImageTool.Settings;
@@ -8,6 +9,7 @@ namespace Illux.ImageTool.Settings;
 /// config.json is admin-only (R34), so the settings window runs elevated. The tray helper and the elevated service
 /// copy never self-elevate: the tray only signals the service (R37), the service copy is already elevated.
 /// </summary>
+[SupportedOSPlatform("windows")]
 internal static class Elevation
 {
     public static bool ShouldSelfElevate(string[] args, bool isElevated)

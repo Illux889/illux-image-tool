@@ -19,8 +19,8 @@ public sealed class ServiceAccountAdminTests
     [Fact]
     public void Dialog_SaysTheAccountMustBeALocalAdministrator()
     {
-        Assert.Contains("must be a local Administrator", AccountDialog.Hint);
-        Assert.Contains("cannot install updates", AccountDialog.NotAdminWarning(@".\bob"));
+        Assert.Contains("must be a local Administrator", AccountText.Hint);
+        Assert.Contains("cannot install updates", AccountText.NotAdminWarning(@".\bob"));
     }
 
     [Fact]
@@ -103,23 +103,23 @@ public sealed class ServiceControlTests
     public void DescribeState(int state, string expected) => Assert.Equal(expected, ServiceControl.DescribeState(state));
 }
 
-public sealed class FolderDialogTests
+public sealed class FolderSettingsTests
 {
     [Fact]
     public void Defaults_GiveExplicitOperations()
     {
-        Assert.Equal(["8bit", "resample", "baseline"], FolderDialog.ToParameters(new FolderOptions()));
+        Assert.Equal(["8bit", "resample", "baseline"], FolderSettings.ToParameters(new FolderOptions()));
     }
 
     [Fact]
     public void ToParameters_WritesEveryNonDefaultChoice()
     {
-        var parameters = FolderDialog.ToParameters(new FolderOptions(
+        var parameters = FolderSettings.ToParameters(new FolderOptions(
             EightBit: false, Resample: true, Baseline: true,
             Output: OutputMode.Pdf, MissingPpi: MissingPpiPolicy.Skip, Quality: 80));
 
         Assert.Equal(["resample", "baseline", "output=pdf", "missingppi=skip", "quality=80"], parameters);
-        Assert.Equal(["8bit", "output=both", "missingppi=error"], FolderDialog.ToParameters(new FolderOptions(
+        Assert.Equal(["8bit", "output=both", "missingppi=error"], FolderSettings.ToParameters(new FolderOptions(
             Resample: false, Baseline: false, Output: OutputMode.Both, MissingPpi: MissingPpiPolicy.Error)));
     }
 
@@ -128,7 +128,7 @@ public sealed class FolderDialogTests
     {
         // No operation parameter at all would mean "all three" to the parser, so the dialog must never save that.
         Assert.Throws<InvalidOperationException>(() =>
-            FolderDialog.ToParameters(new FolderOptions(EightBit: false, Resample: false, Baseline: false)));
+            FolderSettings.ToParameters(new FolderOptions(EightBit: false, Resample: false, Baseline: false)));
     }
 
     [Fact]
@@ -143,8 +143,8 @@ public sealed class FolderDialogTests
             if (!eight && !up && !baseline) continue;
             var options = new FolderOptions(eight, up, baseline, output, missing, 70);
 
-            var parameters = FolderDialog.ToParameters(options);
-            var back = FolderDialog.FromParameters(parameters);
+            var parameters = FolderSettings.ToParameters(options);
+            var back = FolderSettings.FromParameters(parameters);
 
             Assert.Equal(options, back);
             // What the dialog writes is what the watcher will understand, with the same meaning.
@@ -161,14 +161,14 @@ public sealed class FolderDialogTests
     [Fact]
     public void FromParameters_EmptyListMeansAllOperationsOnWithDefaults()
     {
-        Assert.Equal(new FolderOptions(), FolderDialog.FromParameters([]));
-        Assert.Equal(new FolderOptions(), FolderDialog.FromParameters(["output=same"]));
+        Assert.Equal(new FolderOptions(), FolderSettings.FromParameters([]));
+        Assert.Equal(new FolderOptions(), FolderSettings.FromParameters(["output=same"]));
     }
 
     [Fact]
     public void FromParameters_OnlyListedOperationsAreOn()
     {
-        var options = FolderDialog.FromParameters(["8bit", "UPSAMPLE", "missingppi=72"]);
+        var options = FolderSettings.FromParameters(["8bit", "UPSAMPLE", "missingppi=72"]);
 
         Assert.True(options.EightBit);
         Assert.True(options.Resample);
@@ -179,16 +179,16 @@ public sealed class FolderDialogTests
     [Fact]
     public void FilterParameterSurvivesAnEdit()
     {
-        var options = FolderDialog.FromParameters(["8bit", "filter=mitchell"]);
+        var options = FolderSettings.FromParameters(["8bit", "filter=mitchell"]);
         Assert.Equal(["filter=mitchell"], options.Extra);
 
-        Assert.Equal(["8bit", "filter=mitchell"], FolderDialog.ToParameters(options with { Resample = false, Baseline = false }));
+        Assert.Equal(["8bit", "filter=mitchell"], FolderSettings.ToParameters(options with { Resample = false, Baseline = false }));
     }
 
     [Fact]
     public void FromParameters_UnknownParameterThrows()
     {
-        Assert.Throws<ParameterException>(() => FolderDialog.FromParameters(["sharpen"]));
+        Assert.Throws<ParameterException>(() => FolderSettings.FromParameters(["sharpen"]));
     }
 
     private static WatchedFolder Valid(Action<WatchedFolder>? change = null)
@@ -199,24 +199,24 @@ public sealed class FolderDialogTests
     }
 
     [Fact]
-    public void Validate_AcceptsAGoodFolder() => Assert.Null(FolderDialog.Validate(Valid()));
+    public void Validate_AcceptsAGoodFolder() => Assert.Null(FolderSettings.Validate(Valid()));
 
     [Fact]
     public void Validate_RequiresNameAndFolders()
     {
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Name = " ")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.In = "")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Out = "")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Error = "")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.Name = " ")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.In = "")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.Out = "")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.Error = "")));
     }
 
     [Fact]
     public void Validate_FoldersMustDiffer()
     {
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Out = @"c:\a\in\")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Error = @"C:\A\Out")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Originals = @"C:\A\In")));
-        Assert.Null(FolderDialog.Validate(Valid(f => f.Originals = @"C:\A\Originals")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.Out = @"c:\a\in\")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.Error = @"C:\A\Out")));
+        Assert.NotNull(FolderSettings.Validate(Valid(f => f.Originals = @"C:\A\In")));
+        Assert.Null(FolderSettings.Validate(Valid(f => f.Originals = @"C:\A\Originals")));
     }
 }
 

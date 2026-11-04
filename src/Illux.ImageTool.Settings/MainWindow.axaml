@@ -1,0 +1,115 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Illux.ImageTool.Settings"
+        x:Class="Illux.ImageTool.Settings.MainWindow"
+        Title="Illux Image Tool Settings"
+        Width="780" Height="720" MinWidth="660" MinHeight="640"
+        WindowStartupLocation="CenterScreen">
+  <Window.Styles>
+    <Style Selector="Border.group">
+      <Setter Property="BorderBrush" Value="#A0A0A0" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="8" />
+      <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+    <Style Selector="TextBlock.header">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,0,0,6" />
+    </Style>
+    <Style Selector="TextBlock.note">
+      <Setter Property="Opacity" Value="0.7" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="ListBox#FolderList ListBoxItem">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Padding" Value="12,6" />
+    </Style>
+    <Style Selector="TextBlock.cell">
+      <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+      <Setter Property="Margin" Value="0,0,8,0" />
+    </Style>
+  </Window.Styles>
+
+  <Grid Margin="12" RowDefinitions="Auto,*,Auto,Auto,Auto,Auto">
+    <TextBlock Grid.Row="0" x:Name="ReadOnlyNote" FontWeight="SemiBold" Margin="0,0,0,8" IsVisible="False" />
+
+    <Border Grid.Row="1" Classes="group">
+      <DockPanel>
+        <TextBlock DockPanel.Dock="Top" Classes="header" Text="Watched folders" />
+        <StackPanel DockPanel.Dock="Right" Spacing="6" Margin="8,0,0,0">
+          <Button x:Name="AddButton" Content="Add..." HorizontalAlignment="Stretch" />
+          <Button x:Name="EditButton" Content="Edit..." HorizontalAlignment="Stretch" IsEnabled="False" />
+          <Button x:Name="RemoveButton" Content="Remove" HorizontalAlignment="Stretch" IsEnabled="False" />
+        </StackPanel>
+        <Grid RowDefinitions="Auto,*">
+          <Grid ColumnDefinitions="2*,3*,3*,2.5*,40" Margin="12,0,12,4">
+            <TextBlock Grid.Column="0" Classes="cell" FontWeight="SemiBold" Text="Name" />
+            <TextBlock Grid.Column="1" Classes="cell" FontWeight="SemiBold" Text="In folder" />
+            <TextBlock Grid.Column="2" Classes="cell" FontWeight="SemiBold" Text="Out folder" />
+            <TextBlock Grid.Column="3" Classes="cell" FontWeight="SemiBold" Text="Options" />
+            <TextBlock Grid.Column="4" Classes="cell" FontWeight="SemiBold" Text="On" />
+          </Grid>
+          <ListBox Grid.Row="1" x:Name="FolderList" SelectionMode="Single"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="local:FolderRow">
+                <Grid ColumnDefinitions="2*,3*,3*,2.5*,40">
+                  <TextBlock Grid.Column="0" Classes="cell" Text="{Binding Name}" ToolTip.Tip="{Binding Name}" />
+                  <TextBlock Grid.Column="1" Classes="cell" Text="{Binding In}" ToolTip.Tip="{Binding In}" />
+                  <TextBlock Grid.Column="2" Classes="cell" Text="{Binding Out}" ToolTip.Tip="{Binding Out}" />
+                  <TextBlock Grid.Column="3" Classes="cell" Text="{Binding Options}" ToolTip.Tip="{Binding Options}" />
+                  <TextBlock Grid.Column="4" Classes="cell" Text="{Binding On}" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </DockPanel>
+    </Border>
+
+    <Border Grid.Row="2" Classes="group">
+      <StackPanel Spacing="6">
+        <TextBlock Classes="header" Text="Service" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <TextBlock Text="Watcher service:" VerticalAlignment="Center" />
+          <TextBlock x:Name="ServiceStatus" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,4,0" />
+          <Button x:Name="StartButton" Content="Start" />
+          <Button x:Name="StopButton" Content="Stop" />
+          <Button x:Name="AccountButton" Content="Change account..." />
+        </StackPanel>
+        <TextBlock x:Name="AccountNote" Classes="note"
+                   Text="A named service account must be a local Administrator, or the service cannot install updates." />
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="3" Classes="group">
+      <StackPanel Spacing="6">
+        <TextBlock Classes="header" Text="Updates" />
+        <Border x:Name="Banner" Background="#D8F0D8" Padding="12" CornerRadius="4" MinHeight="84" IsVisible="False">
+          <DockPanel>
+            <Button x:Name="UpdateNowButton" DockPanel.Dock="Right" Content="Update now" Width="170" Height="52"
+                    FontSize="16" FontWeight="Bold" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+            <StackPanel VerticalAlignment="Center" Spacing="2">
+              <TextBlock x:Name="BannerText" FontSize="17" FontWeight="Bold" Foreground="#1E5A1E" />
+              <TextBlock x:Name="PhaseText" Foreground="#1E5A1E" TextWrapping="Wrap" />
+            </StackPanel>
+          </DockPanel>
+        </Border>
+        <TextBlock x:Name="InstalledText" />
+        <TextBlock x:Name="LastCheckText" />
+        <StackPanel Orientation="Horizontal" Spacing="8">
+          <Button x:Name="CheckNowButton" Content="Check for updates" />
+          <TextBlock x:Name="UpdateNote" VerticalAlignment="Center" />
+        </StackPanel>
+      </StackPanel>
+    </Border>
+
+    <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8">
+      <Button x:Name="LogsButton" Content="Open log folder" />
+      <Button x:Name="ServiceLogButton" Content="Show service log" />
+      <Button x:Name="HelpButton" Content="AE parameter help" />
+    </StackPanel>
+    <TextBlock Grid.Row="5" x:Name="ServiceLogNote" Classes="note" Margin="0,6,0,0" IsVisible="False" />
+  </Grid>
+</Window>
