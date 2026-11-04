@@ -4,6 +4,7 @@ using Illux.ImageTool.Batch;
 using Illux.ImageTool.Imaging;
 using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
+using Illux.ImageTool.Watch;
 
 namespace Illux.ImageTool.Cli;
 
@@ -122,6 +123,10 @@ public static class CliApp
     private static async Task<int> ExecuteAsync(
         IReadOnlyList<string> inputs, string outputFolder, ProcessingOptions options, TextWriter stdout, CancellationToken ct)
     {
+        // config.json is read on every run, so changed resolution rules apply without restarting anything (spec 5.5).
+        var (rules, rulesWarning) = ConfigStore.LoadRulesForRun();
+        options = options with { Rules = rules };
+
         var (runLock, timedOut) = await AcquireLockWhenNotUpdatingAsync(stdout, ct).ConfigureAwait(false);
         using var held = runLock;
         if (timedOut)
@@ -131,7 +136,8 @@ public static class CliApp
         }
 
         MagickSetup.Configure();
-        var status = await BatchRunner.RunAsync(inputs, outputFolder, options, stdout, ct).ConfigureAwait(false);
+        var status = await BatchRunner.RunAsync(
+            inputs, outputFolder, options, stdout, ct, rulesWarning is null ? null : [rulesWarning]).ConfigureAwait(false);
         return (int)status;
     }
 

@@ -72,9 +72,9 @@ public sealed class BatchTests : IDisposable
     }
 
     [Fact]
-    public async Task Batch_PhoneJpegRotated90_UpsampledPdfPageIsUpright()
+    public async Task Batch_PhoneJpegRotated90_ResampledPdfPageIsUpright()
     {
-        // 60 × 40 px stored, EXIF orientation 6 (shown 40 wide, 60 high), 100 ppi: upsampled to 200 ppi and re-encoded.
+        // 60 × 40 px stored, EXIF orientation 6 (shown 40 wide, 60 high), 100 ppi: resampled to 300 ppi and re-encoded.
         var input = Jpeg("phone.jpg", ppi: 100);
         using (var image = new MagickImage(input))
         {
@@ -127,7 +127,7 @@ public sealed class BatchTests : IDisposable
     [Fact]
     public async Task Batch_ExistingOutput_Overwritten()
     {
-        var input = Jpeg("a.jpg");
+        var input = Jpeg("a.jpg", ppi: 300); // inside the default rule's range: copied unchanged
         Directory.CreateDirectory(Out);
         File.WriteAllText(Path.Combine(Out, "a.jpg"), "old");
 
@@ -141,7 +141,7 @@ public sealed class BatchTests : IDisposable
     [Fact]
     public async Task Suffix_Policy_AddsNumber()
     {
-        var input = Jpeg("a.jpg");
+        var input = Jpeg("a.jpg", ppi: 300); // inside the default rule's range: copied unchanged
         Directory.CreateDirectory(Out);
         File.WriteAllText(Path.Combine(Out, "a.jpg"), "old");
         File.WriteAllText(Path.Combine(Out, "a (2).jpg"), "old2");
@@ -222,7 +222,7 @@ public sealed class BatchTests : IDisposable
         Assert.Equal(Status.Error, status);
         var lines = log.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal(4, lines.Length);
-        Assert.Equal("a.jpg: no change needed", lines[0]);
+        Assert.Equal("a.jpg: ppi inside 250–350 (rule \"Small\") — not resampled; no change needed", lines[0]);
         Assert.StartsWith("WARNING: b.jpg: no resolution stored — assumed 72 ppi; ", lines[1]);
         Assert.StartsWith("ERROR: c.jpg: ", lines[2]);
         Assert.Equal("Result: Error (3 files)", lines[3]);

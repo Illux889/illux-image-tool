@@ -6,14 +6,22 @@ namespace Illux.ImageTool.Batch;
 public static class BatchRunner
 {
     /// <summary>Returns the worst status of all files; an empty input list is a Warning.</summary>
+    /// <param name="warnings">Problems found before the run (e.g. invalid resolution rules); logged first, each makes the result at least a Warning.</param>
     public static async Task<Status> RunAsync(
-        IReadOnlyList<string> inputs, string outputFolder, ProcessingOptions options, TextWriter log, CancellationToken ct)
+        IReadOnlyList<string> inputs, string outputFolder, ProcessingOptions options, TextWriter log, CancellationToken ct,
+        IReadOnlyList<string>? warnings = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(log);
 
         var worst = Status.Ok;
+        foreach (var warning in warnings ?? [])
+        {
+            log.WriteLine($"WARNING: {warning}");
+            worst = Status.Warning;
+        }
+
         if (inputs.Count == 0)
         {
             log.WriteLine("WARNING: No input files");

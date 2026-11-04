@@ -17,7 +17,7 @@ public sealed class WatchedFolder
     /// <summary>Where untouched inputs go after success; null means an <c>Originals</c> folder next to <see cref="In"/>.</summary>
     public string? Originals { get; set; }
 
-    /// <summary>The same parameter strings Automation Engine passes (<c>8bit</c>, <c>upsample=300</c>, …).</summary>
+    /// <summary>The same parameter strings Automation Engine passes (<c>8bit</c>, <c>resample</c>, …).</summary>
     public List<string> Parameters { get; set; } = [];
 
     public bool Enabled { get; set; } = true;

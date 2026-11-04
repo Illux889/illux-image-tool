@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Text;
 using Illux.ImageTool.Batch;
+using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
 using Illux.ImageTool.Update;
 using Illux.ImageTool.Watch;
@@ -143,6 +144,43 @@ public sealed class WatchWorkerTests : IDisposable
         await Task.Delay(300);
         Assert.False(Directory.Exists(off.Out));
         Assert.True(File.Exists(Path.Combine(off.In, "a.jpg")));
+    }
+
+    private static ResolutionRule OnlyRule(int ppi) => new("Only", SizeTest.All, null, null, null, null, ppi, ppi, ppi);
+
+    private static uint Width(string path)
+    {
+        using var image = new MagickImage(path);
+        return image.Width;
+    }
+
+    [Fact]
+    public async Task Worker_UsesConfigRules()
+    {
+        var folder = Folder("rules");
+        SaveConfig(new WatcherConfig { Folders = [folder], ResolutionRules = [OnlyRule(100)] });
+        TestImages.Write(folder.In, "a.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+        await StartAsync();
+
+        var a = Path.Combine(folder.Out, "a.jpg");
+        Assert.True(await WaitUntil(() => File.Exists(a)), "a.jpg was not processed");
+        Assert.Equal(30u, Width(a)); // 200 → 100 ppi
+
+        // Only the rules change: the folder keeps its scanner, which must still use the new rules.
+        SaveConfig(new WatcherConfig { Folders = [folder], ResolutionRules = [OnlyRule(1000)] });
+        Assert.True(await WaitUntil(() => _log.Count(LogLevel.Information, "Configuration loaded") >= 2));
+        TestImages.Write(folder.In, "b.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+        var b = Path.Combine(folder.Out, "b.jpg");
+        Assert.True(await WaitUntil(() => File.Exists(b)), "b.jpg was not processed");
+        Assert.Equal(300u, Width(b)); // 200 → 1000 ppi
+
+        // Invalid rules: the last good ones stay in use.
+        File.WriteAllText(ConfigPath, """{ "folders": [], "resolutionRules": [] }""");
+        Assert.True(await WaitUntil(() => _log.Count(LogLevel.Error, "invalid resolution rules") >= 1));
+        TestImages.Write(folder.In, "c.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+        var c = Path.Combine(folder.Out, "c.jpg");
+        Assert.True(await WaitUntil(() => File.Exists(c)), "c.jpg was not processed");
+        Assert.Equal(300u, Width(c));
     }
 
     [Fact]

@@ -2,7 +2,9 @@ using System.Reflection;
 using System.Text;
 using ImageMagick;
 using Illux.ImageTool.Cli;
+using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
+using Illux.ImageTool.Watch;
 
 namespace Illux.ImageTool.Tests;
 
@@ -245,7 +247,7 @@ public sealed class CliTests : AppRootTestBase
         var (exit, output) = await Run("--help");
 
         Assert.Equal(0, exit);
-        foreach (var token in new[] { "8bit", "upsample", "baseline", "output=same", "missingppi=", "quality=", "filter=", "IlluxImageTool.exe ae", "IlluxImageTool.exe run" })
+        foreach (var token in new[] { "8bit", "resample", "upsample", "baseline", "output=same", "missingppi=", "quality=", "filter=", "IlluxImageTool.exe ae", "IlluxImageTool.exe run" })
         {
             Assert.Contains(token, output);
         }
@@ -368,6 +370,77 @@ public sealed class CliTests : AppRootTestBase
         Assert.False(lockHeldWhileWaiting);
         Assert.Contains("Waiting for the update", output);
         Assert.Equal(["a.jpg"], OutNames());
+    }
+
+    private static ResolutionRule OnlyRule(int ppi) => new("Only", SizeTest.All, null, null, null, null, ppi, ppi, ppi);
+
+    private static (uint Width, double Ppi) WidthAndPpi(string path)
+    {
+        using var image = new MagickImage(path);
+        return (image.Width, Math.Round(image.Density.ChangeUnits(DensityUnit.PixelsPerInch).X));
+    }
+
+    [Fact]
+    public async Task Cli_UsesRulesFromConfig_WithoutRestart()
+    {
+        var a = Jpeg("a.jpg"); // 60 × 40 px at 200 ppi
+        var out1 = Path.Combine(Dir, "out1");
+        var out2 = Path.Combine(Dir, "out2");
+
+        ConfigStore.Save(new WatcherConfig { ResolutionRules = [OnlyRule(100)] }, AppPaths.ConfigFile);
+        var (exit1, output1) = await Run("run", a, "--out", out1);
+        ConfigStore.Save(new WatcherConfig { ResolutionRules = [OnlyRule(400)] }, AppPaths.ConfigFile);
+        var (exit2, output2) = await Run("ae", a, out2);
+
+        Assert.Equal(0, exit1);
+        Assert.Equal(0, exit2);
+        Assert.Contains("200→100 ppi (rule \"Only\"", output1);
+        Assert.Contains("200→400 ppi (rule \"Only\"", output2);
+        Assert.Equal((30u, 100.0), WidthAndPpi(Path.Combine(out1, "a.jpg")));
+        Assert.Equal((120u, 400.0), WidthAndPpi(Path.Combine(out2, "a.jpg")));
+    }
+
+    [Fact]
+    public async Task Cli_InvalidRules_WarningAndDefaults()
+    {
+        var a = Jpeg("a.jpg"); // 60 × 40 px at 200 ppi: Small by default, so 300 ppi
+        Directory.CreateDirectory(AppRoot);
+        File.WriteAllText(AppPaths.ConfigFile, """{ "resolutionRules": [] }""");
+
+        var (exit, output) = await Run("ae", a, Out);
+
+        Assert.Equal(1, exit);
+        var warning = output.ReplaceLineEndings().Split(Environment.NewLine)
+            .Single(l => l.StartsWith("WARNING: ", StringComparison.Ordinal));
+        Assert.Contains("invalid resolution rules", warning);
+        Assert.EndsWith("Using the default resolution rules instead.", warning);
+        Assert.Contains("200→300 ppi (rule \"Small\"", output);
+        Assert.Contains("Result: Warning (1 files)", output);
+        Assert.Equal((90u, 300.0), WidthAndPpi(Path.Combine(Out, "a.jpg")));
+    }
+
+    [Fact]
+    public async Task Cli_NoConfig_UsesDefaultRulesWithoutWarning()
+    {
+        var a = Jpeg("a.jpg");
+
+        var (exit, output) = await Run("ae", a, Out);
+
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain("WARNING", output);
+        Assert.Contains("200→300 ppi (rule \"Small\"", output);
+    }
+
+    [Fact]
+    public async Task Cli_ResampleWithValue_Returns2WithSettingsMessage()
+    {
+        var a = Jpeg("a.jpg");
+
+        var (exit, output) = await Run("ae", a, Out, "upsample=300");
+
+        Assert.Equal(2, exit);
+        Assert.Contains("ERROR: ppi is set in Illux Image Tool Settings (Resolution rules), not in the AE ticket", output);
+        Assert.Empty(OutNames());
     }
 
     [Fact]

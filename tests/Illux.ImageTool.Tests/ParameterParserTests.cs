@@ -31,11 +31,48 @@ public class ParameterParserTests
     }
 
     [Fact]
-    public void Parse_UpsampleWithValue()
+    public void Parse_Resample_And_UpsampleAlias()
     {
-        var o = ParameterParser.Parse(["Upsample=300"]);
-        Assert.Equal(Operations.Upsample, o.Operations);
-        Assert.Equal(300, o.TargetPpi);
+        Assert.Equal(Operations.Resample, ParameterParser.Parse(["resample"]).Operations);
+        Assert.Equal(Operations.Resample, ParameterParser.Parse(["Upsample"]).Operations);
+        Assert.Equal(Operations.Resample | Operations.EightBit, ParameterParser.Parse(["8bit", "RESAMPLE"]).Operations);
+        Assert.Same(ResolutionRules.Defaults, ParameterParser.Parse(["resample"]).Rules);
+    }
+
+    [Theory]
+    [InlineData("resample=300")]
+    [InlineData("upsample=300")]
+    [InlineData("Upsample=200")]
+    [InlineData("resample=")]
+    [InlineData("upsample=0")]
+    [InlineData("upsample=abc")]
+    public void Parse_ResampleWithValue_ThrowsSettingsMessage(string parameter)
+    {
+        var ex = Assert.Throws<ParameterException>(() => ParameterParser.Parse(["8bit", parameter]));
+        Assert.Equal("ppi is set in Illux Image Tool Settings (Resolution rules), not in the AE ticket", ex.Message);
+    }
+
+    [Fact]
+    public void Default_IsBicubicWithDefaultRules()
+    {
+        var d = ProcessingOptions.Default;
+        Assert.Equal(Operations.All, d.Operations);
+        Assert.Equal(Operations.EightBit | Operations.Resample | Operations.Baseline, Operations.All);
+        Assert.Equal(2, (int)Operations.Resample);
+        Assert.Same(ResolutionRules.Defaults, d.Rules);
+        Assert.Equal(OutputMode.Same, d.Output);
+        Assert.Equal(MissingPpiPolicy.Assume72, d.MissingPpi);
+        Assert.Equal(95, d.JpegQuality);
+        Assert.Equal(ResampleFilter.Bicubic, d.Filter);
+    }
+
+    [Theory]
+    [InlineData("filter=lanczos", ResampleFilter.Lanczos)]
+    [InlineData("filter=mitchell", ResampleFilter.Mitchell)]
+    [InlineData("filter=Bicubic", ResampleFilter.Bicubic)]
+    public void Parse_Filter_StillAccepted(string parameter, ResampleFilter expected)
+    {
+        Assert.Equal(expected, ParameterParser.Parse([parameter]).Filter);
     }
 
     [Fact]
@@ -70,8 +107,6 @@ public class ParameterParserTests
     }
 
     [Theory]
-    [InlineData("upsample=0")]
-    [InlineData("upsample=abc")]
     [InlineData("upsample=2401")]
     [InlineData("quality=101")]
     [InlineData("quality=0")]

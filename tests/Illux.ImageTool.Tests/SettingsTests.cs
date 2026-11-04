@@ -108,19 +108,19 @@ public sealed class FolderDialogTests
     [Fact]
     public void Defaults_GiveExplicitOperations()
     {
-        Assert.Equal(["8bit", "upsample=200", "baseline"], FolderDialog.ToParameters(new FolderOptions()));
+        Assert.Equal(["8bit", "resample", "baseline"], FolderDialog.ToParameters(new FolderOptions()));
     }
 
     [Fact]
     public void ToParameters_WritesEveryNonDefaultChoice()
     {
         var parameters = FolderDialog.ToParameters(new FolderOptions(
-            EightBit: false, Upsample: true, Ppi: 300, Baseline: true,
+            EightBit: false, Resample: true, Baseline: true,
             Output: OutputMode.Pdf, MissingPpi: MissingPpiPolicy.Skip, Quality: 80));
 
-        Assert.Equal(["upsample=300", "baseline", "output=pdf", "missingppi=skip", "quality=80"], parameters);
+        Assert.Equal(["resample", "baseline", "output=pdf", "missingppi=skip", "quality=80"], parameters);
         Assert.Equal(["8bit", "output=both", "missingppi=error"], FolderDialog.ToParameters(new FolderOptions(
-            Upsample: false, Baseline: false, Output: OutputMode.Both, MissingPpi: MissingPpiPolicy.Error)));
+            Resample: false, Baseline: false, Output: OutputMode.Both, MissingPpi: MissingPpiPolicy.Error)));
     }
 
     [Fact]
@@ -128,7 +128,7 @@ public sealed class FolderDialogTests
     {
         // No operation parameter at all would mean "all three" to the parser, so the dialog must never save that.
         Assert.Throws<InvalidOperationException>(() =>
-            FolderDialog.ToParameters(new FolderOptions(EightBit: false, Upsample: false, Baseline: false)));
+            FolderDialog.ToParameters(new FolderOptions(EightBit: false, Resample: false, Baseline: false)));
     }
 
     [Fact]
@@ -141,17 +141,16 @@ public sealed class FolderDialogTests
         foreach (var missing in Enum.GetValues<MissingPpiPolicy>())
         {
             if (!eight && !up && !baseline) continue;
-            var options = new FolderOptions(eight, up, 300, baseline, output, missing, 70);
+            var options = new FolderOptions(eight, up, baseline, output, missing, 70);
 
             var parameters = FolderDialog.ToParameters(options);
             var back = FolderDialog.FromParameters(parameters);
 
-            // An unchecked "upsample" has no ppi to remember; the dialog shows the default again.
-            Assert.Equal(up ? options : options with { Ppi = 200 }, back);
+            Assert.Equal(options, back);
             // What the dialog writes is what the watcher will understand, with the same meaning.
             var parsed = ParameterParser.Parse(parameters);
             Assert.Equal(eight, parsed.Operations.HasFlag(Operations.EightBit));
-            Assert.Equal(up, parsed.Operations.HasFlag(Operations.Upsample));
+            Assert.Equal(up, parsed.Operations.HasFlag(Operations.Resample));
             Assert.Equal(baseline, parsed.Operations.HasFlag(Operations.Baseline));
             Assert.Equal(output, parsed.Output);
             Assert.Equal(missing, parsed.MissingPpi);
@@ -169,11 +168,10 @@ public sealed class FolderDialogTests
     [Fact]
     public void FromParameters_OnlyListedOperationsAreOn()
     {
-        var options = FolderDialog.FromParameters(["8bit", "UPSAMPLE=300", "missingppi=72"]);
+        var options = FolderDialog.FromParameters(["8bit", "UPSAMPLE", "missingppi=72"]);
 
         Assert.True(options.EightBit);
-        Assert.True(options.Upsample);
-        Assert.Equal(300, options.Ppi);
+        Assert.True(options.Resample);
         Assert.False(options.Baseline);
         Assert.Equal(MissingPpiPolicy.Assume72, options.MissingPpi);
     }
@@ -184,7 +182,7 @@ public sealed class FolderDialogTests
         var options = FolderDialog.FromParameters(["8bit", "filter=mitchell"]);
         Assert.Equal(["filter=mitchell"], options.Extra);
 
-        Assert.Equal(["8bit", "filter=mitchell"], FolderDialog.ToParameters(options with { Upsample = false, Baseline = false }));
+        Assert.Equal(["8bit", "filter=mitchell"], FolderDialog.ToParameters(options with { Resample = false, Baseline = false }));
     }
 
     [Fact]

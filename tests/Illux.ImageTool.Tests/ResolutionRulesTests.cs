@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Illux.ImageTool.Options;
 using Illux.ImageTool.Watch;
 
@@ -90,6 +91,25 @@ public sealed class ResolutionRulesTests : IDisposable
         Assert.Equal("Small", ResolutionRules.Select(custom, 10, 30).Name);
     }
 
+    [Fact]
+    public void Matches_ToleratesFloatingPointNoiseAtTheLimit()
+    {
+        // Print sizes come from pixels / ppi * 2.54, so an image of exactly 40 cm can compute as 40.0000000001.
+        Assert.True(ResolutionRules.Matches(Fits(40, 30), 40.0000000001, 30));
+        Assert.True(ResolutionRules.Matches(Fits(40, 30), 30.0000000001, 40.0000000001));
+        Assert.True(ResolutionRules.Matches(new ResolutionRule("L", SizeTest.LongestSide, null, null, 50, null, 300, 250, 350), 50.0000000001, 1));
+        Assert.True(ResolutionRules.Matches(new ResolutionRule("S", SizeTest.ShortestSide, null, null, 20, null, 300, 250, 350), 20.0000000001, 500));
+        Assert.True(ResolutionRules.Matches(new ResolutionRule("A", SizeTest.Area, null, null, null, 1000, 300, 250, 350), 40.0000000001, 25));
+        Assert.False(ResolutionRules.Matches(Fits(40, 30), 40.001, 30));
+    }
+
+    [Fact]
+    public void Select_EmptyList_ThrowsClearArgumentException()
+    {
+        var ex = Assert.Throws<ArgumentException>(() => ResolutionRules.Select([], 10, 10));
+        Assert.Contains("at least one", ex.Message);
+    }
+
     public static TheoryData<string, ResolutionRule[]> Invalid => new()
     {
         { "min>target", [Fits(40, 30, min: 301), All()] },
@@ -139,6 +159,45 @@ public sealed class ResolutionRulesTests : IDisposable
     {
         var path = Write("""{ "folders": [], "checkForUpdates": true, "pollSeconds": 5 }""");
         Assert.Equal(ResolutionRules.Defaults, ConfigStore.Load(path).ResolutionRules);
+    }
+
+    [Fact]
+    public void Load_PopulatedV01Config_SavesUnchangedApartFromAddedRules()
+    {
+        // Exactly what v0.1's ConfigStore.Save wrote: every property, originals null when not set.
+        var v01 = """
+            {
+              "folders": [
+                {
+                  "name": "Prepress",
+                  "in": "C:\\Hot\\In",
+                  "out": "C:\\Hot\\Out",
+                  "error": "C:\\Hot\\Error",
+                  "originals": "D:\\Archive\\Originals",
+                  "parameters": [ "8bit", "upsample", "output=pdf", "filter=mitchell" ],
+                  "enabled": true
+                },
+                {
+                  "name": "Second",
+                  "in": "\\\\server\\share\\In",
+                  "out": "\\\\server\\share\\Out",
+                  "error": "\\\\server\\share\\Error",
+                  "originals": null,
+                  "parameters": [],
+                  "enabled": false
+                }
+              ],
+              "checkForUpdates": false,
+              "pollSeconds": 12
+            }
+            """;
+        var path = Write(v01);
+
+        ConfigStore.Save(ConfigStore.Load(path), path);
+
+        var saved = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        Assert.True(saved.Remove("resolutionRules"));
+        Assert.True(JsonNode.DeepEquals(JsonNode.Parse(v01), saved), saved.ToJsonString());
     }
 
     [Fact]

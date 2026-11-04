@@ -12,12 +12,15 @@ namespace Illux.ImageTool.Tests;
 /// <remarks>
 /// Decision (2026-10-23, ImageMagick built-ins "logo:", "wizard:", "rose:" and the synthetic gradient, viewed as
 /// 4× crops): at this 1.33× enlargement Lanczos and Bicubic (Catmull-Rom) look almost identical and crisp, Mitchell
-/// is slightly softer, and none shows visible ringing along the black outlines. Lanczos stays the default.
+/// is slightly softer, and none shows visible ringing along the black outlines. Lanczos stayed the default in v0.1;
+/// v0.2 uses Bicubic for up- and downscaling (Photoshop's plain "Bicubic", design spec 5.6).
 /// Not yet compared with Photoshop's "Bicubic Smoother" output (no Photoshop on the build machine); redo this with
 /// a real customer image processed in Photoshop when one is available.
 /// </remarks>
 public sealed class FilterComparison
 {
+    private static readonly IReadOnlyList<ResolutionRule> To200 = [new("To200", SizeTest.All, null, null, null, null, 200, 200, 2400)];
+
     [Fact(Skip = "Manual visual check; writes artifacts/filter-compare/")]
     public async Task Upsample150To200_AllFilters()
     {
@@ -37,7 +40,7 @@ public sealed class FilterComparison
             foreach (var filter in Enum.GetValues<ResampleFilter>())
             {
                 var output = Path.Combine(outDir, $"{name}-200ppi-{filter}.png");
-                var options = ProcessingOptions.Default with { Filter = filter };
+                var options = ProcessingOptions.Default with { Filter = filter, Rules = To200 };
                 var result = await ImagePipeline.RunAsync(input, output, options, CancellationToken.None);
                 Assert.NotEqual(Status.Error, result.Status);
 

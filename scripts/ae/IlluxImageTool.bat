@@ -60,7 +60,8 @@ shift
 
 rem --- collect the Script Parameters (%3, %4, ... ) one by one; a batch file can only name %1-%9 directly ---
 rem cmd splits an unquoted name=value at the "=" (output=pdf arrives as "output" and "pdf"), so these are joined again:
-rem output, quality, filter and missingppi take the next token; upsample only when the next token is all digits.
+rem output, quality, filter and missingppi take the next token; resample/upsample only when the next token is all digits
+rem (the tool then explains that ppi is set in Settings, instead of reporting an unknown parameter).
 set "REST="
 :collect
 if [%1]==[] goto run
@@ -68,6 +69,7 @@ if /i "%~1"=="output" goto join_value
 if /i "%~1"=="quality" goto join_value
 if /i "%~1"=="filter" goto join_value
 if /i "%~1"=="missingppi" goto join_value
+if /i "%~1"=="resample" goto join_number
 if /i "%~1"=="upsample" goto join_number
 :plain
 set REST=%REST% %1

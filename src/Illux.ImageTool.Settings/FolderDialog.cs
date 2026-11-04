@@ -13,8 +13,8 @@ internal sealed class FolderDialog : Form
     private readonly TextBox _originals = new() { Dock = DockStyle.Fill, PlaceholderText = "Empty: an Originals folder next to In" };
     private readonly CheckBox _enabled = new() { Text = "Watch this folder", AutoSize = true, Checked = true };
     private readonly CheckBox _eightBit = new() { Text = "8-bit", AutoSize = true };
-    private readonly CheckBox _upsample = new() { Text = "Upsample to", AutoSize = true };
-    private readonly NumericUpDown _ppi = new() { Minimum = 1, Maximum = 2400, Value = 200, Width = 70 };
+    // The ppi comes from the resolution rules (config.json), not from the folder.
+    private readonly CheckBox _resample = new() { Text = "Resample (ppi from the resolution rules)", AutoSize = true };
     private readonly CheckBox _baseline = new() { Text = "Baseline JPEG", AutoSize = true };
     private readonly ComboBox _output = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
     private readonly ComboBox _missingPpi = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
@@ -46,10 +46,8 @@ internal sealed class FolderDialog : Form
         AddTextRow(table, "Error folder", _error, browse: true);
         AddTextRow(table, "Originals folder", _originals, browse: true);
 
-        var upsampleRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
-        upsampleRow.Controls.AddRange([_upsample, _ppi, new Label { Text = "ppi", AutoSize = true, Margin = new Padding(0, 6, 0, 0) }]);
         var operations = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        operations.Controls.AddRange([_eightBit, upsampleRow, _baseline]);
+        operations.Controls.AddRange([_eightBit, _resample, _baseline]);
         AddRow(table, "Do", operations);
 
         AddRow(table, "Output", _output);
@@ -99,8 +97,7 @@ internal sealed class FolderDialog : Form
         }
 
         _eightBit.Checked = options.EightBit;
-        _upsample.Checked = options.Upsample;
-        _ppi.Value = Math.Clamp(options.Ppi, (int)_ppi.Minimum, (int)_ppi.Maximum);
+        _resample.Checked = options.Resample;
         _baseline.Checked = options.Baseline;
         _output.SelectedIndex = (int)options.Output;
         _missingPpi.SelectedIndex = (int)options.MissingPpi;
@@ -111,13 +108,13 @@ internal sealed class FolderDialog : Form
     private void TryAccept()
     {
         var options = new FolderOptions(
-            _eightBit.Checked, _upsample.Checked, (int)_ppi.Value, _baseline.Checked,
+            _eightBit.Checked, _resample.Checked, _baseline.Checked,
             (OutputMode)_output.SelectedIndex, (MissingPpiPolicy)_missingPpi.SelectedIndex, (int)_quality.Value)
         { Extra = _extra };
 
-        if (!options.EightBit && !options.Upsample && !options.Baseline)
+        if (!options.EightBit && !options.Resample && !options.Baseline)
         {
-            Warn("Pick at least one of 8-bit, Upsample and Baseline JPEG.");
+            Warn("Pick at least one of 8-bit, Resample and Baseline JPEG.");
             return;
         }
 
@@ -177,12 +174,12 @@ internal sealed class FolderDialog : Form
     /// <summary>The parameter strings for the options. At least one operation must be on, otherwise the parser would read "none" as "all".</summary>
     internal static List<string> ToParameters(FolderOptions options)
     {
-        if (!options.EightBit && !options.Upsample && !options.Baseline)
+        if (!options.EightBit && !options.Resample && !options.Baseline)
             throw new InvalidOperationException("At least one operation must be on.");
 
         var parameters = new List<string>();
         if (options.EightBit) parameters.Add("8bit");
-        if (options.Upsample) parameters.Add($"upsample={options.Ppi}");
+        if (options.Resample) parameters.Add("resample");
         if (options.Baseline) parameters.Add("baseline");
         if (options.Output != OutputMode.Same) parameters.Add("output=" + options.Output.ToString().ToLowerInvariant());
         if (options.MissingPpi != MissingPpiPolicy.Assume72)
@@ -200,8 +197,7 @@ internal sealed class FolderDialog : Form
         var extra = list.Where(p => p.TrimStart().StartsWith("filter", StringComparison.OrdinalIgnoreCase)).Select(p => p.Trim()).ToList();
         return new FolderOptions(
             parsed.Operations.HasFlag(Operations.EightBit),
-            parsed.Operations.HasFlag(Operations.Upsample),
-            (int)Math.Round(parsed.TargetPpi),
+            parsed.Operations.HasFlag(Operations.Resample),
             parsed.Operations.HasFlag(Operations.Baseline),
             parsed.Output,
             parsed.MissingPpi,

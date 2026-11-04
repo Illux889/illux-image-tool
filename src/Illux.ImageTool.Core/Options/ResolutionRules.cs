@@ -5,6 +5,9 @@ public static class ResolutionRules
     public const int MaxAllowedPpi = 2400;
     private const double MinSizeCm = 0.1, MaxSizeCm = 1000, MinAreaCm2 = 0.01, MaxAreaCm2 = 1_000_000;
 
+    // Print sizes are computed (pixels / ppi * 2.54), so an image of exactly 40 cm can come out as 40.0000000001.
+    private const double Tolerance = 1e-6;
+
     public static IReadOnlyList<ResolutionRule> Defaults { get; } =
     [
         new("Small", SizeTest.FitsWithin, 40, 30, null, null, 300, 250, 350),
@@ -20,13 +23,13 @@ public static class ResolutionRules
         {
             case SizeTest.FitsWithin:
                 if (r.WidthCm is not { } w || r.HeightCm is not { } h) return false;
-                return longSide <= Math.Max(w, h) && shortSide <= Math.Min(w, h);
+                return longSide <= Math.Max(w, h) + Tolerance && shortSide <= Math.Min(w, h) + Tolerance;
             case SizeTest.LongestSide:
-                return r.LimitCm is { } l1 && longSide <= l1;
+                return r.LimitCm is { } l1 && longSide <= l1 + Tolerance;
             case SizeTest.ShortestSide:
-                return r.LimitCm is { } l2 && shortSide <= l2;
+                return r.LimitCm is { } l2 && shortSide <= l2 + Tolerance;
             case SizeTest.Area:
-                return r.AreaCm2 is { } a && widthCm * heightCm <= a;
+                return r.AreaCm2 is { } a && widthCm * heightCm <= a + Tolerance;
             case SizeTest.All:
                 return true;
             default:
@@ -37,6 +40,9 @@ public static class ResolutionRules
     /// <summary>The first matching rule; the last rule when none matches (a valid list ends with <c>all</c>).</summary>
     public static ResolutionRule Select(IReadOnlyList<ResolutionRule> rules, double widthCm, double heightCm)
     {
+        ArgumentNullException.ThrowIfNull(rules);
+        if (rules.Count == 0)
+            throw new ArgumentException("There must be at least one resolution rule to choose from.", nameof(rules));
         foreach (var r in rules)
             if (Matches(r, widthCm, heightCm)) return r;
         return rules[^1];

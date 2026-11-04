@@ -30,6 +30,7 @@ public sealed class FolderScanner
     private readonly ILogger _log;
     private readonly TimeProvider _clock;
     private readonly Func<bool> _isUpdating;
+    private readonly Func<IReadOnlyList<ResolutionRule>> _rules;
     private bool _pausedLogged;
     private readonly Dictionary<string, (long Length, DateTime LastWriteUtc)> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Parked> _parked = new(StringComparer.OrdinalIgnoreCase);
@@ -48,7 +49,10 @@ public sealed class FolderScanner
     }
 
     /// <param name="isUpdating">True while an update is pending; defaults to "<see cref="AppPaths.UpdatingFlag"/> exists".</param>
-    public FolderScanner(WatchedFolder folder, ILogger log, TimeProvider? clock = null, Func<bool>? isUpdating = null)
+    /// <param name="rules">The resolution rules to use, asked for on every scan; defaults to <see cref="ResolutionRules.Defaults"/>.</param>
+    public FolderScanner(
+        WatchedFolder folder, ILogger log, TimeProvider? clock = null, Func<bool>? isUpdating = null,
+        Func<IReadOnlyList<ResolutionRule>>? rules = null)
     {
         ArgumentNullException.ThrowIfNull(folder);
         ArgumentNullException.ThrowIfNull(log);
@@ -56,6 +60,7 @@ public sealed class FolderScanner
         _log = log;
         _clock = clock ?? TimeProvider.System;
         _isUpdating = isUpdating ?? (() => File.Exists(AppPaths.UpdatingFlag));
+        _rules = rules ?? (() => ResolutionRules.Defaults);
     }
 
     /// <summary>True only while a file is being processed.</summary>
@@ -258,7 +263,7 @@ public sealed class FolderScanner
         string? problem = null;
         try
         {
-            options = ParameterParser.Parse(_folder.Parameters);
+            options = ParameterParser.Parse(_folder.Parameters) with { Rules = _rules() };
         }
         catch (ParameterException ex)
         {

@@ -374,7 +374,8 @@ Check ($code -eq 0) "PowerShell AE script exit code 0 (got $code)"
 $result = Join-Path $out1 'test.jpg'
 if (Test-Path -LiteralPath $result) {
     $info = Get-ImageInfo $result
-    Check ($info.Ppi -eq 200 -and $info.Width -eq 250 -and $info.Height -eq 167) "AE output upsampled to 200 ppi, 250 x 167 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
+    # Default resolution rules: 120 x 80 px at 96 ppi print 3.2 x 2.1 cm, so rule "Small" resamples to 300 ppi.
+    Check ($info.Ppi -eq 300 -and $info.Width -eq 375 -and $info.Height -eq 250) "AE output resampled to 300 ppi, 375 x 250 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
 } else { Check $false "AE script wrote $result" }
 
 $out2 = Join-Path $Smoke 'out-bat'; New-Item -ItemType Directory -Force -Path $out2 | Out-Null
@@ -425,7 +426,7 @@ Check (Wait-Until { Test-Path -LiteralPath $watchedOut } 90) 'the service conver
 if (Test-Path -LiteralPath $watchedOut) {
     Start-Sleep -Seconds 1
     $info = Get-ImageInfo $watchedOut
-    Check ($info.Ppi -eq 200) "watched-folder output is 200 ppi (got $($info.Ppi))"
+    Check ($info.Ppi -eq 300) "watched-folder output is 300 ppi (got $($info.Ppi))"
 }
 $originals = Join-Path $watch 'Originals\watched.jpg'
 Check (Wait-Until { Test-Path -LiteralPath $originals } 30) 'the original was moved to Originals'

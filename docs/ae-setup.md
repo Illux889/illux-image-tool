@@ -1,6 +1,6 @@
 # Using Illux Image Tool in Automation Engine
 
-Illux Image Tool runs from a **Run Script** task. It converts images to 8 bit, upsamples them to 200 ppi, makes JPEGs baseline, and can write a PDF.
+Illux Image Tool runs from a **Run Script** task. It converts images to 8 bit, resamples them to the ppi of the resolution rules (see below), makes JPEGs baseline, and can write a PDF.
 
 ## Set up (once)
 
@@ -39,31 +39,48 @@ Write each parameter on its own line. They are not case sensitive.
 | Parameter | What it does |
 |---|---|
 | `8bit` | Reduce to 8 bits per channel if the image is deeper. |
-| `upsample` | Upsample to 200 ppi if the image is below that. |
-| `upsample=300` | Upsample to the ppi you give (here 300). |
+| `resample` | Resample (up or down) to the target ppi of the matching resolution rule, if the ppi is outside that rule's range. `upsample` means the same. |
 | `baseline` | Rewrite progressive JPEGs as baseline JPEGs. |
 | `output=same` | Same format as the input. This is the default. |
 | `output=pdf` | Write a PDF 1.6 with one page instead. |
 | `output=both` | Write the image and the PDF. |
 | `missingppi=72` | No resolution in the image: assume 72 ppi and give a warning. Default. |
-| `missingppi=skip` | No resolution in the image: do not upsample it and give a warning. |
+| `missingppi=skip` | No resolution in the image: do not resample it and give a warning. |
 | `missingppi=error` | No resolution in the image: treat it as an error. |
 | `quality=95` | JPEG quality (1-100) when a JPEG has to be re-encoded. Default 95. |
-| `filter=lanczos` | Resampling method. Also `mitchell` and `bicubic`. Default `lanczos`. |
+| `filter=bicubic` | Resampling method, up and down. Also `lanczos` and `mitchell`. Default `bicubic` (Photoshop's plain Bicubic). |
 
-`8bit`, `upsample` and `baseline` are the operations.
+`8bit`, `resample` and `baseline` are the operations.
 
 - Give none of them: all three run.
 - Give one or more: only those run.
 - The other parameters never switch an operation on or off. A ticket with only `output=pdf` still runs all three operations and then writes a PDF.
 - An unknown parameter is an error.
+- The ppi is not set in the ticket. `resample=300` (or `upsample=300`, which v0.1 accepted) is an error: "ppi is set in Illux Image Tool Settings (Resolution rules), not in the AE ticket".
+
+## Resolution rules
+
+The ppi comes from **Settings → Resolution rules**, the same for Automation Engine and the watched folders. Changes apply to the next run; nothing needs restarting.
+
+The print size of an image is its pixels ÷ ppi (per side, in cm). The rules are checked from top to bottom and the first rule the print size fits is used. If the image's ppi is inside that rule's "leave alone" range it is not resampled; otherwise it is resampled to the rule's target ppi and keeps its print size. Width and height are checked separately: only a side outside the range is resampled.
+
+Defaults:
+
+| Rule | Applies to | Target | Left alone at |
+|---|---|---|---|
+| Small | Fits within 40 × 30 cm (either way round) | 300 ppi | 250–350 ppi |
+| Large | All other images | 200 ppi | 150–250 ppi |
+
+The task log names the rule, for example `300→200 ppi (rule "Large": 62.3 × 41.5 cm; 7360×4912 → 4907×3275, bicubic)`.
+
+If the rules in `config.json` are not valid, the tool uses the defaults above and the task ends with a Warning that says so.
 
 ## Task status
 
 | Status | Meaning |
 |---|---|
 | OK | All files were processed. |
-| Warning | All files were written, but something needs a look. For example, an image had no resolution or was upsampled by more than 4 times. |
+| Warning | All files were written, but something needs a look. For example, an image had no resolution, was enlarged by more than 4 times, or the resolution rules in the settings are not valid. |
 | Error | At least one file failed. The other files are still written. |
 
 The status of the task is the worst status of its files.
