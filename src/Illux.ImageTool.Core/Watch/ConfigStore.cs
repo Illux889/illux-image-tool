@@ -106,8 +106,11 @@ public static class ConfigStore
     /// in place, because Root is root-owned 0755 and a temporary file next to it cannot be created. Never follows a
     /// link and never creates the file; a reader may briefly see a half-written file, which it treats like any other
     /// invalid configuration (the service keeps its last good rules).
+    /// V14: its folder, Root, must be a real folder owned by root that group and others cannot write to; then only root
+    /// can put entries there, so a second name (hard link) that a user made elsewhere is harmless and does not block
+    /// the save (it shows the same content).
     /// </summary>
-    /// <exception cref="IOException">The file is missing, a link, not a regular file with one name, or cannot be written.</exception>
+    /// <exception cref="IOException">Root is not trusted, or the file is missing, a link, not a regular file, or cannot be written.</exception>
     /// <exception cref="UnauthorizedAccessException">This account may not write it (not in the admin group).</exception>
     [SupportedOSPlatform("macos")]
     public static void SaveInPlace(WatcherConfig config) => SaveInPlace(config, AppPaths.ConfigFile, RootUserId);
@@ -120,6 +123,9 @@ public static class ConfigStore
     internal static void SaveInPlace(WatcherConfig config, string path, uint expectedFolderOwner)
     {
         ArgumentNullException.ThrowIfNull(config);
+        var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        if (UntrustedFolderReason(folder, expectedFolderOwner) is { } reason)
+            throw new IOException($"'{folder}' {reason}; config.json is not saved. Reinstall Illux Image Tool to repair the folder.");
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Json));
         try
         {
@@ -129,5 +135,18 @@ public static class ConfigStore
         {
             throw new IOException($"'{path}' is missing. Reinstall Illux Image Tool to create it.", ex);
         }
+    }
+
+    /// <summary>Why <paramref name="folder"/> is not a real folder owned by <paramref name="owner"/> and closed to group and others (lstat), or null.</summary>
+    [SupportedOSPlatform("macos")]
+    private static string? UntrustedFolderReason(string folder, uint owner)
+    {
+        var status = UnixNative.LStat(folder);
+        if (status is not { } s) return "does not exist";
+        if (s.Type == UnixNative.SymbolicLinkType) return "is a link";
+        if (s.Type != UnixNative.DirectoryType) return "is not a folder";
+        if (s.Owner != owner) return owner == RootUserId ? $"is owned by user {s.Owner}, not root" : $"is owned by user {s.Owner}, not {owner}";
+        if ((s.Mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0) return "may be written by group or others";
+        return null;
     }
 }

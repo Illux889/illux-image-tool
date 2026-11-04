@@ -144,7 +144,7 @@ check_eq 'runs/' 'root:wheel 1777' "$(owner_mode "$ROOT/runs")"
 check_eq 'daemon plist' 'root:wheel 0644' "$(owner_mode "$DAEMON_PLIST")"
 check_eq 'tray agent plist' 'root:wheel 0644' "$(owner_mode "$TRAY_PLIST")"
 for folder in "$ROOT" "$ROOT/bin" "$ROOT/update" "$ROOT/service-logs" "$ROOT/run"; do
-    check "no ACL on ${folder#"$ROOT"}/" no_acl "$folder"
+    check "no ACL on $folder" no_acl "$folder"
 done
 check_eq 'nothing in the app is writable by group or others' '' "$(find "$APP" -perm +022 -print)"
 check_eq 'folders every Mac has kept their owners and modes' "$SYSTEM_MODES_BEFORE" "$(system_folder_modes)"
