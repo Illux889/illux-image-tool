@@ -115,6 +115,7 @@
         </StackPanel>
         <TextBlock x:Name="AccountNote" Classes="note"
                    Text="A named service account must be a local Administrator, or the service cannot install updates." />
+        <TextBlock x:Name="FolderAccountNote" Classes="note" TextWrapping="Wrap" IsVisible="False" />
       </StackPanel>
     </Border>
 

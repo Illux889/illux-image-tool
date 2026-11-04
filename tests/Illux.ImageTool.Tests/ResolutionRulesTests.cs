@@ -28,6 +28,39 @@ public sealed class ResolutionRulesTests : IDisposable
     private static ResolutionRule All(int min = 150, int target = 200, int max = 250) =>
         new("Large", SizeTest.All, null, null, null, null, target, min, max);
 
+    // ----- final review M2: a null entry is a validation problem, never a NullReferenceException -----
+
+    [Fact]
+    public void Validate_NullEntry_IsAProblem()
+    {
+        var problems = ResolutionRules.Validate([null!, All()]);
+
+        Assert.Contains("Rule 1 is empty.", problems);
+    }
+
+    [Fact]
+    public void Validate_NullLastEntry_IsAProblem()
+    {
+        var problems = ResolutionRules.Validate([All(), null!]);
+
+        Assert.Contains("Rule 2 is empty.", problems);
+        Assert.Contains("The rule that applies to all sizes must be the last rule.", problems);
+    }
+
+    [Theory]
+    [InlineData("{ \"resolutionRules\": [ null ] }")]
+    [InlineData("{ \"resolutionRules\": [ null, { \"name\": \"Large\", \"test\": \"all\", \"targetPpi\": 200, \"minPpi\": 150, \"maxPpi\": 250 } ] }")]
+    [InlineData("{ \"folders\": [ null ] }")]
+    public void Load_NullEntries_AreAConfigProblem_AndARunUsesTheDefaults(string json)
+    {
+        var path = Write(json);
+
+        Assert.Throws<ConfigException>(() => ConfigStore.Load(path));
+        var (rules, warning) = ConfigStore.LoadRulesForRun(path);
+        Assert.Equal(ResolutionRules.Defaults, rules);
+        Assert.NotNull(warning);
+    }
+
     [Fact]
     public void Defaults_AreIlluxSpec()
     {

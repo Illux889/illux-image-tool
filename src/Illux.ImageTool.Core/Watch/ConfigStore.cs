@@ -41,7 +41,12 @@ public static class ConfigStore
             var problems = Options.ResolutionRules.Validate(config.ResolutionRules);
             if (problems.Count > 0)
                 throw new ConfigException($"Configuration file '{path}': invalid resolution rules: {string.Join(" ", problems)}");
-            foreach (var folder in config.Folders) folder.Parameters ??= [];
+            for (var i = 0; i < config.Folders.Count; i++)
+            {
+                // A "null" entry (final review M2) is a problem in the file, not a NullReferenceException later.
+                var folder = config.Folders[i] ?? throw new ConfigException($"Configuration file '{path}': watched folder {i + 1} is empty.");
+                folder.Parameters ??= [];
+            }
             return config;
         }
         catch (JsonException ex)
@@ -52,7 +57,7 @@ public static class ConfigStore
 
     /// <summary>
     /// The resolution rules for a processing run; never throws. A missing file or section gives the defaults silently,
-    /// an unreadable or invalid file gives the defaults plus a warning to show.
+    /// an unreadable or invalid file gives the defaults plus a warning to show (also for a failure nobody foresaw).
     /// </summary>
     public static (IReadOnlyList<ResolutionRule> Rules, string? Warning) LoadRulesForRun(string? path = null)
     {
@@ -63,6 +68,10 @@ public static class ConfigStore
         catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
         {
             return (Options.ResolutionRules.Defaults, $"{ex.Message} Using the default resolution rules instead.");
+        }
+        catch (Exception ex)
+        {
+            return (Options.ResolutionRules.Defaults, $"config.json could not be read ({ex.GetType().Name}: {ex.Message}). Using the default resolution rules instead.");
         }
     }
 

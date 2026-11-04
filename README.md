@@ -49,7 +49,9 @@ Open **Illux Image Tool Settings** from the Start menu. Windows asks for adminis
 
 Logs: `C:\ProgramData\Illux Image Tool\logs` holds the command-line and Automation Engine runs. The watcher service logs into `service-logs` next to it, which only administrators can open; the settings window shows it with **Show service log**.
 
-**Mac:** watched folders must be on the local disk, for example `/Users/Shared/...`. Desktop, Documents, Downloads, external drives and network shares are not supported in v0.2. Nothing creates the folders for you.
+**Mac:** watched folders must be on the local disk, for example `/Users/Shared/...`. Desktop, Documents, Downloads, external drives and network shares are not supported in v0.2. Create the In folder yourself; Out, Error and Originals are created when they are first needed.
+
+**Mac account:** the Mac processes watched folders as the account that was logged in when the package was first installed (the settings window shows it), never as root. That account must be able to read In and write Out, Error and Originals, and it owns the files it makes; its log is in `/Library/Application Support/Illux Image Tool/folder-logs`. To change it, run `sudo "/Library/Application Support/Illux Image Tool/uninstall.sh"`, delete `folder-account` in that folder, and install again while logged in as the new account.
 
 ### Service account and folder permissions (Windows)
 

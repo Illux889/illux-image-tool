@@ -38,6 +38,12 @@ public partial class MainWindow : Window
         ServiceLogButton.IsVisible = SettingsPlatform.IsWindows;
         ServiceLogNote.Text = SettingsPlatform.ServiceLogNote;
         ServiceLogNote.IsVisible = !SettingsPlatform.IsWindows;
+        if (OperatingSystem.IsMacOS())
+        {
+            // V15: which account runs the watched folders, or why they are off.
+            FolderAccountNote.Text = MacServiceControl.ReadFolderAccountText();
+            FolderAccountNote.IsVisible = true;
+        }
 
         WireRules();
         FolderList.SelectionChanged += (_, _) => UpdateFolderButtons();
@@ -244,9 +250,10 @@ public partial class MainWindow : Window
     private void ShowLive(string status, UpdateState state)
     {
         ServiceStatus.Text = status;
-        StartButton.IsEnabled = !_serviceBusy && status is "Stopped" or "Unknown";
-        // macOS: "Unknown" when launchctl could not tell; then both buttons stay usable, as Start does on Windows.
-        StopButton.IsEnabled = !_serviceBusy && (status is "Running" or "Paused" || (!SettingsPlatform.IsWindows && status == "Unknown"));
+        StartButton.IsEnabled = !_serviceBusy && status is "Stopped" or "Unknown" or "Partly running";
+        // macOS: "Unknown" when launchctl could not tell, "Partly running" when only one of the two jobs runs (V15); then
+        // both buttons stay usable, as Start does on Windows.
+        StopButton.IsEnabled = !_serviceBusy && (status is "Running" or "Paused" or "Partly running" || (!SettingsPlatform.IsWindows && status == "Unknown"));
         AccountButton.IsEnabled = status != "Not installed";
 
         var view = UpdateView.From(state, AppVersion.Current, status == "Running");

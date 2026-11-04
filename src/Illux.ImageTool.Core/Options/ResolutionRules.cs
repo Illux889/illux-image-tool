@@ -61,6 +61,12 @@ public static class ResolutionRules
         for (var i = 0; i < rules.Count; i++)
         {
             var r = rules[i];
+            if (r is null)
+            {
+                // A "null" entry in config.json (final review M2): a problem to report, not a crash.
+                problems.Add($"Rule {i + 1} is empty.");
+                continue;
+            }
             var label = string.IsNullOrWhiteSpace(r.Name) ? $"Rule {i + 1}" : $"Rule '{r.Name}'";
             if (string.IsNullOrWhiteSpace(r.Name)) problems.Add($"Rule {i + 1} needs a name.");
 
@@ -90,9 +96,9 @@ public static class ResolutionRules
             }
         }
 
-        var allCount = rules.Count(r => r.Test == SizeTest.All);
+        var allCount = rules.Count(r => r?.Test == SizeTest.All);
         if (allCount != 1) problems.Add("Exactly one rule must apply to all sizes (test 'all').");
-        else if (rules[^1].Test != SizeTest.All) problems.Add("The rule that applies to all sizes must be the last rule.");
+        else if (rules[^1]?.Test != SizeTest.All) problems.Add("The rule that applies to all sizes must be the last rule.");
         return problems;
     }
 
