@@ -1,15 +1,16 @@
 #!/bin/sh
 # Removes Illux Image Tool from this Mac: run as an administrator with
 #   sudo "/Library/Application Support/Illux Image Tool/uninstall.sh"
-# Stops the watcher daemon, the menu-bar helpers and open settings windows, removes their launchd jobs, the app, the
-# program files and downloaded update packages, and forgets the package so a later install starts clean. config.json,
-# the logs and the other data stay in /Library/Application Support/Illux Image Tool (delete that folder by hand to
-# remove them too).
+# Stops the watcher daemon (both jobs), the menu-bar helpers and open settings windows, removes their launchd jobs, the
+# app, the program files and downloaded update packages, and forgets the package so a later install starts clean.
+# config.json, folder-account, the logs and the other data stay in /Library/Application Support/Illux Image Tool
+# (delete that folder by hand to remove them too).
 set -u
 
 ROOT='/Library/Application Support/Illux Image Tool'
 APP='/Applications/Illux Image Tool.app'
 DAEMON_LABEL='dk.illux.imagetool.watcher'
+FOLDERS_LABEL='dk.illux.imagetool.folders'
 TRAY_LABEL='dk.illux.imagetool.tray'
 SETTINGS_PATTERN='Illux Image Tool\.app/Contents/MacOS/IlluxImageToolSettings'
 TRAY_PATTERN="$SETTINGS_PATTERN --tray"
@@ -29,6 +30,7 @@ status=0
 step() { echo "$*"; }
 problem() { echo "ERROR: $*" >&2; status=1; }
 
+if launchctl bootout "system/$FOLDERS_LABEL" 2>/dev/null; then step "Stopped the watched-folders job."; fi
 if launchctl bootout "system/$DAEMON_LABEL" 2>/dev/null; then step "Stopped the watcher daemon."; fi
 
 # The menu-bar helper of every desktop user (loginwindow owners, the console user) and of whoever still runs one.
@@ -43,7 +45,8 @@ done
 # Whatever is left: helpers of users without a desktop session, and open settings windows.
 pkill -f "$SETTINGS_PATTERN" 2>/dev/null
 
-rm -f "/Library/LaunchDaemons/$DAEMON_LABEL.plist" "/Library/LaunchAgents/$TRAY_LABEL.plist" || problem "could not remove the launchd jobs"
+rm -f "/Library/LaunchDaemons/$DAEMON_LABEL.plist" "/Library/LaunchDaemons/$FOLDERS_LABEL.plist" "/Library/LaunchAgents/$TRAY_LABEL.plist" \
+    || problem "could not remove the launchd jobs"
 rm -rf "$APP" || problem "could not remove $APP"
 # Inside the root-owned data folder only: the program files, and the daemon's socket folder.
 rm -rf "$ROOT/bin" "$ROOT/run" || problem "could not remove the program files in $ROOT"
@@ -57,5 +60,10 @@ pkgutil --forget "$PACKAGE_ID" >/dev/null 2>&1 && step "Forgot the package $PACK
 rm -f "$ROOT/uninstall.sh"
 if [ "$status" = 0 ]; then
     step "Illux Image Tool was removed. Settings and logs are kept in $ROOT."
+fi
+# V15: the account that runs the watched folders is kept for the next install.
+if [ -f "$ROOT/folder-account" ]; then
+    step "Watched folders ran as: $(head -n 1 "$ROOT/folder-account" | tr -cd 'a-z0-9_.-'). The next install keeps that account."
+    step "To use another account: sudo rm \"$ROOT/folder-account\", then install again while logged in as that account."
 fi
 exit "$status"

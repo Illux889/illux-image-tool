@@ -11,14 +11,18 @@
 #    on the daemon), the signed app bundle, that the untrusted folder was moved aside, that folders every Mac has kept
 #    their modes, and that the daemon runs. As the (non-root) user: the daemon's status, a "check" request through the
 #    control socket (seen as root in the root-only service logs), and that the user cannot write into the data folder.
+#    V15: the root job runs no watched folders; the folders job runs as the user logged in at the install (the runner
+#    user), which folder-account names.
 # 3. Writes config.json in place as the user (as the settings app does) with a watched folder below /Users/Shared and
-#    drops a 20 x 15 cm, 150 ppi JPEG: the output is 300 ppi, 2362 x 1772 px (default rule "Small").
+#    drops a 20 x 15 cm, 150 ppi JPEG: the output is 300 ppi, 2362 x 1772 px (default rule "Small"), owned by the
+#    folder account.
 # 4. Upgrades the way the daemon does: plants updating.flag and an "Installing" update state, then runs the updater's
 #    exact command line (sh -c 'exec /usr/sbin/installer ...') as a child of a throw-away launchd job that carries the
 #    daemon's label and AbandonProcessGroup, so the package's preinstall boots out the installer's parent job. The
 #    upgrade must complete: new version, daemon restarted, config.json unchanged, flag removed, state Idle, the
 #    watched folder still works.
-# 5. Uninstalls with uninstall.sh: daemon, jobs, app, program files and receipt gone; config.json and logs kept.
+# 5. Uninstalls with uninstall.sh: daemon (both jobs), app, program files and receipt gone; config.json, logs and
+#    folder-account kept.
 # Exits 1 if any check failed.
 set -uo pipefail
 
@@ -37,6 +41,10 @@ ROOT='/Library/Application Support/Illux Image Tool'
 APP='/Applications/Illux Image Tool.app'
 LABEL='dk.illux.imagetool.watcher'
 DAEMON_PLIST="/Library/LaunchDaemons/$LABEL.plist"
+FOLDERS_LABEL='dk.illux.imagetool.folders'
+FOLDERS_PLIST="/Library/LaunchDaemons/$FOLDERS_LABEL.plist"
+ACCOUNT_FILE="$ROOT/folder-account"
+ME=$(id -un)
 TRAY_PLIST='/Library/LaunchAgents/dk.illux.imagetool.tray.plist'
 PACKAGE_ID='dk.illux.imagetool'
 CLI="$ROOT/bin/IlluxImageTool"
@@ -71,7 +79,15 @@ daemon_loaded() { launchctl print "system/$LABEL" >/dev/null 2>&1; }
 daemon_state() { daemon_print | awk '$1 == "state" && $2 == "=" { print $3; exit }'; }
 daemon_running() { [[ "$(daemon_state)" == running ]]; }
 daemon_pid() { daemon_print | awk '$1 == "pid" && $2 == "=" { print $3; exit }'; }
+folders_print() { launchctl print "system/$FOLDERS_LABEL" 2>/dev/null; }
+folders_loaded() { launchctl print "system/$FOLDERS_LABEL" >/dev/null 2>&1; }
+folders_running() { [[ "$(folders_print | awk '$1 == "state" && $2 == "=" { print $3; exit }')" == running ]]; }
+folders_pid() { folders_print | awk '$1 == "pid" && $2 == "=" { print $3; exit }'; }
+process_user() { ps -o user= -p "$1" 2>/dev/null | tr -d ' '; }
 service_log() { sudo find "$ROOT/service-logs" -name 'watcher-*.log' -exec cat {} + 2>/dev/null; }
+# The folders job's log (folder-logs/ is 0755 and owned by the folder account: readable without sudo).
+folder_log() { find "$ROOT/folder-logs" -name 'watcher-*.log' -exec cat {} + 2>/dev/null; }
+folder_log_has() { folder_log | grep -q -- "$1"; }
 log_count() { service_log | grep -c -- "$1"; }
 log_has() { service_log | grep -q -- "$1"; }
 log_count_at_least() { (( $(log_count "$1") >= $2 )); }
@@ -91,13 +107,17 @@ dump_diagnostics() {
     grep -E 'Illux Image Tool|dk\.illux\.imagetool' /var/log/install.log | tail -n 80
     echo '--- service logs ---'
     service_log | tail -n 80
+    echo '--- folder logs ---'
+    folder_log | tail -n 80
     echo '--- launchd-stderr.log ---'
     sudo cat "$ROOT/service-logs/launchd-stderr.log" 2>/dev/null | tail -n 40
     echo '--- launchctl print ---'
     daemon_print | head -n 40
+    folders_print | head -n 40
     mkdir -p "$WORK/logs"
     grep -E 'Illux Image Tool|dk\.illux\.imagetool|installer\[' /var/log/install.log > "$WORK/logs/install.log" 2>/dev/null
     service_log > "$WORK/logs/service.log"
+    folder_log > "$WORK/logs/folder.log"
     sudo cat "$ROOT/service-logs/launchd-stderr.log" > "$WORK/logs/launchd-stderr.log" 2>/dev/null
     sudo cat "$ROOT"/update/*.log > "$WORK/logs/upgrade-installer.log" 2>/dev/null
 }
@@ -141,9 +161,15 @@ check_eq 'service-logs/' 'root:wheel 0700' "$(owner_mode "$ROOT/service-logs")"
 check_eq 'run/' 'root:wheel 0755' "$(owner_mode "$ROOT/run")"
 check_eq 'logs/' 'root:wheel 1777' "$(owner_mode "$ROOT/logs")"
 check_eq 'runs/' 'root:wheel 1777' "$(owner_mode "$ROOT/runs")"
+check_eq 'work/ (TMPDIR of the root job)' 'root:wheel 0700' "$(owner_mode "$ROOT/work")"
+check_eq 'folder-account' 'root:wheel 0644' "$(owner_mode "$ACCOUNT_FILE")"
+check_eq 'folder-account names the user logged in at the install' "$ME" "$(cat "$ACCOUNT_FILE" 2>/dev/null)"
+check_eq 'folder-work/ (TMPDIR of the folders job)' "$ME:$(id -gn) 0700" "$(owner_mode "$ROOT/folder-work")"
+check_eq 'folder-logs/' "$ME:$(id -gn) 0755" "$(owner_mode "$ROOT/folder-logs")"
+check_eq 'folders job plist' 'root:wheel 0644' "$(owner_mode "$FOLDERS_PLIST")"
 check_eq 'daemon plist' 'root:wheel 0644' "$(owner_mode "$DAEMON_PLIST")"
 check_eq 'tray agent plist' 'root:wheel 0644' "$(owner_mode "$TRAY_PLIST")"
-for folder in "$ROOT" "$ROOT/bin" "$ROOT/update" "$ROOT/service-logs" "$ROOT/run"; do
+for folder in "$ROOT" "$ROOT/bin" "$ROOT/update" "$ROOT/service-logs" "$ROOT/run" "$ROOT/work"; do
     check "no ACL on $folder" no_acl "$folder"
 done
 check_eq 'nothing in the app is writable by group or others' '' "$(find "$APP" -perm +022 -print)"
@@ -157,12 +183,24 @@ check_eq 'daemon KeepAlive' true "$(plist_value "$DAEMON_PLIST" KeepAlive)"
 check_eq 'daemon UserName' root "$(plist_value "$DAEMON_PLIST" UserName)"
 check_eq 'daemon Label' "$LABEL" "$(plist_value "$DAEMON_PLIST" Label)"
 check_eq 'daemon program' "$ROOT/bin/IlluxImageToolWatcher" "$(plist_value "$DAEMON_PLIST" ProgramArguments.0)"
+check_eq 'daemon role' '--role updates' "$(plist_value "$DAEMON_PLIST" ProgramArguments.1) $(plist_value "$DAEMON_PLIST" ProgramArguments.2)"
+check_eq 'daemon TMPDIR' "$ROOT/work/" "$(plist_value "$DAEMON_PLIST" EnvironmentVariables.TMPDIR)"
+check_eq 'folders job Label' "$FOLDERS_LABEL" "$(plist_value "$FOLDERS_PLIST" Label)"
+check_eq 'folders job UserName (the folder account)' "$ME" "$(plist_value "$FOLDERS_PLIST" UserName)"
+check_eq 'folders job program' "$ROOT/bin/IlluxImageToolWatcher" "$(plist_value "$FOLDERS_PLIST" ProgramArguments.0)"
+check_eq 'folders job role' '--role folders' "$(plist_value "$FOLDERS_PLIST" ProgramArguments.1) $(plist_value "$FOLDERS_PLIST" ProgramArguments.2)"
+check_eq 'folders job RunAtLoad' true "$(plist_value "$FOLDERS_PLIST" RunAtLoad)"
+check_eq 'folders job KeepAlive' true "$(plist_value "$FOLDERS_PLIST" KeepAlive)"
+check_eq 'folders job TMPDIR' "$ROOT/folder-work/" "$(plist_value "$FOLDERS_PLIST" EnvironmentVariables.TMPDIR)"
+check_eq 'folders job standard error (never a file launchd opens as root)' /dev/null "$(plist_value "$FOLDERS_PLIST" StandardErrorPath)"
 check_eq 'tray agent Label' dk.illux.imagetool.tray "$(plist_value "$TRAY_PLIST" Label)"
 check_eq 'tray agent program' "$APP/Contents/MacOS/IlluxImageToolSettings" "$(plist_value "$TRAY_PLIST" ProgramArguments.0)"
 check_eq 'tray agent argument' --tray "$(plist_value "$TRAY_PLIST" ProgramArguments.1)"
 postinstall_lines="$(tail -n +"$((INSTALL_LOG_START + 1))" /var/log/install.log | grep 'Illux Image Tool postinstall')"
 echo "$postinstall_lines"
 check 'postinstall started the daemon' grep -q 'started the watcher daemon' <<< "$postinstall_lines"
+check "postinstall chose $ME as the folder account" grep -q "watched folders run as $ME (the user logged in now)" <<< "$postinstall_lines"
+check 'postinstall started the folders job' grep -q "started the watched-folders job as $ME" <<< "$postinstall_lines"
 check 'postinstall reported no error' not grep -q 'ERROR' <<< "$postinstall_lines"
 # The menu-bar helper needs a desktop session; a headless runner may have none, so it is reported, not required.
 echo "Menu-bar helper: $(grep 'menu-bar helper' <<< "$postinstall_lines" || echo 'no desktop session found')"
@@ -202,7 +240,13 @@ FIRST_PID=$(daemon_pid)
 echo "Daemon pid $FIRST_PID"
 check 'control socket created' wait_until 30 test -S "$SOCKET"
 check_eq 'control socket owner and mode' 'root:wheel 0666' "$(owner_mode "$SOCKET")"
-check 'the daemon logs into service-logs/' wait_until 30 log_has 'Watcher started'
+check 'the daemon logs into service-logs/' wait_until 30 log_has 'role: updates'
+check 'the folders job is running' wait_until 60 folders_running
+FOLDERS_PID=$(folders_pid)
+check_eq "the folders job (pid $FOLDERS_PID) runs as the folder account" "$ME" "$(process_user "$FOLDERS_PID")"
+check_eq "the root job (pid $FIRST_PID) runs as root" root "$(process_user "$FIRST_PID")"
+check 'the folders job logs into folder-logs/' wait_until 30 folder_log_has 'role: folders'
+check 'the folders job watches the folders' wait_until 30 folder_log_has 'Watcher started'
 check 'the user cannot read service-logs/' not ls "$ROOT/service-logs" 2>/dev/null
 check 'the user cannot create files in the data folder' not touch "$ROOT/smoke-user-file" 2>/dev/null
 check 'the user cannot create files in update/' not touch "$ROOT/update/smoke-user-file" 2>/dev/null
@@ -251,7 +295,7 @@ check 'an administrator can save config.json in place (without sudo)' test $? -e
 check_eq 'config.json is the same file after the save (in place)' "$inode_before" "$(stat -f %i "$CONFIG")"
 check_eq 'the second name shows the saved content' "$(sha "$CONFIG")" "$(sha "$ROOT/logs/smoke-config-link")"
 check_eq 'config.json keeps its owner and mode after the save' 'root:admin 0664' "$(owner_mode "$CONFIG")"
-check 'the daemon loaded the new configuration' wait_until 30 log_has 'Configuration loaded: 1 watched folder(s) enabled'
+check 'the folders job loaded the new configuration' wait_until 30 folder_log_has 'Configuration loaded: 1 watched folder(s) enabled'
 
 drop_and_check() { # file name, label
     mkdir -p "$WORK/drop"
@@ -263,10 +307,14 @@ drop_and_check() { # file name, label
         local out="$WATCH/Out/$1"
         check_eq "$2: output is 300 ppi and 2362 x 1772 px (20 x 15 cm kept, rule Small)" '2362 1772 300 300' \
             "$(image_value "$out" pixelWidth) $(image_value "$out" pixelHeight) $(image_value "$out" dpiWidth) $(image_value "$out" dpiHeight)"
+        check_eq "$2: the output belongs to the folder account" "$ME" "$(stat -f %Su "$out")"
     fi
     check "$2: the original was moved to Originals" wait_until 30 test -f "$WATCH/Originals/$1"
 }
 drop_and_check print-20x15cm-150ppi.jpg 'after install'
+check_eq 'Originals was made by the folders job (folder account)' "$ME" "$(stat -f %Su "$WATCH/Originals")"
+check 'the root job did no watched-folder work' not log_has 'Watched folder'
+check 'the root job runs no watcher loop' not log_has 'Watcher started'
 
 # =====================================================================================================================
 section 'Upgrade the way the daemon runs it'
@@ -274,6 +322,7 @@ shipped_script=$(sed -n 's/.*const string MacInstallScript = "\(.*\)";.*/\1/p' "
 check_eq 'the simulated command line is Updater.MacInstallScript' "$MAC_INSTALL_SCRIPT" "$shipped_script"
 CONFIG_HASH=$(sha "$CONFIG")
 CONFIG_INODE=$(stat -f %i "$CONFIG")
+ACCOUNT_INODE=$(stat -f %i "$ACCOUNT_FILE")
 CHECKS_BEFORE=$(log_count 'Update check requested')
 PREINSTALL_BOOTOUTS=$(grep -c 'preinstall: stopped the watcher daemon' /var/log/install.log)
 UPGRADE_START_LINE=$(wc -l < /var/log/install.log)
@@ -341,6 +390,13 @@ check 'the daemon job comes from the installed plist again' grep -q "path = $DAE
 check_eq 'the daemon job has AbandonProcessGroup after the upgrade' true "$(plist_value "$DAEMON_PLIST" AbandonProcessGroup)"
 NEW_PID=$(daemon_pid)
 check "the daemon was restarted (pid $FIRST_PID -> $NEW_PID)" test -n "$NEW_PID" -a "$NEW_PID" != "$FIRST_PID"
+check_eq 'the upgrade kept folder-account' "$ME" "$(cat "$ACCOUNT_FILE" 2>/dev/null)"
+check_eq 'the upgrade did not write folder-account again (same inode)' "$ACCOUNT_INODE" "$(stat -f %i "$ACCOUNT_FILE")"
+check 'postinstall kept the folder account' grep -q "watched folders run as $ME (kept from the first install)" <<< "$(tail -n +"$((UPGRADE_START_LINE + 1))" /var/log/install.log)"
+check 'the folders job is running after the upgrade' wait_until 60 folders_running
+NEW_FOLDERS_PID=$(folders_pid)
+check "the folders job was restarted (pid $FOLDERS_PID -> $NEW_FOLDERS_PID)" test -n "$NEW_FOLDERS_PID" -a "$NEW_FOLDERS_PID" != "$FOLDERS_PID"
+check_eq 'the folders job runs as the folder account after the upgrade' "$ME" "$(process_user "$NEW_FOLDERS_PID")"
 check_eq 'command-line tool version after the upgrade' "$UPGRADE_VERSION" "$("$CLI" --version 2>&1)"
 check_eq 'app version after the upgrade' "$UPGRADE_VERSION" "$(plist_value "$APP/Contents/Info.plist" CFBundleShortVersionString)"
 check 'app bundle signature verifies after the upgrade' codesign --verify --deep --strict "$APP"
@@ -376,9 +432,13 @@ drop_and_check upgraded.jpg 'after the upgrade'
 
 # =====================================================================================================================
 section 'Uninstall'
-sudo "$ROOT/uninstall.sh"
-check 'uninstall.sh exit code 0' test $? -eq 0
+sudo "$ROOT/uninstall.sh" | tee "$WORK/uninstall.out"
+check 'uninstall.sh exit code 0' test "${PIPESTATUS[0]}" -eq 0
 check 'daemon job removed' wait_until 30 not daemon_loaded
+check 'folders job removed' wait_until 30 not folders_loaded
+check 'folders job plist removed' not test -e "$FOLDERS_PLIST"
+check_eq 'folder-account kept' "$ME" "$(cat "$ACCOUNT_FILE" 2>/dev/null)"
+check 'uninstall.sh says how to change the folder account' grep -q 'To use another account' "$WORK/uninstall.out"
 check 'no daemon process left' not pgrep -f "$ROOT/bin/IlluxImageToolWatcher"
 check 'daemon plist removed' not test -e "$DAEMON_PLIST"
 check 'tray agent plist removed' not test -e "$TRAY_PLIST"

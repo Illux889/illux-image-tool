@@ -9,6 +9,10 @@ ROOT='/Library/Application Support/Illux Image Tool'
 APP='/Applications/Illux Image Tool.app'
 DAEMON_LABEL='dk.illux.imagetool.watcher'
 DAEMON_PLIST="/Library/LaunchDaemons/${DAEMON_LABEL}.plist"
+# V15: the watched folders run in a second job as the folder account (an ordinary user), named in folder-account.
+FOLDERS_LABEL='dk.illux.imagetool.folders'
+FOLDERS_PLIST="/Library/LaunchDaemons/${FOLDERS_LABEL}.plist"
+ACCOUNT_FILE="$ROOT/folder-account"
 TRAY_LABEL='dk.illux.imagetool.tray'
 TRAY_PLIST="/Library/LaunchAgents/${TRAY_LABEL}.plist"
 # For pgrep/pkill -f (regular expressions): the settings app (window or menu-bar helper), and the menu-bar helper only.
@@ -72,4 +76,14 @@ tray_users() {
     for pid in $(pgrep -f "$TRAY_PATTERN"); do
         ps -o uid= -p "$pid" 2>/dev/null
     done | awk '$1 ~ /^[0-9]+$/' | sort -un
+}
+
+# True when "$1" may be the folder account: a short lower-case user name (no path, quote or XML characters), an
+# existing user, and an ordinary one (uid 501 or above, never root).
+valid_folder_account() {
+    [ -n "$1" ] || return 1
+    case "$1" in *[!a-z0-9_.-]*) return 1 ;; esac # one line: no newline, space, quote or XML character
+    printf '%s\n' "$1" | grep -Eqx '[a-z_][a-z0-9_.-]{0,31}' || return 1
+    uid=$(id -u "$1" 2>/dev/null) || return 1
+    [ "$uid" -ge 501 ] 2>/dev/null
 }

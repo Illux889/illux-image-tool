@@ -1,7 +1,8 @@
 #!/bin/sh
-# Runs as root before the payload is copied: stops the watcher daemon, the menu-bar helpers and open settings windows
-# (their program files are replaced), makes sure the payload goes into a trusted data folder (an untrusted one is moved
-# aside first, as on Windows) and removes the previous program files, so an upgrade leaves no stale files behind.
+# Runs as root before the payload is copied: stops the watcher daemon (both jobs), the menu-bar helpers and open
+# settings windows (their program files are replaced), makes sure the payload goes into a trusted data folder (an
+# untrusted one is moved aside first, as on Windows) and removes the previous program files, so an upgrade leaves no
+# stale files behind.
 # Configuration and logs are never touched here.
 #
 # When the daemon itself runs this upgrade (/usr/sbin/installer is its child), booting it out here does not end the
@@ -10,7 +11,13 @@ set -u
 SCRIPT_NAME=preinstall
 . "$(dirname "$0")/common.sh"
 
-# The job may not be loaded (first install, or stopped in the settings window): that is fine.
+# The jobs may not be loaded (first install, stopped in the settings window, or no folder account): that is fine.
+# The folders job goes first: it may be converting a file with the program files about to be replaced.
+if launchctl bootout "system/$FOLDERS_LABEL" 2>/dev/null; then
+    say "stopped the watched-folders job"
+else
+    say "the watched-folders job was not loaded"
+fi
 if launchctl bootout "system/$DAEMON_LABEL" 2>/dev/null; then
     say "stopped the watcher daemon"
 else

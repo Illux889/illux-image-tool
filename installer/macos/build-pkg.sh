@@ -13,7 +13,8 @@
 #      /Library/Application Support/Illux Image Tool/uninstall.sh
 #      /Library/LaunchDaemons/dk.illux.imagetool.watcher.plist
 #      /Library/LaunchAgents/dk.illux.imagetool.tray.plist
-#    with the scripts in installer/macos/scripts (preinstall, postinstall and the common.sh they share).
+#    with the scripts in installer/macos/scripts (preinstall, postinstall and the common.sh they share) and the
+#    template of the folders job (dk.illux.imagetool.folders.plist.in), which postinstall fills in (ruling V15).
 # 4. pkgbuild (package id dk.illux.imagetool, the app not relocatable) and productbuild (Apple silicon and macOS 15 or
 #    later only), unsigned.
 # 5. Writes the checksum file as "<sha256 hex>  <package file name>".
@@ -165,8 +166,10 @@ chmod 0700 "$PAYLOAD/$DATA_ROOT/uninstall.sh"
 SCRIPTS="$WORK/scripts"
 mkdir -p "$SCRIPTS"
 install -m 0755 "$HERE/scripts/preinstall" "$HERE/scripts/postinstall" "$SCRIPTS/"
-install -m 0644 "$HERE/scripts/common.sh" "$SCRIPTS/"
-for script in "$SCRIPTS"/*; do sh -n "$script"; done
+install -m 0644 "$HERE/scripts/common.sh" "$HERE/scripts/dk.illux.imagetool.folders.plist.in" "$SCRIPTS/"
+for script in preinstall postinstall common.sh; do sh -n "$SCRIPTS/$script"; done
+sed 's/@FOLDER_ACCOUNT@/someone/' "$SCRIPTS/dk.illux.imagetool.folders.plist.in" > "$WORK/folders-check.plist"
+plutil -lint "$WORK/folders-check.plist"
 
 # --- component package: the app is installed in /Applications only (not relocated to a copy found elsewhere) ---
 COMPONENTS="$WORK/components.plist"

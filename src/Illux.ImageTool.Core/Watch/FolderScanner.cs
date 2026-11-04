@@ -32,6 +32,7 @@ public sealed class FolderScanner
     private readonly TimeProvider _clock;
     private readonly Func<bool> _isUpdating;
     private readonly Func<IReadOnlyList<ResolutionRule>> _rules;
+    private readonly Func<IDisposable?>? _runMarker;
     private bool _pausedLogged;
     private readonly Dictionary<string, (long Length, DateTime LastWriteUtc)> _seen = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Parked> _parked = new(StringComparer.OrdinalIgnoreCase);
@@ -51,9 +52,14 @@ public sealed class FolderScanner
 
     /// <param name="isUpdating">True while an update is pending; defaults to "<see cref="AppPaths.UpdatingFlag"/> exists".</param>
     /// <param name="rules">The resolution rules to use, asked for on every scan; defaults to <see cref="ResolutionRules.Defaults"/>.</param>
+    /// <param name="runMarker">
+    /// Taken before <c>updating.flag</c> is looked at and held while a file is processed; for the macOS folders job
+    /// (V15), whose updater runs in another process and only sees it through a lock in <c>runs/</c> (as the CLI's, R30).
+    /// Null from it means it could not be taken; the file is processed anyway, as in the CLI.
+    /// </param>
     public FolderScanner(
         WatchedFolder folder, ILogger log, TimeProvider? clock = null, Func<bool>? isUpdating = null,
-        Func<IReadOnlyList<ResolutionRule>>? rules = null)
+        Func<IReadOnlyList<ResolutionRule>>? rules = null, Func<IDisposable?>? runMarker = null)
     {
         ArgumentNullException.ThrowIfNull(folder);
         ArgumentNullException.ThrowIfNull(log);
@@ -62,6 +68,7 @@ public sealed class FolderScanner
         _clock = clock ?? TimeProvider.System;
         _isUpdating = isUpdating ?? (() => File.Exists(AppPaths.UpdatingFlag));
         _rules = rules ?? (() => ResolutionRules.Defaults);
+        _runMarker = runMarker;
     }
 
     /// <summary>True only while a file is being processed.</summary>
@@ -138,9 +145,11 @@ public sealed class FolderScanner
             }
             _locked.Remove(path);
 
-            // Busy is claimed before the flag is looked at: the updater writes the flag and then checks Busy again, so
-            // either it sees this file being processed or this scanner sees its flag (the CLI does the same, R30).
+            // Busy (and the run marker) is claimed before the flag is looked at: the updater writes the flag and then
+            // checks Busy and the run locks again, so either it sees this file being processed or this scanner sees its
+            // flag (the CLI does the same, R30).
             _busy = true;
+            using var run = _runMarker?.Invoke();
             if (IsUpdatePending())
             {
                 _busy = false;

@@ -8,7 +8,8 @@ namespace Illux.ImageTool.Watcher.Logging;
 /// <summary>
 /// Daily log file <c>service-logs\watcher-YYYYMMDD.log</c>, 30 days kept. The folder is SYSTEM/Administrators only
 /// (R38): the service never creates, appends to or deletes a file by name in a folder standard users can write. On
-/// macOS the daemon keeps the folder at mode 0700 (root only) and never writes through a folder that is a link. The
+/// macOS the root job keeps the folder at mode 0700 (root only) and never writes through a folder that is a link; the
+/// folders job (V15) logs into <c>folder-logs/</c>, which it owns, with mode 0755 so administrators can read it. The
 /// file is opened per entry with <see cref="FileShare.ReadWrite"/> so the settings window can read it and other
 /// writers can append; a logging failure never reaches the caller.
 /// </summary>
@@ -19,14 +20,17 @@ public sealed class FileLoggerProvider : ILoggerProvider
     public const int KeepDays = 30;
 
     private readonly Func<string> _directory;
+    private readonly UnixFileMode _folderMode;
     private readonly TimeProvider _clock;
     private readonly object _gate = new();
     private DateOnly _lastCleanup;
 
-    public FileLoggerProvider(Func<string>? directory = null, TimeProvider? clock = null)
+    /// <param name="folderMode">macOS: the mode the log folder is kept at; owner only (0700) unless given.</param>
+    public FileLoggerProvider(Func<string>? directory = null, TimeProvider? clock = null, UnixFileMode? folderMode = null)
     {
         _directory = directory ?? (() => AppPaths.ServiceLogsDir);
         _clock = clock ?? TimeProvider.System;
+        _folderMode = folderMode ?? OwnerOnly;
     }
 
     public ILogger CreateLogger(string categoryName) => new FileLogger(this, categoryName);
@@ -49,7 +53,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             lock (_gate)
             {
                 var directory = _directory();
-                PrepareDirectory(directory);
+                PrepareDirectory(directory, _folderMode);
                 var path = Path.Combine(directory, Prefix + now.ToString(DateFormat, CultureInfo.InvariantCulture) + ".log");
                 using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
                 {
@@ -73,7 +77,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
-    private static void PrepareDirectory(string directory)
+    private static void PrepareDirectory(string directory, UnixFileMode mode)
     {
         if (OperatingSystem.IsWindows())
         {
@@ -84,10 +88,10 @@ public sealed class FileLoggerProvider : ILoggerProvider
         if (!LinkGuard.IsLink(directory) && !Directory.Exists(directory))
         {
             if (Path.GetDirectoryName(directory) is { Length: > 0 } parent) Directory.CreateDirectory(parent); // not 0700
-            Directory.CreateDirectory(directory, OwnerOnly);
+            Directory.CreateDirectory(directory, mode);
         }
         LinkGuard.ThrowIfLinkedFolder(directory);
-        if (File.GetUnixFileMode(directory) != OwnerOnly) File.SetUnixFileMode(directory, OwnerOnly);
+        if (File.GetUnixFileMode(directory) != mode) File.SetUnixFileMode(directory, mode);
     }
 
     private static void DeleteOldFiles(string directory, DateOnly today)

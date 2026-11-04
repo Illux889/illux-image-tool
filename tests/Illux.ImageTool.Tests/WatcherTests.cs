@@ -112,6 +112,87 @@ public sealed class WatcherTests : IDisposable
         Assert.False(scanner.Busy);
     }
 
+    /// <summary>A run marker (V15: the folders job's lock in runs/) that records when it is held.</summary>
+    private sealed class FakeRunMarker
+    {
+        public int Taken { get; private set; }
+
+        public int Held { get; private set; }
+
+        public IDisposable Take()
+        {
+            Taken++;
+            Held++;
+            return new Release(this);
+        }
+
+        private sealed class Release(FakeRunMarker owner) : IDisposable
+        {
+            private bool _done;
+
+            public void Dispose()
+            {
+                if (_done) return;
+                _done = true;
+                owner.Held--;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Scan_RunMarker_IsTakenBeforeTheUpdatingFlagIsLookedAt_AndReleasedWhenUpdating()
+    {
+        // V15 on macOS: the updater runs in another process, so it sees the folders job only through its lock in runs/,
+        // taken (like the CLI's, R30) before the flag is looked at.
+        Jpeg("a.jpg", ppi: 300);
+        var marker = new FakeRunMarker();
+        var heldWhenAsked = new List<int>();
+        var scanner = new FolderScanner(Folder(), _log, _clock, () =>
+        {
+            heldWhenAsked.Add(marker.Held);
+            return true;
+        }, runMarker: marker.Take);
+
+        await ScanTwice(scanner);
+
+        Assert.Equal([1], heldWhenAsked);
+        Assert.Equal(0, marker.Held);
+        Assert.Equal(["a.jpg"], Names(In));
+    }
+
+    [Fact]
+    public async Task Scan_RunMarker_IsHeldWhileAFileIsProcessed()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        var marker = new FakeRunMarker();
+        var scanner = new FolderScanner(Folder(), _log, _clock, () => false, runMarker: marker.Take);
+        var heldDuringVerify = -1;
+        scanner.OutputVerifier = outputs =>
+        {
+            heldDuringVerify = marker.Held;
+            return FolderScanner.VerifyOutputs(outputs);
+        };
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(1, heldDuringVerify);
+        Assert.Equal(1, marker.Taken);
+        Assert.Equal(0, marker.Held);
+        Assert.Equal(["a.jpg"], Names(Out));
+    }
+
+    [Fact]
+    public async Task Scan_RunMarkerThatCannotBeTaken_FileIsStillProcessed()
+    {
+        // As in the CLI: the lock only tells the updater we are busy; a conversion must not fail because of it.
+        Jpeg("a.jpg", ppi: 300);
+        var scanner = new FolderScanner(Folder(), _log, _clock, () => false, runMarker: () => null);
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(["a.jpg"], Names(Out));
+    }
+
     private string ToolTempFolder()
     {
         var path = Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N"));

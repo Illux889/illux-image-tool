@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs as root after the payload was copied: sets up the data folders and their owners and modes, creates config.json
-# when it is missing (never overwrites it), clears updating.flag, resets the update state to Idle, starts the watcher
-# daemon and starts the menu-bar helper for the users logged in to the desktop.
+# when it is missing (never overwrites it), clears updating.flag, resets the update state to Idle, picks the folder
+# account at the first install (V15), starts the watcher daemon's two jobs and starts the menu-bar helper for the
+# users logged in to the desktop.
 #
 # Data folder (/Library/Application Support/Illux Image Tool):
 #   .               root:admin 0755  checked by the daemon: owned by root, not writable by group or others
@@ -9,9 +10,18 @@
 #   bin/            root:wheel 0755  the command-line tool and the daemon (payload)
 #   uninstall.sh    root:wheel 0700
 #   update/         root:wheel 0700  downloaded installers (the daemon checks owner and mode)
-#   service-logs/   root:wheel 0700  the daemon's logs
-#   run/            root:wheel 0755  the daemon's control socket
-#   logs/, runs/    root:wheel 1777  written by the command-line tool as the user (sticky); root never writes there
+#   service-logs/   root:wheel 0700  the root job's logs
+#   run/            root:wheel 0755  the root job's control socket
+#   work/           root:wheel 0700  TMPDIR of the root job
+#   logs/, runs/    root:wheel 1777  written by the command-line tool and the folders job as the user (sticky); root
+#                                    never writes there
+#   folder-account  root:wheel 0644  the folder account: the user logged in at the first install (one line, V15)
+#   folder-work/    <account>  0700  TMPDIR of the folders job: ImageMagick's temp and the staging folders
+#   folder-logs/    <account>  0755  the folders job's logs
+#
+# The watched folders run in the job dk.illux.imagetool.folders as the folder account, never as root (V15). Its plist
+# is written here from the template next to this script. Without a folder account (nobody logged in at the first
+# install) that job is not set up and the settings window says so.
 set -u
 SCRIPT_NAME=postinstall
 . "$(dirname "$0")/common.sh"
@@ -38,7 +48,7 @@ ensure_dir() { # name mode [clear-acl]
     chown -h root:wheel "$dir" && chmod -h "$2" "$dir" || return 1
     if [ "${3:-}" = clear-acl ]; then chmod -N "$dir" || return 1; fi
 }
-for spec in update:0700:clear-acl service-logs:0700:clear-acl run:0755:clear-acl logs:1777: runs:1777:; do
+for spec in update:0700:clear-acl service-logs:0700:clear-acl run:0755:clear-acl work:0700:clear-acl logs:1777: runs:1777:; do
     name=${spec%%:*}
     rest=${spec#*:}
     ensure_dir "$name" "${rest%%:*}" "${rest#*:}" || fail "could not set up '$ROOT/$name'"
@@ -90,20 +100,90 @@ write_state() { # optional error text (plain, no quotes)
 }
 write_state
 
-# The daemon: preinstall booted the old job out, so it is loaded again here (RunAtLoad starts it). Should it still be
-# loaded (bootout failed), kickstart -k restarts it on the new program files.
-if launchctl bootstrap system "$DAEMON_PLIST"; then
-    launchctl kickstart "system/$DAEMON_LABEL"
-elif launchctl print "system/$DAEMON_LABEL" >/dev/null 2>&1; then
-    launchctl kickstart -k "system/$DAEMON_LABEL"
-else
-    false
+# --- V15: the folder account, chosen once ---
+# Root is root-owned (checked above), so only root can have put an entry named folder-account there; anything that is
+# not a regular file is moved aside all the same.
+if [ -L "$ACCOUNT_FILE" ] || { [ -e "$ACCOUNT_FILE" ] && [ ! -f "$ACCOUNT_FILE" ]; }; then
+    move_aside "$ACCOUNT_FILE" "it is a link or not a regular file" || fail "could not move '$ACCOUNT_FILE' aside"
 fi
-if [ $? -ne 0 ]; then
+folder_account=''
+if [ -f "$ACCOUNT_FILE" ]; then
+    # An upgrade keeps the account chosen at the first install; it is never picked again.
+    folder_account=$(head -n 1 "$ACCOUNT_FILE")
+    chown root:wheel "$ACCOUNT_FILE" && chmod 0644 "$ACCOUNT_FILE" || fail "could not set the owner and mode of '$ACCOUNT_FILE'"
+    if valid_folder_account "$folder_account"; then
+        say "watched folders run as $folder_account (kept from the first install)"
+    else
+        say "'$ACCOUNT_FILE' does not name an ordinary user of this Mac: watched folders are off"
+        folder_account=''
+    fi
+else
+    console_user=$(stat -f %Su /dev/console 2>/dev/null)
+    console_uid=$(stat -f %u /dev/console 2>/dev/null)
+    if [ "$console_uid" -ge 501 ] 2>/dev/null && valid_folder_account "$console_user"; then
+        folder_account=$console_user
+        temp="$ROOT/.folder-account.tmp-$$"
+        (umask 022 && printf '%s\n' "$folder_account" > "$temp") && chown root:wheel "$temp" && chmod 0644 "$temp" \
+            && mv "$temp" "$ACCOUNT_FILE" || fail "could not write '$ACCOUNT_FILE'"
+        say "watched folders run as $folder_account (the user logged in now)"
+    else
+        say "nobody is logged in to the desktop, so watched folders are off: install again while logged in as the account that should process them"
+    fi
+fi
+
+# A folder of the folder account in Root: kept when it is a real folder the account owns, otherwise moved aside and
+# made again. Root is root-owned, so the account cannot swap the folder itself, only use it.
+ensure_account_dir() { # name mode
+    dir="$ROOT/$1"
+    account_uid=$(id -u "$folder_account") && account_gid=$(id -g "$folder_account") || return 1
+    if [ -L "$dir" ]; then
+        move_aside "$dir" "it is a symbolic link" || return 1
+    elif [ -e "$dir" ] && [ ! -d "$dir" ]; then
+        move_aside "$dir" "it is not a folder" || return 1
+    elif [ -d "$dir" ] && [ "$(stat -f %u "$dir")" != "$account_uid" ]; then
+        move_aside "$dir" "it is owned by user $(stat -f %u "$dir"), not $folder_account" || return 1
+    fi
+    if [ ! -e "$dir" ]; then mkdir -m 0700 "$dir" || return 1; fi
+    [ ! -L "$dir" ] && [ -d "$dir" ] || return 1
+    chown -h "$account_uid:$account_gid" "$dir" && chmod -h "$2" "$dir" && chmod -N "$dir"
+}
+
+# The folders job's plist, from the template with the checked account (letters, digits, "_", "." and "-" only).
+if [ -n "$folder_account" ]; then
+    ensure_account_dir folder-work 0700 || fail "could not set up '$ROOT/folder-work'"
+    ensure_account_dir folder-logs 0755 || fail "could not set up '$ROOT/folder-logs'"
+    template="$(dirname "$0")/${FOLDERS_LABEL}.plist.in"
+    temp="/Library/LaunchDaemons/.${FOLDERS_LABEL}.plist.tmp-$$"
+    sed "s/@FOLDER_ACCOUNT@/$folder_account/" "$template" > "$temp" && plutil -lint "$temp" >/dev/null \
+        && chown root:wheel "$temp" && chmod 0644 "$temp" && mv -f "$temp" "$FOLDERS_PLIST" \
+        || { rm -f "$temp"; fail "could not write '$FOLDERS_PLIST'"; }
+else
+    rm -f "$FOLDERS_PLIST" # no job for an account that is not there
+fi
+
+# The jobs: preinstall booted the old ones out, so they are loaded again here (RunAtLoad starts them). Should one still
+# be loaded (bootout failed), kickstart -k restarts it on the new program files.
+start_job() { # label plist
+    if launchctl bootstrap system "$2"; then
+        launchctl kickstart "system/$1"
+    elif launchctl print "system/$1" >/dev/null 2>&1; then
+        launchctl kickstart -k "system/$1"
+    else
+        false
+    fi
+}
+if ! start_job "$DAEMON_LABEL" "$DAEMON_PLIST"; then
     write_state "The watcher service did not start after the installation - see /var/log/install.log."
     fail "the watcher daemon did not start"
 fi
 say "started the watcher daemon"
+if [ -n "$folder_account" ]; then
+    if ! start_job "$FOLDERS_LABEL" "$FOLDERS_PLIST"; then
+        write_state "The watched folders did not start after the installation - see /var/log/install.log."
+        fail "the watched-folders job did not start"
+    fi
+    say "started the watched-folders job as $folder_account"
+fi
 
 # The menu-bar helper for every user logged in to the desktop (best effort: it also starts at their next login).
 for uid in $(gui_users); do

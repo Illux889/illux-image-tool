@@ -19,6 +19,12 @@ public sealed class WatchWorkerOptions
 
     /// <summary>Tests only: replaces "updating.flag exists" for the scanners this worker creates.</summary>
     public Func<bool>? IsUpdating { get; init; }
+
+    /// <summary>
+    /// macOS folders job (V15): taken by a scanner before it looks at <c>updating.flag</c> and held while it processes
+    /// a file, so the updater in the root job sees the work (a lock in <c>runs/</c>). Null: only <see cref="WatchWorker.Busy"/>.
+    /// </summary>
+    public Func<IDisposable?>? RunMarker { get; init; }
 }
 
 /// <summary>
@@ -196,7 +202,8 @@ public sealed class WatchWorker : BackgroundService
             {
                 try
                 {
-                    var scanner = _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(folder, _log, isUpdating: _options.IsUpdating, rules: () => _config.ResolutionRules);
+                    var scanner = _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(
+                        folder, _log, isUpdating: _options.IsUpdating, rules: () => _config.ResolutionRules, runMarker: _options.RunMarker);
                     scanner.RemoveStaleTempFolders();
                     next.Add(new ScannerEntry(key, folder.Name, scanner));
                 }

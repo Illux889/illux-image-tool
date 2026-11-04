@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template: postinstall writes /Library/LaunchDaemons/dk.illux.imagetool.folders.plist from it, with @FOLDER_ACCOUNT@
+  replaced by the checked name in "folder-account" (ruling V15).
+  The watched folders: the same program as the root job, run as the folder account (an ordinary user), from boot and
+  restarted when it stops. No control socket and no updates (those stay in the root job dk.illux.imagetool.watcher).
+  TMPDIR is the account's private work folder (ImageMagick's temp, the staging folders). Standard output and error are
+  discarded: launchd would open those files as root, so they never point into a folder the account owns; the job logs
+  into its own folder-logs/.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dk.illux.imagetool.folders</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Application Support/Illux Image Tool/bin/IlluxImageToolWatcher</string>
+        <string>--role</string>
+        <string>folders</string>
+    </array>
+    <key>UserName</key>
+    <string>@FOLDER_ACCOUNT@</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TMPDIR</key>
+        <string>/Library/Application Support/Illux Image Tool/folder-work/</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

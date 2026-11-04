@@ -43,4 +43,13 @@ public static class AppPaths
     public static string RunsDir => Path.Combine(Root, "runs");
 
     public static string UpdatingFlag => Path.Combine(Root, "updating.flag");
+
+    /// <summary>macOS (V15): the account that runs the watched folders, one line, written by the package (root:wheel 0644).</summary>
+    public static string FolderAccountFile => Path.Combine(Root, "folder-account");
+
+    /// <summary>macOS (V15): the folders job's private work folder (owned by the folder account, 0700): ImageMagick's temp and the staging folders.</summary>
+    public static string FolderWorkDir => Path.Combine(Root, "folder-work");
+
+    /// <summary>macOS (V15): the folders job's own log (owned by the folder account, 0755).</summary>
+    public static string FolderLogsDir => Path.Combine(Root, "folder-logs");
 }
