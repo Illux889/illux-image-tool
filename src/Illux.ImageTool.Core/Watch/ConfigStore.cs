@@ -110,10 +110,16 @@ public static class ConfigStore
     /// <exception cref="IOException">The file is missing, a link, not a regular file with one name, or cannot be written.</exception>
     /// <exception cref="UnauthorizedAccessException">This account may not write it (not in the admin group).</exception>
     [SupportedOSPlatform("macos")]
-    public static void SaveInPlace(WatcherConfig config, string? path = null)
+    public static void SaveInPlace(WatcherConfig config) => SaveInPlace(config, AppPaths.ConfigFile, RootUserId);
+
+    /// <summary>The installer makes Root (the folder of <c>config.json</c>) root-owned.</summary>
+    public const uint RootUserId = 0;
+
+    /// <summary>As <see cref="SaveInPlace(WatcherConfig)"/> for <paramref name="path"/>, whose folder must be owned by <paramref name="expectedFolderOwner"/> (tests run as an ordinary user).</summary>
+    [SupportedOSPlatform("macos")]
+    internal static void SaveInPlace(WatcherConfig config, string path, uint expectedFolderOwner)
     {
         ArgumentNullException.ThrowIfNull(config);
-        path ??= AppPaths.ConfigFile;
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Json));
         try
         {

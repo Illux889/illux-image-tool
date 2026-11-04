@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using Illux.ImageTool.Runtime;
 using Illux.ImageTool.Watch;
 
 namespace Illux.ImageTool.Tests;
@@ -88,7 +89,7 @@ public sealed class ConfigStoreSaveTests : IDisposable
             Folders = [new WatchedFolder { Name = "A", In = "/Users/Shared/A/In", Out = "/Users/Shared/A/Out", Error = "/Users/Shared/A/Error", Parameters = ["8bit"] }],
         };
 
-        ConfigStore.SaveInPlace(config, path);
+        ConfigStore.SaveInPlace(config, path, Me);
 
         var back = ConfigStore.Load(path);
         Assert.Equal(7, back.PollSeconds);
@@ -109,23 +110,76 @@ public sealed class ConfigStoreSaveTests : IDisposable
         var path = Path.Combine(_dir, "config.json");
         File.CreateSymbolicLink(path, target);
 
-        Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path));
+        Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path, Me));
 
         Assert.Equal("precious", File.ReadAllText(target));
         Assert.NotNull(new FileInfo(path).LinkTarget);
     }
 
+    // V14: any local user can give config.json a second name in the sticky logs/ or runs/ folder; that must not
+    // stop administrators from saving. The file is still written in place, so both names show the new content.
     [MacFact]
     [SupportedOSPlatform("macos")]
-    public void SaveInPlace_HardLinkedFile_IsRefused_Untouched()
+    public void SaveInPlace_HardLinkedFile_IsSaved_ContentRoundTrips()
+    {
+        var path = InstalledConfig();
+        var secondName = Path.Combine(_dir, "second-name");
+        Assert.Equal(0, link(path, secondName));
+
+        ConfigStore.SaveInPlace(new WatcherConfig { PollSeconds = 9 }, path, Me);
+
+        Assert.Equal(9, ConfigStore.Load(path).PollSeconds);
+        Assert.Equal(File.ReadAllText(path), File.ReadAllText(secondName));
+        Assert.Equal(2, UnixNative.LStat(path)!.Value.LinkCount);
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void SaveInPlace_FolderOwnedBySomeoneElse_IsRefused_Untouched()
     {
         var path = InstalledConfig("precious");
-        Assert.Equal(0, link(path, Path.Combine(_dir, "second-name")));
 
-        Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path));
+        var ex = Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path, Me + 1));
 
+        Assert.Contains("not saved", ex.Message);
         Assert.Equal("precious", File.ReadAllText(path));
     }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void SaveInPlace_FolderWritableByGroupOrOthers_IsRefused_Untouched()
+    {
+        var path = InstalledConfig("precious");
+        File.SetUnixFileMode(_dir, File.GetUnixFileMode(_dir) | UnixFileMode.GroupWrite);
+
+        var ex = Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path, Me));
+
+        Assert.Contains("not saved", ex.Message);
+        Assert.Equal("precious", File.ReadAllText(path));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void SaveInPlace_FolderIsALink_IsRefused_Untouched()
+    {
+        var path = InstalledConfig("precious");
+        var linkedFolder = _dir + "-link";
+        Directory.CreateSymbolicLink(linkedFolder, _dir);
+        try
+        {
+            var ex = Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), Path.Combine(linkedFolder, "config.json"), Me));
+
+            Assert.Contains("not saved", ex.Message);
+            Assert.Equal("precious", File.ReadAllText(path));
+        }
+        finally
+        {
+            File.Delete(linkedFolder);
+        }
+    }
+
+    [SupportedOSPlatform("macos")]
+    private static uint Me => UnixNative.EffectiveUserId;
 
     [MacFact]
     [SupportedOSPlatform("macos")]
@@ -134,7 +188,7 @@ public sealed class ConfigStoreSaveTests : IDisposable
         Directory.CreateDirectory(_dir);
         var path = Path.Combine(_dir, "config.json");
 
-        var ex = Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path));
+        var ex = Assert.Throws<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path, Me));
 
         Assert.Contains("missing", ex.Message);
         Assert.False(File.Exists(path));
@@ -147,7 +201,7 @@ public sealed class ConfigStoreSaveTests : IDisposable
         var path = Path.Combine(_dir, "config.json");
         Directory.CreateDirectory(path);
 
-        Assert.ThrowsAny<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path));
+        Assert.ThrowsAny<IOException>(() => ConfigStore.SaveInPlace(new WatcherConfig(), path, Me));
         Assert.True(Directory.Exists(path));
     }
 
