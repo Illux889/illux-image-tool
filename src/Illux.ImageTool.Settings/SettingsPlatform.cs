@@ -15,6 +15,14 @@ internal static class SettingsPlatform
     /// <summary>Shown above a read-only window (macOS, not in the admin group).</summary>
     public const string ReadOnlyNote = "Read-only: only members of the admin group can change these settings.";
 
+    /// <summary>
+    /// After config.json could not be read. On macOS the app cannot delete it (Root is root-owned) and only writes the
+    /// existing file in place, so an administrator has to repair it or reinstall.
+    /// </summary>
+    public static string BrokenConfigAdvice => OperatingSystem.IsMacOS()
+        ? "An administrator must repair the file or reinstall Illux Image Tool, then open this window again. Changes are turned off until then."
+        : "Fix or delete the file, then open this window again. Changes are turned off until then.";
+
     /// <summary>Only Windows has a service account to change and a service log this window may read.</summary>
     public static bool IsWindows => OperatingSystem.IsWindows();
 

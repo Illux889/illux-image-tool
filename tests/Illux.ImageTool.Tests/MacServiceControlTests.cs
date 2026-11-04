@@ -6,13 +6,15 @@ namespace Illux.ImageTool.Tests;
 public sealed class MacServiceControlTests
 {
     [Fact]
-    public void Start_AsksForAnAdministratorAndKickstartsTheDaemon()
+    public void Start_AsksForAnAdministrator_LoadsTheDaemonIfNeeded_AndKickstartsIt()
     {
         var info = MacServiceControl.BuildStartInfo(ServiceAction.Start);
 
+        // V9: after a Stop (bootout) the job is unloaded, so Start loads it again first; "already loaded" is ignored and
+        // kickstart decides the outcome. One administrator prompt for both.
         Assert.Equal("/usr/bin/osascript", info.FileName);
         Assert.Equal(
-            ["-e", "do shell script \"/bin/launchctl kickstart -k system/dk.illux.imagetool.watcher\" with administrator privileges"],
+            ["-e", "do shell script \"/bin/launchctl bootstrap system /Library/LaunchDaemons/dk.illux.imagetool.watcher.plist 2>/dev/null; /bin/launchctl kickstart -k system/dk.illux.imagetool.watcher\" with administrator privileges"],
             info.ArgumentList);
         Assert.Equal("", info.Arguments); // never one shell string
         Assert.False(info.UseShellExecute);
@@ -53,6 +55,8 @@ public sealed class MacServiceControlTests
     [InlineData(113, "Could not find service \"dk.illux.imagetool.watcher\" in domain for system", true, "Stopped")]
     [InlineData(113, "Could not find service \"dk.illux.imagetool.watcher\" in domain for system", false, "Not installed")]
     [InlineData(0, "no state line at all", true, "Unknown")]
+    [InlineData(1, "Unrecognized target specifier.", true, "Unknown")] // only 113 means "not loaded"
+    [InlineData(5, "", false, "Unknown")]
     public void Status_FromLaunchctlPrint(int exitCode, string output, bool plistInstalled, string expected) =>
         Assert.Equal(expected, MacServiceControl.DescribeStatus(exitCode, output, plistInstalled));
 

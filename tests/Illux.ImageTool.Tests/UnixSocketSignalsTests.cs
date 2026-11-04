@@ -462,6 +462,22 @@ public sealed class UnixSocketSignalsTests : IDisposable
         });
 
         Assert.True(ServiceRequests.RequestCheckNow(out var error), error);
-        draining.Wait(Wait);
+        Assert.True(draining.Wait(Wait));
+    }
+
+    [MacFact]
+    public void Send_SocketGoneBetweenAttempts_IsAnIOExceptionSayingNotRunning()
+    {
+        FullListener();
+        var asked = 0;
+
+        // Refused while the socket is there (retried), then the socket is gone at the next refusal: the decision is
+        // taken once per attempt, and the caller still only ever sees an IOException.
+        var ex = Assert.Throws<IOException>(() =>
+            UnixSocketSignals.Send(_root, UnixSocketSignals.CheckCommand, _ => ++asked == 1));
+
+        Assert.Equal(2, asked);
+        Assert.Contains("not running", ex.Message);
+        Assert.IsType<SocketException>(ex.InnerException);
     }
 }

@@ -29,7 +29,7 @@ public partial class UpdatePopup : Window
         _memory = memory;
         Message.Text = $"Illux Image Tool {version} is available.";
 
-        UpdateNowButton.Click += (_, _) => StartUpdate();
+        UpdateNowButton.Click += async (_, _) => await StartUpdateAsync();
         LaterButton.Click += (_, _) =>
         {
             _memory?.MarkLater(_version);
@@ -53,9 +53,14 @@ public partial class UpdatePopup : Window
         Position = new PixelPoint(Math.Max(area.X, x), Math.Max(area.Y, y));
     }
 
-    private void StartUpdate()
+    private async Task StartUpdateAsync()
     {
-        if (!ServiceRequests.RequestInstallNow(out var error))
+        UpdateNowButton.IsEnabled = false;
+        string? error = null;
+        // On macOS a busy daemon is retried for a moment: off the UI thread.
+        var sent = await Task.Run(() => ServiceRequests.RequestInstallNow(out error));
+        UpdateNowButton.IsEnabled = true;
+        if (!sent)
         {
             Message.Text = "Could not send the request: " + error;
             return;

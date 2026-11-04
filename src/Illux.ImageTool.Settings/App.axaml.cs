@@ -35,16 +35,37 @@ public partial class App : Application
                     break;
                 case LaunchKind.Account when OperatingSystem.IsWindows():
                     desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-                    _ = AskForAccountAsync(desktop);
+                    StartAccountFlow(desktop);
                     break;
                 default:
                     desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
-                    _ = ShowMessageAsync(desktop, Launch.Message, Launch.ExitCode);
+                    _ = EndOnFailureAsync(desktop, () => ShowMessageAsync(desktop, Launch.Message, Launch.ExitCode));
                     break;
             }
         }
         base.OnFrameworkInitializationCompleted();
     }
+
+    /// <summary>
+    /// Runs a launch flow that has no main window. Anything unexpected is logged and ends the process (exit 2), so the
+    /// elevated copy never stays alive without a window.
+    /// </summary>
+    private static async Task EndOnFailureAsync(IClassicDesktopStyleApplicationLifetime desktop, Func<Task> flow)
+    {
+        try
+        {
+            await flow();
+        }
+        catch (Exception ex)
+        {
+            SettingsLog.Write("Unexpected error in the settings app.", ex);
+            desktop.Shutdown(2);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void StartAccountFlow(IClassicDesktopStyleApplicationLifetime desktop) =>
+        _ = EndOnFailureAsync(desktop, () => AskForAccountAsync(desktop));
 
     private static async Task ShowMessageAsync(IClassicDesktopStyleApplicationLifetime desktop, string text, int exitCode)
     {

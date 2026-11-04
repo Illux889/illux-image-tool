@@ -39,7 +39,8 @@ public static class ServiceRequests
             error = null;
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        // A SocketException is mapped by the socket client already; caught here too so no request can ever end the UI.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException)
         {
             error = ex.Message;
             return false;

@@ -104,29 +104,29 @@ public sealed class UnixSocketSignals : IServiceSignals
     /// <summary>For a client: sends <paramref name="command"/> as one line to the daemon below <paramref name="root"/>.</summary>
     /// <exception cref="IOException">The daemon is not running, is busy, or did not take the request.</exception>
     /// <exception cref="UnauthorizedAccessException">This account may not connect to the socket.</exception>
-    public static void Send(string root, string command)
+    public static void Send(string root, string command) => Send(root, command, File.Exists);
+
+    /// <param name="socketPresent">Whether <c>control.sock</c> is there; asked once per refused attempt (tests).</param>
+    internal static void Send(string root, string command, Func<string, bool> socketPresent)
     {
         if (command is not (CheckCommand or InstallCommand)) throw new ArgumentException($"Unknown command '{command}'.", nameof(command));
         var path = SocketPath(root);
         for (var attempt = 1; ; attempt++)
         {
-            try
-            {
-                SendOnce(path, command);
-                return;
-            }
-            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused && File.Exists(path))
-            {
-                // A socket that is there but refuses: a full listen queue (the daemon is busy with other requests), or
-                // one left behind by a daemon that was killed (a stopped daemon removes it). Retried briefly.
-                if (attempt >= ConnectAttempts) throw new IOException(ServiceRequests.BusyMessage, ex);
-                Thread.Sleep(ConnectRetryDelay);
-            }
+            if (SendOnce(path, command, socketPresent)) return;
+            // Refused by a socket that is there: a full listen queue (the daemon is busy with other requests), or one
+            // left behind by a daemon that was killed (a stopped daemon removes it). Retried briefly.
+            if (attempt >= ConnectAttempts) throw new IOException(ServiceRequests.BusyMessage);
+            Thread.Sleep(ConnectRetryDelay);
         }
     }
 
-    /// <summary>One connection attempt; a refused connection to an existing socket is left to <see cref="Send"/> to retry.</summary>
-    private static void SendOnce(string path, string command)
+    /// <summary>
+    /// One connection attempt: true when the line was sent, false when the connection was refused while the socket
+    /// file is there (decided once, here, for <see cref="Send(string, string, Func{string, bool})"/> to retry). Every
+    /// other failure is an <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/>.
+    /// </summary>
+    private static bool SendOnce(string path, string command, Func<string, bool> socketPresent)
     {
         Socket? socket = null;
         try
@@ -139,25 +139,20 @@ public sealed class UnixSocketSignals : IServiceSignals
             socket.Send(Encoding.ASCII.GetBytes(command + "\n"));
             // No shutdown: the daemon may already have closed its end after the line, which would make it fail.
             // Closing the socket ends the request just as well.
+            return true;
         }
         catch (OperationCanceledException ex)
         {
             throw new IOException("The Illux Image Tool service did not take the request in time.", ex);
         }
-        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused && File.Exists(path))
-        {
-            throw; // retried by Send
-        }
-        catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionRefused or SocketError.AddressNotAvailable || !File.Exists(path))
-        {
-            throw new IOException(ServiceRequests.NotRunningMessage, ex);
-        }
-        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AccessDenied)
-        {
-            throw new UnauthorizedAccessException(ServiceRequests.NotAllowedMessage, ex);
-        }
         catch (SocketException ex)
         {
+            var present = socketPresent(path);
+            if (ex.SocketErrorCode == SocketError.ConnectionRefused && present) return false;
+            if (ex.SocketErrorCode is SocketError.ConnectionRefused or SocketError.AddressNotAvailable || !present)
+                throw new IOException(ServiceRequests.NotRunningMessage, ex);
+            if (ex.SocketErrorCode == SocketError.AccessDenied)
+                throw new UnauthorizedAccessException(ServiceRequests.NotAllowedMessage, ex);
             throw new IOException(ex.Message, ex);
         }
         finally

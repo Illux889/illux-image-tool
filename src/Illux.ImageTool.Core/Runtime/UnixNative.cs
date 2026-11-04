@@ -109,7 +109,8 @@ internal static class UnixNative
     /// <summary>
     /// Replaces the contents of the existing regular file <paramref name="path"/> in place: opened write-only with
     /// O_NOFOLLOW | O_NONBLOCK (never a link, never blocking on a FIFO), then only when it is a regular file with exactly
-    /// one name: truncated, written, fsync'ed. Nothing is created, so it works in a folder the caller may not write to.
+    /// one name: written from the start, cut to the new length, fsync'ed. Nothing is created, so it works in a folder
+    /// the caller may not write to.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing is at <paramref name="path"/>.</exception>
     /// <exception cref="IOException">It is a link, not a regular file, has more than one name, or cannot be written.</exception>
@@ -135,8 +136,9 @@ internal static class UnixNative
             if (fstat(fd, buffer) != 0) throw new IOException($"Cannot look at '{path}' (errno {Marshal.GetLastPInvokeError()}).");
             if (!IsSingleRegularFile(Parse(buffer)))
                 throw new IOException($"'{path}' is not a regular file with a single name; it is left alone.");
-            if (ftruncate(fd, 0) != 0) throw new IOException($"Cannot truncate '{path}' (errno {Marshal.GetLastPInvokeError()}).");
+            // Written from offset 0 over the old contents, then cut to the new length: the file is never empty meanwhile.
             WriteAll(fd, contents, path);
+            if (ftruncate(fd, contents.Length) != 0) throw new IOException($"Cannot truncate '{path}' (errno {Marshal.GetLastPInvokeError()}).");
             if (fsync(fd) != 0) throw new IOException($"Cannot flush '{path}' (errno {Marshal.GetLastPInvokeError()}).");
         }
         finally

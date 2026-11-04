@@ -19,15 +19,23 @@ internal static class MacServiceControl
     private const string OsaScript = "/usr/bin/osascript";
     private const string LaunchCtl = "/bin/launchctl";
 
+    /// <summary>launchctl's exit code for "Could not find service … in domain": the job is not loaded.</summary>
+    private const int NotLoaded = 113;
+
     /// <summary>osascript's error number when the user cancels the administrator prompt.</summary>
     private const string UserCancelled = "(-128)";
 
-    /// <summary><c>osascript -e 'do shell script "/bin/launchctl kickstart -k|bootout system/…" with administrator privileges'</c>.</summary>
+    /// <summary>
+    /// <c>osascript -e 'do shell script "…" with administrator privileges'</c>: one administrator prompt. Start runs
+    /// <c>launchctl bootstrap</c> (the plist) then <c>launchctl kickstart -k</c>; Stop runs <c>launchctl bootout</c>.
+    /// </summary>
     public static ProcessStartInfo BuildStartInfo(ServiceAction action)
     {
         var command = action switch
         {
-            ServiceAction.Start => $"{LaunchCtl} kickstart -k system/{DaemonLabel}",
+            // V9: Stop boots the job out, so Start loads it again first ("already loaded" and other bootstrap errors are
+            // ignored; kickstart then decides the outcome and reports its own error).
+            ServiceAction.Start => $"{LaunchCtl} bootstrap system {DaemonPlist} 2>/dev/null; {LaunchCtl} kickstart -k system/{DaemonLabel}",
             ServiceAction.Stop => $"{LaunchCtl} bootout system/{DaemonLabel}",
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, "There is no service account to change on macOS."),
         };
@@ -38,12 +46,14 @@ internal static class MacServiceControl
     public static ProcessStartInfo BuildStatusStartInfo() => Build(LaunchCtl, "print", $"system/{DaemonLabel}");
 
     /// <summary>
-    /// The status from <c>launchctl print</c>: its <c>state = …</c> line when the job is loaded; when it is not, the
-    /// daemon was stopped (booted out) if its plist is installed, otherwise it is not installed.
+    /// The status from <c>launchctl print</c>: its <c>state = …</c> line when the job is loaded; when it is not loaded
+    /// (exit 113), the daemon was stopped (booted out) if its plist is installed, otherwise it is not installed. Any
+    /// other failure is "Unknown".
     /// </summary>
     public static string DescribeStatus(int exitCode, string output, bool plistInstalled)
     {
-        if (exitCode != 0) return plistInstalled ? "Stopped" : "Not installed";
+        if (exitCode == NotLoaded) return plistInstalled ? "Stopped" : "Not installed";
+        if (exitCode != 0) return "Unknown";
         foreach (var line in output.Split('\n'))
         {
             var trimmed = line.Trim();

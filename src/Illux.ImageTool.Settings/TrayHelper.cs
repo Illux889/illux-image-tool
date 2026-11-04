@@ -78,7 +78,9 @@ internal sealed class TrayHelper : IDisposable
 
     private static async Task CheckNowAsync()
     {
-        var text = ServiceRequests.RequestCheckNow(out var error)
+        string? error = null;
+        // On macOS a busy daemon is retried for a moment: off the UI thread.
+        var text = await Task.Run(() => ServiceRequests.RequestCheckNow(out error))
             ? "Checking for updates..."
             : "Could not send the request: " + error;
         await MessageWindow.ShowAsync(null, text);

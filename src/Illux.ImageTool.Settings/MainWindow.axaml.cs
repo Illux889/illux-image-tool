@@ -88,7 +88,7 @@ public partial class MainWindow : Window
         UpdateFolderButtons();
 
         if (problem is not null)
-            await ShowAsync(problem + "\n\nFix or delete the file, then open this window again. Changes are turned off until then.");
+            await ShowAsync(problem + "\n\n" + SettingsPlatform.BrokenConfigAdvice);
     }
 
     private void UpdateFolderButtons() =>
