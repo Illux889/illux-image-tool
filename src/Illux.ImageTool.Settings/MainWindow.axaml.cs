@@ -39,6 +39,7 @@ public partial class MainWindow : Window
         ServiceLogNote.Text = SettingsPlatform.ServiceLogNote;
         ServiceLogNote.IsVisible = !SettingsPlatform.IsWindows;
 
+        WireRules();
         FolderList.SelectionChanged += (_, _) => UpdateFolderButtons();
         FolderList.DoubleTapped += async (_, _) => await EditSelectedAsync();
         AddButton.Click += async (_, _) => await AddFolderAsync();
@@ -86,6 +87,7 @@ public partial class MainWindow : Window
         FolderList.ItemsSource = _config.Folders.Select(FolderRow.From).ToList();
         AddButton.IsEnabled = _configUsable && _mayChange;
         UpdateFolderButtons();
+        ShowRules();
 
         if (problem is not null)
             await ShowAsync(problem + "\n\n" + SettingsPlatform.BrokenConfigAdvice);
