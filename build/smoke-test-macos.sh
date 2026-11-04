@@ -17,11 +17,13 @@
 #    drops a 20 x 15 cm, 150 ppi JPEG: the output is 300 ppi, 2362 x 1772 px (default rule "Small"), owned by the
 #    folder account. Final review: a hard link to a root-owned file planted as Out/_warnings.log is not written through,
 #    a FIFO in In blocks nothing, and /tmp/IlluxImageTool squatted as a file before the install changes nothing.
-# 4. Upgrades the way the daemon does: plants updating.flag and an "Installing" update state, then runs the updater's
-#    exact command line (sh -c 'exec /usr/sbin/installer ...') as a child of a throw-away launchd job that carries the
-#    daemon's label and AbandonProcessGroup, so the package's preinstall boots out the installer's parent job. The
-#    upgrade must complete: new version, daemon restarted, config.json unchanged, flag removed, state Idle, the
-#    watched folder still works.
+# 4. Runs the updater's exact command line (Updater.MacInstallScript) as root on a corrupt package: the installer fails
+#    before any script of the package runs, and updating.flag is removed all the same (final review I3).
+#    Upgrades the way the daemon does: plants updating.flag and an "Installing" update state, then runs the updater's
+#    exact command line (sh -c '/usr/sbin/installer ... || rm -f flag') as a child of a throw-away launchd job that
+#    carries the daemon's label and AbandonProcessGroup, so the package's preinstall boots out the installer's parent
+#    job. The upgrade must complete: new version, both jobs restarted, config.json and folder-account unchanged, flag
+#    removed, state Idle, the watched folder still works.
 # 5. Uninstalls with uninstall.sh: daemon (both jobs), app, program files and receipt gone; config.json, logs and
 #    folder-account kept.
 # Exits 1 if any check failed.
@@ -51,9 +53,9 @@ PACKAGE_ID='dk.illux.imagetool'
 CLI="$ROOT/bin/IlluxImageTool"
 SOCKET="$ROOT/run/control.sock"
 WATCH='/Users/Shared/illux-smoke'
-# The updater's command line on macOS (Updater.MacInstallScript), run as: /bin/sh -c <script> sh <package> <log>.
-# Checked against the source before the upgrade test uses it.
-MAC_INSTALL_SCRIPT='exec /usr/sbin/installer -pkg "$1" -target / >"$2" 2>&1'
+# The updater's command line on macOS (Updater.MacInstallScript), run as: /bin/sh -c <script> sh <package> <log> <flag>.
+# Checked against the source before the tests below use it.
+MAC_INSTALL_SCRIPT='/usr/sbin/installer -pkg "$1" -target / >"$2" 2>&1 || /bin/rm -f "$3"'
 FAKE_PLIST='/Library/LaunchDaemons/dk.illux.imagetool.smoke-updater.plist'
 
 FAILURES=0
@@ -355,9 +357,22 @@ check 'the FIFO in In was left alone' test -p "$WATCH/In/pipe.jpg"
 rm -f "$WATCH/In/pipe.jpg"
 
 # =====================================================================================================================
-section 'Upgrade the way the daemon runs it'
+section 'An update whose installer fails before preinstall'
 shipped_script=$(sed -n 's/.*const string MacInstallScript = "\(.*\)";.*/\1/p' "$REPO_ROOT/src/Illux.ImageTool.Core/Update/Updater.cs" | sed 's/\\"/"/g')
 check_eq 'the simulated command line is Updater.MacInstallScript' "$MAC_INSTALL_SCRIPT" "$shipped_script"
+# I3: as the root daemon runs it, on a package /usr/sbin/installer rejects before any script of it runs.
+printf 'not a package\n' > "$WORK/corrupt.pkg"
+sudo sh -c 'printf "smoke\n" > "$1"' sh "$ROOT/updating.flag"
+check 'updating.flag is there before the failing install' test -f "$ROOT/updating.flag"
+sudo /bin/sh -c "$MAC_INSTALL_SCRIPT" sh "$WORK/corrupt.pkg" "$WORK/failed-install.log" "$ROOT/updating.flag"
+echo '--- installer output (corrupt package) ---'
+sudo cat "$WORK/failed-install.log"
+check 'the installer refused the corrupt package' not sudo grep -Eq 'installer: The (install|upgrade) was successful' "$WORK/failed-install.log"
+check 'updating.flag is gone after the installer failed' not test -e "$ROOT/updating.flag"
+check_eq 'the package receipt is unchanged' "$VERSION" "$(receipt_version)"
+
+# =====================================================================================================================
+section 'Upgrade the way the daemon runs it'
 CONFIG_HASH=$(sha "$CONFIG")
 CONFIG_INODE=$(stat -f %i "$CONFIG")
 ACCOUNT_INODE=$(stat -f %i "$ACCOUNT_FILE")
@@ -395,10 +410,11 @@ cat > "$WORK/smoke-updater.plist" <<EOF
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>$(xml "/bin/sh -c '$MAC_INSTALL_SCRIPT' sh \"\$1\" \"\$2\" & wait")</string>
+        <string>$(xml "/bin/sh -c '$MAC_INSTALL_SCRIPT' sh \"\$1\" \"\$2\" \"\$3\" & wait")</string>
         <string>sh</string>
         <string>$(xml "$UPDATE_PKG")</string>
         <string>$(xml "$UPDATE_LOG")</string>
+        <string>$(xml "$ROOT/updating.flag")</string>
     </array>
     <key>UserName</key><string>root</string>
     <key>RunAtLoad</key><true/>

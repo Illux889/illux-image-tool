@@ -190,12 +190,51 @@ public sealed class StaleUpdatingFlagTests : AppRootTestBase
     [InlineData("IlluxImageTool-Setup-0.2.0", true, true)]
     [InlineData("illuximagetool-setup-0.2.0.tmp", true, true)]
     [InlineData("installer", true, false)]
-    [InlineData("installer", false, true)]
-    [InlineData("Installer", false, false)]
-    [InlineData("installerd", false, false)]
+    [InlineData("/usr/sbin/installer", false, true)]
+    [InlineData("installer", false, false)]
+    [InlineData("/tmp/installer", false, false)] // a user's program named installer must not hold the flag forever (I3)
+    [InlineData("/Users/someone/usr/sbin/installer", false, false)]
+    [InlineData("/usr/sbin/Installer", false, false)]
+    [InlineData("/usr/sbin/installerd", false, false)]
     [InlineData("IlluxImageTool-Setup-0.2.0", false, false)]
-    public void InstallerProcess_IsTheSetupOnWindows_AndInstallerOnMac(string processName, bool windows, bool expected) =>
-        Assert.Equal(expected, StaleUpdatingFlag.IsInstallerProcess(processName, windows));
+    public void InstallerProcess_IsTheSetupOnWindows_AndUsrSbinInstallerOnMac(string nameOrPath, bool windows, bool expected) =>
+        Assert.Equal(expected, StaleUpdatingFlag.IsInstallerProcess(nameOrPath, windows));
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void ProcessPath_OnMac_IsTheExecutablesFullPath()
+    {
+        using var sleep = System.Diagnostics.Process.Start("/bin/sleep", "30")!;
+        try
+        {
+            Assert.Equal("/bin/sleep", StaleUpdatingFlag.ProcessPath(sleep.Id));
+            Assert.Null(StaleUpdatingFlag.ProcessPath(-1));
+        }
+        finally
+        {
+            sleep.Kill();
+        }
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void InstallerRunning_OnMac_AProgramNamedInstallerElsewhere_DoesNotCount()
+    {
+        Directory.CreateDirectory(Dir);
+        var fake = Path.Combine(Dir, "installer");
+        File.Copy("/bin/sleep", fake);
+        File.SetUnixFileMode(fake, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        using var running = System.Diagnostics.Process.Start(fake, "30")!;
+        try
+        {
+            Assert.Equal("installer", running.ProcessName);
+            Assert.False(StaleUpdatingFlag.IsInstallerRunning());
+        }
+        finally
+        {
+            running.Kill();
+        }
+    }
 }
 
 [Collection("AppRoot")]

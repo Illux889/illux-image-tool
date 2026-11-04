@@ -25,8 +25,14 @@ public sealed class UpdateWorkerOptions
     /// <summary>The clock for the age of a stale <c>updating.flag</c> (tests set the file's time instead).</summary>
     public TimeProvider Time { get; init; } = TimeProvider.System;
 
-    /// <summary>Whether an installer is running, for the stale <c>updating.flag</c> check before an install.</summary>
+    /// <summary>Whether an installer is running, for the stale <c>updating.flag</c> check.</summary>
     public Func<bool> InstallerRunning { get; init; } = StaleUpdatingFlag.IsInstallerRunning;
+
+    /// <summary>
+    /// How often an update that did not finish is looked for (final review I3): a stale <c>updating.flag</c>, or the
+    /// phase Installing without a flag. Also at start and before every install.
+    /// </summary>
+    public TimeSpan UnfinishedInstallCheckInterval { get; init; } = TimeSpan.FromMinutes(1);
 
     /// <summary>False stops the periodic checks (R4); "check now" still works. Defaults to <c>CheckForUpdates</c> of config.json.</summary>
     public Func<bool>? PeriodicChecksEnabled { get; init; }
@@ -41,6 +47,12 @@ public sealed class UpdateWorkerOptions
 /// </summary>
 public sealed class UpdateWorker : BackgroundService
 {
+    /// <summary>The update-state error after a stale <c>updating.flag</c> was removed.</summary>
+    public const string StaleFlagError = "The last update did not finish. Try again.";
+
+    /// <summary>The update-state error when the installer ended without installing (the flag is gone, the phase still says Installing).</summary>
+    public const string InstallerEndedError = "The update could not be installed. Try again; the installer log is in the update folder.";
+
     private readonly Updater _updater;
     private readonly ILogger _log;
     private readonly UpdateWorkerOptions _options;
@@ -59,10 +71,17 @@ public sealed class UpdateWorker : BackgroundService
     {
         using var signals = OpenSignals();
         var nextCheck = DateTime.UtcNow + _options.InitialDelay;
+        var nextUnfinishedCheck = DateTime.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                if (DateTime.UtcNow >= nextUnfinishedCheck)
+                {
+                    nextUnfinishedCheck = DateTime.UtcNow + _options.UnfinishedInstallCheckInterval;
+                    CheckUnfinishedInstall();
+                }
+
                 if (signals?.TryWaitCheckNow(TimeSpan.Zero) == true)
                 {
                     _log.LogInformation("Update check requested");
@@ -152,11 +171,35 @@ public sealed class UpdateWorker : BackgroundService
         }
 
         _log.LogInformation("Update to {Version} requested by the user", release.Version);
-        // A flag left by an installer that died would otherwise refuse every install until the service restarts.
-        StaleUpdatingFlag.RemoveIfStale(_options.Time, _options.InstallerRunning, _log);
+        // A flag left by an installer that died would otherwise refuse every install until the next periodic check.
+        CheckUnfinishedInstall();
         var outcome = await _updater.InstallAsync(release, ct).ConfigureAwait(false);
         _log.LogInformation("Update to {Version}: {Outcome}", release.Version, outcome);
         return outcome;
+    }
+
+    /// <summary>
+    /// Final review I3: an <c>updating.flag</c> left by an installer that died is removed (older than 15 minutes, no
+    /// installer running), and an install whose installer ended without installing (no flag, phase still Installing:
+    /// the macOS install script removes the flag when the installer fails) is marked as failed. Never throws.
+    /// </summary>
+    private void CheckUnfinishedInstall()
+    {
+        try
+        {
+            if (StaleUpdatingFlag.RemoveIfStale(_options.Time, _options.InstallerRunning, _log))
+            {
+                _updater.MarkFailed(StaleFlagError);
+                return;
+            }
+            if (File.Exists(AppPaths.UpdatingFlag) || UpdateStateStore.Load().Phase != UpdatePhase.Installing) return;
+            if (_options.InstallerRunning()) return;
+            _updater.MarkFailed(InstallerEndedError, onlyIf: s => s.Phase == UpdatePhase.Installing);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.LogDebug("Could not check for an unfinished update: {Message}", ex.Message);
+        }
     }
 
     /// <summary>The request channel, or null (logged) when it cannot be opened: periodic checks still run.</summary>

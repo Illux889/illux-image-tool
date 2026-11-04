@@ -102,7 +102,6 @@ try
         // I2: said once here; every file is then refused with the same reason until it is fixed.
         if (MagickSetup.TempDirectoryProblem() is { } tempProblem) startupLog.LogError("{Problem}", tempProblem);
     }
-    if (WatcherRoles.RunsUpdates(role)) StaleUpdatingFlag.RemoveIfStale(TimeProvider.System, StaleUpdatingFlag.IsInstallerRunning, startupLog);
     await host.RunAsync();
     return 0;
 }

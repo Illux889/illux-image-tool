@@ -21,11 +21,14 @@ public sealed partial class Updater
     private const int MaxChecksumFileBytes = 4096;
 
     /// <summary>
-    /// macOS: run by <c>/bin/sh</c> with the package as <c>$1</c> and the log as <c>$2</c>. The installer's output goes
-    /// straight into the log file (no pipe back to the daemon, which the package stops while it installs), and
-    /// <c>exec</c> keeps the process name <c>installer</c> (see the stale <c>updating.flag</c> check).
+    /// macOS: run by <c>/bin/sh</c> with the package as <c>$1</c>, the log as <c>$2</c> and <c>updating.flag</c> as
+    /// <c>$3</c>. The installer's output goes straight into the log file (no pipe back to the daemon, which the package
+    /// stops while it installs). When the installer fails (for example a package it rejects before its preinstall ran,
+    /// final review I3) the flag is removed, so command-line runs do not wait for an update that is not coming; the
+    /// package's postinstall removes it after a good install. The stale-flag check finds a running installer by its path,
+    /// <c>/usr/sbin/installer</c>, not by its name. build/smoke-test-macos.sh runs this exact line.
     /// </summary>
-    internal const string MacInstallScript = "exec /usr/sbin/installer -pkg \"$1\" -target / >\"$2\" 2>&1";
+    internal const string MacInstallScript = "/usr/sbin/installer -pkg \"$1\" -target / >\"$2\" 2>&1 || /bin/rm -f \"$3\"";
 
     [GeneratedRegex("^[0-9a-fA-F]{64}$")]
     private static partial Regex Sha256HexPattern();
@@ -217,6 +220,21 @@ public sealed partial class Updater
         }
     }
 
+    /// <summary>
+    /// Marks an update that did not finish (final review I3) as failed with <paramref name="error"/>, when
+    /// <paramref name="onlyIf"/> (if given) holds for the saved state; other values in the state are kept.
+    /// </summary>
+    public void MarkFailed(string error, Func<UpdateState, bool>? onlyIf = null)
+    {
+        _log.LogWarning("Update marked as failed: {Error}", error);
+        UpdateState(s =>
+        {
+            if (onlyIf is not null && !onlyIf(s)) return;
+            s.Phase = UpdatePhase.Failed;
+            s.Error = error;
+        });
+    }
+
     private InstallOutcome Fail(ReleaseInfo release, InstallOutcome outcome, string error)
     {
         _log.LogWarning("Update to {Version} not installed ({Outcome}): {Error}", release.Version, outcome, error);
@@ -386,7 +404,7 @@ public sealed partial class Updater
 
         // The paths are passed as their own arguments, never pasted into the script.
         var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
-        foreach (var argument in new[] { "-c", MacInstallScript, "sh", installerPath, logFile })
+        foreach (var argument in new[] { "-c", MacInstallScript, "sh", installerPath, logFile, AppPaths.UpdatingFlag })
             start.ArgumentList.Add(argument);
         return start;
     }

@@ -395,7 +395,7 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
 
     private async Task<UpdateWorker> StartAsync(
         bool periodicChecks = true, TimeSpan? initialDelay = null, bool useConfigFile = false, TimeSpan? checkInterval = null,
-        IServiceSignals? signals = null, Func<bool>? installerRunning = null)
+        IServiceSignals? signals = null, Func<bool>? installerRunning = null, TimeSpan? unfinishedInstallCheckInterval = null)
     {
         var http = new HttpClient(new FakeHandler(Respond));
         var updater = new Updater(
@@ -414,6 +414,7 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
             Signals = () => signals ?? OpenSignals(),
             PeriodicChecksEnabled = useConfigFile ? null : () => periodicChecks,
             InstallerRunning = installerRunning ?? (() => false),
+            UnfinishedInstallCheckInterval = unfinishedInstallCheckInterval ?? TimeSpan.FromMinutes(1),
         });
         _workers.Add(worker);
         await worker.StartAsync(CancellationToken.None);
@@ -572,6 +573,66 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(expectedStarts, StartedCount());
         Assert.Equal(expectedStarts, InstallerDownloads());
         Assert.True(File.Exists(AppPaths.UpdatingFlag)); // the old one kept, or the new install's
+    }
+
+    private static void WriteFlag(TimeSpan age)
+    {
+        Directory.CreateDirectory(AppPaths.Root);
+        File.WriteAllText(AppPaths.UpdatingFlag, "9.9.8");
+        File.SetLastWriteTimeUtc(AppPaths.UpdatingFlag, DateTime.UtcNow - age);
+    }
+
+    private static void SaveState(string phase) => UpdateStateStore.Save(new UpdateState { Phase = phase, AvailableVersion = "9.9.9" });
+
+    [Fact]
+    public async Task UpdateWorker_StaleFlag_IsRemovedWhileRunning_AndTheUpdateIsMarkedFailed()
+    {
+        // Final review I3: an installer that died must not block every CLI run until the service restarts.
+        await StartAsync(periodicChecks: false, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(200);
+        SaveState(UpdatePhase.Installing);
+        WriteFlag(TimeSpan.FromMinutes(20));
+
+        Assert.True(await WaitUntil(() => !File.Exists(AppPaths.UpdatingFlag)), "the stale flag was not removed");
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().Phase == UpdatePhase.Failed));
+        Assert.Contains("did not finish", UpdateStateStore.Load().Error);
+        Assert.Equal("9.9.9", UpdateStateStore.Load().AvailableVersion);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_RecentFlag_IsLeftAlone()
+    {
+        SaveState(UpdatePhase.Installing);
+        WriteFlag(TimeSpan.FromMinutes(1));
+        await StartAsync(periodicChecks: false, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(400);
+
+        Assert.True(File.Exists(AppPaths.UpdatingFlag));
+        Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_InstallingButTheFlagIsGone_IsMarkedFailed()
+    {
+        // macOS: a pkg the installer rejects before preinstall runs leaves the daemon running; the install script
+        // removes the flag ("|| rm -f"), so only the phase still says Installing.
+        SaveState(UpdatePhase.Installing);
+
+        await StartAsync(periodicChecks: false, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().Phase == UpdatePhase.Failed));
+        Assert.False(string.IsNullOrWhiteSpace(UpdateStateStore.Load().Error));
+    }
+
+    [Fact]
+    public async Task UpdateWorker_InstallingWithoutFlag_WhileAnInstallerRuns_IsLeftAlone()
+    {
+        SaveState(UpdatePhase.Installing);
+
+        await StartAsync(periodicChecks: false, installerRunning: () => true, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(400);
+
+        Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
     }
 
     [Fact]

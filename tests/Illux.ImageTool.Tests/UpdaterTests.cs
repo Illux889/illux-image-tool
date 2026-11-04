@@ -360,12 +360,14 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Contains(rig.Handler.Requests, u => u == $"{InstallerHost}{MacPkg}.sha256");
         var start = Assert.Single(rig.StartInfos);
         // /usr/sbin/installer -pkg <path> -target /, its output going straight into a log in the root-only update folder
-        // (no pipe to this daemon, which the package stops while it installs). exec keeps the process name "installer".
+        // (no pipe to this daemon, which the package stops while it installs). When the installer fails (before the
+        // package's scripts ran, I3) the flag is removed; the stale-flag check finds the installer by its path.
         Assert.Equal("/bin/sh", start.FileName);
         Assert.False(start.UseShellExecute);
         Assert.Equal("", start.Arguments);
         Assert.Equal(
-            ["-c", "exec /usr/sbin/installer -pkg \"$1\" -target / >\"$2\" 2>&1", "sh", pkg, Path.Combine(DownloadDir, "update-1.2.3.log")],
+            ["-c", "/usr/sbin/installer -pkg \"$1\" -target / >\"$2\" 2>&1 || /bin/rm -f \"$3\"", "sh", pkg,
+             Path.Combine(DownloadDir, "update-1.2.3.log"), AppPaths.UpdatingFlag],
             start.ArgumentList);
         Assert.Equal(InstallerBytes, bytesSeenByInstaller);
         Assert.Equal("present", flagSeen);
@@ -447,6 +449,38 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Equal(
             ["-pkg", Path.Combine(update, MacPkg), "-target", "/", "to-stderr"],
             File.ReadAllLines(Path.Combine(update, "update-1.2.3.log")));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public async Task Install_Mac_InstallerThatFails_RemovesTheFlag_OneThatWorks_DoesNot()
+    {
+        // I3: a package the installer rejects (corrupt, or refused before preinstall) must not leave updating.flag.
+        foreach (var (exitCode, flagLeft) in new[] { (1, false), (0, true) })
+        {
+            if (File.Exists(AppPaths.UpdatingFlag)) File.Delete(AppPaths.UpdatingFlag);
+            var update = Path.Combine(Dir, $"update-{exitCode}");
+            var fake = Path.Combine(Dir, $"fake installer {exitCode}.sh");
+            Directory.CreateDirectory(Dir);
+            File.WriteAllText(fake, $"#!/bin/sh\nexit {exitCode}\n");
+            File.SetUnixFileMode(fake, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var rig = NewRig(r => Route(r, InstallerHash), platform: ReleasePlatform.MacOSArm64, downloadDirectory: update);
+            Process? ran = null;
+            rig.OnStart = _ =>
+            {
+                var real = rig.StartInfos[^1];
+                var swapped = new ProcessStartInfo(real.FileName) { UseShellExecute = false };
+                foreach (var argument in real.ArgumentList) swapped.ArgumentList.Add(argument.Replace("/usr/sbin/installer", $"\"{fake}\""));
+                ran = Process.Start(swapped);
+                return ran is null ? null : new Process();
+            };
+
+            Assert.Equal(InstallOutcome.Started, await rig.Updater.InstallAsync(MacRelease(), CancellationToken.None));
+
+            Assert.NotNull(ran);
+            Assert.True(ran.WaitForExit(10000));
+            Assert.Equal(flagLeft, File.Exists(AppPaths.UpdatingFlag));
+        }
     }
 
     [Theory]
