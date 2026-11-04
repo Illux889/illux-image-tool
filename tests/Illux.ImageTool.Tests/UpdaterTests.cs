@@ -406,7 +406,7 @@ public sealed class UpdaterTests : AppRootTestBase
             var swapped = new ProcessStartInfo(real.FileName) { UseShellExecute = false };
             foreach (var argument in real.ArgumentList) swapped.ArgumentList.Add(argument.Replace("/usr/sbin/installer", $"\"{fake}\""));
             ran = Process.Start(swapped);
-            return ran;
+            return ran is null ? null : new Process(); // the updater disposes what it gets: keep the real one for waiting
         };
 
         Assert.Equal(InstallOutcome.Started, await rig.Updater.InstallAsync(MacRelease(), CancellationToken.None));
