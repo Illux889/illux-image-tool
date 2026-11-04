@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Illux.ImageTool.Options;
 
 namespace Illux.ImageTool.Watch;
 
@@ -41,4 +42,7 @@ public sealed class WatcherConfig
     public bool CheckForUpdates { get; set; } = true;
 
     public int PollSeconds { get; set; } = 5;
+
+    /// <summary>First match wins; the last rule must be <c>all</c>. Absent in a v0.1 file, which gives the defaults.</summary>
+    public List<ResolutionRule> ResolutionRules { get; set; } = [.. Options.ResolutionRules.Defaults];
 }

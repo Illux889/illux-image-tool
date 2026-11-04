@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Watch;
@@ -13,6 +15,7 @@ public static class ConfigStore
         WriteIndented = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
     /// <summary>
@@ -32,12 +35,32 @@ public static class ConfigStore
             if (config.PollSeconds < 1)
                 throw new ConfigException($"Configuration file '{path}': pollSeconds must be at least 1 (found {config.PollSeconds}).");
             config.Folders ??= [];
+            config.ResolutionRules ??= [.. Options.ResolutionRules.Defaults];
+            var problems = Options.ResolutionRules.Validate(config.ResolutionRules);
+            if (problems.Count > 0)
+                throw new ConfigException($"Configuration file '{path}': invalid resolution rules: {string.Join(" ", problems)}");
             foreach (var folder in config.Folders) folder.Parameters ??= [];
             return config;
         }
         catch (JsonException ex)
         {
             throw new ConfigException($"Configuration file '{path}' is not valid: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// The resolution rules for a processing run; never throws. A missing file or section gives the defaults silently,
+    /// an unreadable or invalid file gives the defaults plus a warning to show.
+    /// </summary>
+    public static (IReadOnlyList<ResolutionRule> Rules, string? Warning) LoadRulesForRun(string? path = null)
+    {
+        try
+        {
+            return (Load(path).ResolutionRules, null);
+        }
+        catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
+        {
+            return (Options.ResolutionRules.Defaults, $"{ex.Message} Using the default resolution rules instead.");
         }
     }
 
