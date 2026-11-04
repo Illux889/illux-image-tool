@@ -356,6 +356,18 @@ drop_and_check after-fifo.jpg 'with a FIFO in In'
 check 'the FIFO in In was left alone' test -p "$WATCH/In/pipe.jpg"
 rm -f "$WATCH/In/pipe.jpg"
 
+section 'Watched folder: the folder account sees updating.flag and runs/'
+# V15: the folders job reads the root-owned updating.flag (R42) and takes its run locks in the 1777 runs/ (R30).
+check 'the folders job took its run locks in runs/' not folder_log_has 'Could not take a run lock'
+sudo sh -c 'printf "smoke\n" > "$1"' sh "$ROOT/updating.flag"
+cp "$TEST_JPEG" "$WORK/drop/paused.jpg"
+mv "$WORK/drop/paused.jpg" "$WATCH/In/paused.jpg"
+check 'the folders job pauses while updating.flag exists' wait_until 30 folder_log_has 'an update is being installed'
+sleep 3
+check 'no file is started while updating.flag exists' test -f "$WATCH/In/paused.jpg" -a ! -e "$WATCH/Out/paused.jpg"
+sudo rm -f "$ROOT/updating.flag"
+check 'the folders job resumes once updating.flag is gone' wait_until 120 test -f "$WATCH/Originals/paused.jpg"
+
 # =====================================================================================================================
 section 'An update whose installer fails before preinstall'
 shipped_script=$(sed -n 's/.*const string MacInstallScript = "\(.*\)";.*/\1/p' "$REPO_ROOT/src/Illux.ImageTool.Core/Update/Updater.cs" | sed 's/\\"/"/g')
