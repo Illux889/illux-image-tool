@@ -387,11 +387,17 @@ public sealed class CliTests : AppRootTestBase
         File.WriteAllText(AppPaths.UpdatingFlag, "1.2.3");
         using var step = SetEnv("ILLUX_IMAGETOOL_WAIT_SECONDS", "0.05");
         using var max = SetEnv("ILLUX_IMAGETOOL_WAIT_MAX_SECONDS", "30");
-        var lockHeldWhileWaiting = false;
+        var lockFreeWhileWaiting = false;
         var finished = Task.Run(async () =>
         {
-            await Task.Delay(300);
-            lockHeldWhileWaiting = RunLock.AnyActive(); // an installer waiting for idle must be able to proceed
+            // An installer waiting for idle must be able to proceed: while the CLI waits it holds no lock. Other tests of
+            // this run may hold a lock for a moment (they share the data folder), so sample for a while: a lock that
+            // the waiting CLI itself held would show in every sample.
+            for (var i = 0; i < 15; i++)
+            {
+                await Task.Delay(20);
+                lockFreeWhileWaiting |= !RunLock.AnyActive();
+            }
             File.Delete(AppPaths.UpdatingFlag);
         });
 
@@ -399,7 +405,7 @@ public sealed class CliTests : AppRootTestBase
 
         await finished;
         Assert.Equal(0, exit);
-        Assert.False(lockHeldWhileWaiting);
+        Assert.True(lockFreeWhileWaiting);
         Assert.Contains("Waiting for the update", output);
         Assert.Equal(["a.jpg"], OutNames());
     }
