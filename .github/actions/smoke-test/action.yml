@@ -1,6 +1,6 @@
 name: Smoke test installer
 description: >
-  Checks the checksum file and runs build/smoke-test-installer.ps1 (install, upgrade, failed upgrade, uninstall) on a
+  Checks the checksum file and runs build/smoke-test-installer.ps1 (install, upgrade, failed upgrade, uninstall; optionally also an upgrade from a published release) on a
   throw-away runner. The installers must already be downloaded into the folder "installers". Used by ci.yml and
   release.yml so both run the same test.
 
@@ -14,6 +14,12 @@ inputs:
   fail-version:
     description: Version of the installer that fails on purpose
     required: true
+  previous-release-version:
+    description: >
+      Optional. A published release (for example 0.1.0) that the smoke test downloads from GitHub, checks against its
+      .sha256 asset, installs and upgrades from. Empty skips that part.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -35,13 +41,19 @@ runs:
         VERSION: ${{ inputs.version }}
         UPGRADE_VERSION: ${{ inputs.upgrade-version }}
         FAIL_VERSION: ${{ inputs.fail-version }}
-      run: >
-        ./build/smoke-test-installer.ps1
-        -Installer "installers/IlluxImageTool-Setup-$env:VERSION.exe"
-        -UpgradeInstaller "installers/IlluxImageTool-Setup-$env:UPGRADE_VERSION.exe"
-        -FailingInstaller "installers/IlluxImageTool-Setup-$env:FAIL_VERSION.exe"
-        -Version $env:VERSION -UpgradeVersion $env:UPGRADE_VERSION
-        -WorkDir "$env:RUNNER_TEMP\smoke"
+        PREVIOUS_RELEASE_VERSION: ${{ inputs.previous-release-version }}
+      run: |
+        $arguments = @{
+          Installer = "installers/IlluxImageTool-Setup-$env:VERSION.exe"
+          UpgradeInstaller = "installers/IlluxImageTool-Setup-$env:UPGRADE_VERSION.exe"
+          FailingInstaller = "installers/IlluxImageTool-Setup-$env:FAIL_VERSION.exe"
+          Version = $env:VERSION
+          UpgradeVersion = $env:UPGRADE_VERSION
+          WorkDir = "$env:RUNNER_TEMP\smoke"
+        }
+        if ($env:PREVIOUS_RELEASE_VERSION) { $arguments.PreviousReleaseVersion = $env:PREVIOUS_RELEASE_VERSION }
+        ./build/smoke-test-installer.ps1 @arguments
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
     - name: Collect logs
       if: always()

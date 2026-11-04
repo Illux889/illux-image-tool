@@ -118,3 +118,5 @@ jobs:
           version: ${{ needs.build.outputs.version }}
           upgrade-version: ${{ needs.build.outputs.upgrade_version }}
           fail-version: ${{ needs.build.outputs.fail_version }}
+          # The public v0.1.0 installer (checked against its .sha256 asset) is installed first and upgraded to this build.
+          previous-release-version: '0.1.0'
