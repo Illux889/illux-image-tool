@@ -168,6 +168,20 @@ check 'main executable in Contents/MacOS' test -x "$APP/Contents/MacOS/IlluxImag
 check 'app bundle signature verifies (codesign --verify --deep --strict)' codesign --verify --deep --strict "$APP"
 check 'app bundle is ad-hoc signed' grep -q 'Signature=adhoc' <<< "$(codesign -dv "$APP" 2>&1)"
 check_eq 'command-line tool version' "$VERSION" "$("$CLI" --version 2>&1)"
+# The app's managed files are linked from Contents/MacOS; starting the window shows that the .NET host finds them.
+console_user=$(stat -f %Su /dev/console)
+if [[ "$console_user" == "$(id -un)" ]]; then
+    "$APP/Contents/MacOS/IlluxImageToolSettings" > "$WORK/settings-window.log" 2>&1 &
+    window_pid=$!
+    sleep 15
+    check 'the settings app starts and keeps running' kill -0 "$window_pid"
+    kill "$window_pid" 2>/dev/null
+    wait "$window_pid" 2>/dev/null
+    cat "$WORK/settings-window.log"
+else
+    echo "No desktop session of $(id -un) (console user: $console_user); the settings app is not started."
+fi
+echo "Menu-bar helpers running: $(pgrep -fl 'IlluxImageToolSettings --tray' || echo none)"
 
 section 'Daemon'
 check 'daemon is running (launchctl print, as the user)' wait_until 60 daemon_running

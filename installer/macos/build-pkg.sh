@@ -5,7 +5,8 @@
 #
 # 1. Builds jpegtran (build/fetch-jpegtran.sh).
 # 2. Publishes the command-line tool and the watcher daemon self-contained for osx-arm64 into one folder (bin/), and the
-#    settings app as "Illux Image Tool.app" (Info.plist, everything in Contents/MacOS), ad-hoc signed.
+#    settings app as "Illux Image Tool.app" (Info.plist; Mach-O files in Contents/MacOS, the rest in
+#    Contents/Resources/app), ad-hoc signed.
 # 3. Lays out the payload:
 #      /Applications/Illux Image Tool.app
 #      /Library/Application Support/Illux Image Tool/bin/            (IlluxImageTool, IlluxImageToolWatcher, tools/)
@@ -79,10 +80,30 @@ done
 install -m 0700 "$HERE/uninstall.sh" "$PAYLOAD/$DATA_ROOT/uninstall.sh"
 
 # --- the settings app bundle ---
+# codesign takes every file in Contents/MacOS for code, so only Mach-O files (the main executable, the runtime's and
+# Avalonia's libraries) are real files there. The rest of the published app (managed assemblies, deps.json, folders)
+# lives in Contents/Resources/app and is linked from Contents/MacOS, where the .NET host looks for it.
 APP="$PAYLOAD/Applications/$APP_NAME"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp -Rp "$PUBLISH/Settings/." "$APP/Contents/MacOS/"
-[[ -x "$APP/Contents/MacOS/IlluxImageToolSettings" ]] || { echo "The settings app lacks IlluxImageToolSettings." >&2; exit 1; }
+MACOS="$APP/Contents/MacOS"
+APP_FILES="$APP/Contents/Resources/app"
+mkdir -p "$MACOS" "$APP_FILES"
+cp -Rp "$PUBLISH/Settings/." "$APP_FILES/"
+# The settings app never converts images; jpegtran (a program of its own) is only in bin/.
+rm -rf "$APP_FILES/tools"
+for entry in "$APP_FILES"/*; do
+    name="$(basename "$entry")"
+    if [[ -f "$entry" ]] && file -b "$entry" | grep -q '^Mach-O'; then
+        mv "$entry" "$MACOS/$name"
+    else
+        ln -s "../Resources/app/$name" "$MACOS/$name"
+    fi
+done
+if find "$APP_FILES" -type f -exec file -b {} + | grep -q '^Mach-O'; then
+    echo "Contents/Resources/app holds Mach-O files; they belong in Contents/MacOS:" >&2
+    find "$APP_FILES" -type f -exec file {} + | grep 'Mach-O' >&2
+    exit 1
+fi
+[[ -x "$MACOS/IlluxImageToolSettings" ]] || { echo "The settings app lacks IlluxImageToolSettings." >&2; exit 1; }
 cat > "$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -118,9 +139,9 @@ EOF
 plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# Ad-hoc signatures only (unsigned distribution): every Mach-O file first, then the bundle as a whole.
-find "$APP/Contents/MacOS" -type f | while IFS= read -r file; do
-    if file -b "$file" | grep -q '^Mach-O'; then codesign --force -s - "$file"; fi
+# Ad-hoc signatures only (unsigned distribution): the libraries first, then the bundle with its main executable.
+find "$MACOS" -type f ! -name IlluxImageToolSettings | while IFS= read -r file; do
+    codesign --force -s - "$file"
 done
 codesign --force --deep -s - "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
