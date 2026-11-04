@@ -22,6 +22,12 @@ public sealed class UpdateWorkerOptions
     /// </summary>
     public Func<IServiceSignals>? Signals { get; init; }
 
+    /// <summary>The clock for the age of a stale <c>updating.flag</c> (tests set the file's time instead).</summary>
+    public TimeProvider Time { get; init; } = TimeProvider.System;
+
+    /// <summary>Whether an installer is running, for the stale <c>updating.flag</c> check before an install.</summary>
+    public Func<bool> InstallerRunning { get; init; } = StaleUpdatingFlag.IsInstallerRunning;
+
     /// <summary>False stops the periodic checks (R4); "check now" still works. Defaults to <c>CheckForUpdates</c> of config.json.</summary>
     public Func<bool>? PeriodicChecksEnabled { get; init; }
 }
@@ -146,6 +152,8 @@ public sealed class UpdateWorker : BackgroundService
         }
 
         _log.LogInformation("Update to {Version} requested by the user", release.Version);
+        // A flag left by an installer that died would otherwise refuse every install until the service restarts.
+        StaleUpdatingFlag.RemoveIfStale(_options.Time, _options.InstallerRunning, _log);
         var outcome = await _updater.InstallAsync(release, ct).ConfigureAwait(false);
         _log.LogInformation("Update to {Version}: {Outcome}", release.Version, outcome);
         return outcome;

@@ -395,7 +395,7 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
 
     private async Task<UpdateWorker> StartAsync(
         bool periodicChecks = true, TimeSpan? initialDelay = null, bool useConfigFile = false, TimeSpan? checkInterval = null,
-        IServiceSignals? signals = null)
+        IServiceSignals? signals = null, Func<bool>? installerRunning = null)
     {
         var http = new HttpClient(new FakeHandler(Respond));
         var updater = new Updater(
@@ -413,6 +413,7 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
             SignalPollInterval = TimeSpan.FromMilliseconds(20),
             Signals = () => signals ?? OpenSignals(),
             PeriodicChecksEnabled = useConfigFile ? null : () => periodicChecks,
+            InstallerRunning = installerRunning ?? (() => false),
         });
         _workers.Add(worker);
         await worker.StartAsync(CancellationToken.None);
@@ -550,6 +551,27 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         await Task.Delay(300);
         Assert.Equal(1, ApiRequests()); // acted on once: the event resets itself
         Assert.Equal(0, StartedCount());
+    }
+
+    [Theory]
+    [InlineData(false, 0)] // an install in progress: refused, nothing downloaded or started
+    [InlineData(true, 1)]  // left by an installer that died over 15 minutes ago: removed, then installed
+    public async Task UpdateWorker_InstallRequest_WhileFlagPresent_OnlyAStaleFlagIsCleared(bool stale, int expectedStarts)
+    {
+        Directory.CreateDirectory(AppPaths.Root);
+        File.WriteAllText(AppPaths.UpdatingFlag, "9.9.8");
+        if (stale) File.SetLastWriteTimeUtc(AppPaths.UpdatingFlag, DateTime.UtcNow - TimeSpan.FromMinutes(20));
+        var signals = new FakeSignals();
+        await StartAsync(periodicChecks: false, signals: signals, installerRunning: () => false);
+
+        signals.RequestInstallNow();
+
+        Assert.True(await WaitUntil(() => ApiRequests() == 1));
+        if (expectedStarts == 1) Assert.True(await WaitUntil(() => StartedCount() == 1), "the installer was not started");
+        await Task.Delay(300);
+        Assert.Equal(expectedStarts, StartedCount());
+        Assert.Equal(expectedStarts, InstallerDownloads());
+        Assert.True(File.Exists(AppPaths.UpdatingFlag)); // the old one kept, or the new install's
     }
 
     [Fact]

@@ -134,9 +134,19 @@ public sealed partial class Updater
     /// Downloads, verifies and starts the installer. Call only after a user click. Cancellation throws
     /// <see cref="OperationCanceledException"/> (state goes back to Idle); every other problem is reported through the
     /// outcome and <c>update-state.json</c>.
+    /// While <c>updating.flag</c> exists (written before an installer is started, removed by the installer) nothing is
+    /// done at all: <see cref="InstallOutcome.AlreadyInstalling"/>, logged, state untouched. A second "update now" must not
+    /// delete or replace the package a running installer reads (macOS does not lock it), nor start a second installer.
+    /// The service removes a stale flag (<c>StaleUpdatingFlag</c>) before it asks for an install.
     /// </summary>
     public async Task<InstallOutcome> InstallAsync(ReleaseInfo release, CancellationToken ct)
     {
+        if (File.Exists(AppPaths.UpdatingFlag))
+        {
+            _log.LogWarning("Update to {Version} not started: an update is already being installed (updating.flag exists)", release.Version);
+            return InstallOutcome.AlreadyInstalling;
+        }
+
         var installerPath = Path.Combine(_downloadDirectory, ReleaseClient.InstallerFileName(_platform, release.Version));
         var partPath = installerPath + ".part";
         var started = false;
@@ -224,7 +234,11 @@ public sealed partial class Updater
         return DownloadDirectory.PrepareTrusted(_downloadDirectory, DownloadDirectoryOwner);
     }
 
-    /// <summary>Removes installers (and partial downloads) left by earlier attempts; one that is still running stays.</summary>
+    /// <summary>
+    /// Removes installers (and partial downloads) left by earlier attempts. Only reached while no <c>updating.flag</c>
+    /// exists, so no installer of ours is running (see <see cref="InstallAsync"/>): on macOS nothing would stop this
+    /// from deleting a package that is being installed.
+    /// </summary>
     private void DeleteOldInstallers()
     {
         var pattern = _platform == ReleasePlatform.MacOSArm64 ? "IlluxImageTool-*-macOS-arm64.pkg*" : "IlluxImageTool-Setup-*.exe*";
@@ -314,8 +328,10 @@ public sealed partial class Updater
     }
 
     /// <summary>
-    /// Locks the installer against writes and deletion, re-hashes it, writes the flag, re-checks idleness and starts
-    /// it. The lock is held until the process has started, so the file cannot be swapped after it was verified.
+    /// Opens the installer (Windows: locked against writes and deletion), re-hashes it, writes the flag, re-checks
+    /// idleness and starts it. On Windows the lock is held until the process has started, so the file cannot be swapped
+    /// after it was verified. On macOS the share mode is only advisory; there the protection is the update folder
+    /// itself (root-only 0700, owned by root and checked with lstat by <see cref="DownloadDirectory"/>).
     /// Null means a job started in the meantime (flag removed, caller should wait again).
     /// </summary>
     private async Task<InstallOutcome?> TryStartAsync(ReleaseInfo release, string installerPath, string expectedHash, CancellationToken ct)

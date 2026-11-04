@@ -22,7 +22,12 @@ public static class ReleasePlatformExtensions
 {
     extension(ReleasePlatform)
     {
-        /// <summary>The platform of the running system: macOS uses the pkg, everything else the Windows installer.</summary>
+        /// <summary>
+        /// The platform of the running system: macOS uses the pkg (an Intel Mac too, although only Apple silicon is
+        /// supported), every other system the Windows installer. That is safe because the updater refuses to work on a
+        /// system it does not support: on any Unix other than macOS on Apple silicon <see cref="DownloadDirectory"/>
+        /// refuses the update folder, so nothing is downloaded or run.
+        /// </summary>
         public static ReleasePlatform Current => OperatingSystem.IsMacOS() ? ReleasePlatform.MacOSArm64 : ReleasePlatform.WindowsX64;
     }
 }

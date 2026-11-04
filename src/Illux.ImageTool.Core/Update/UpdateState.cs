@@ -13,7 +13,11 @@ public static class UpdatePhase
     public const string Failed = "Failed";
 }
 
-public enum InstallOutcome { ChecksumFailed, Busy, Started, Failed }
+/// <summary>
+/// The result of <see cref="Updater.InstallAsync"/>. <see cref="AlreadyInstalling"/>: <c>updating.flag</c> exists, so an
+/// installer started earlier may still be running; nothing was downloaded, deleted or started.
+/// </summary>
+public enum InstallOutcome { ChecksumFailed, Busy, Started, Failed, AlreadyInstalling }
 
 /// <summary>What the service tells the settings window and tray helper about updates (<c>update-state.json</c>).</summary>
 public sealed class UpdateState

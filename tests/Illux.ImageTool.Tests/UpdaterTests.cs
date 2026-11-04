@@ -387,6 +387,36 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.False(File.Exists(AppPaths.UpdatingFlag));
     }
 
+    [Theory]
+    [InlineData(ReleasePlatform.WindowsX64)]
+    [InlineData(ReleasePlatform.MacOSArm64)]
+    public async Task Install_SecondRequestWhileInstalling_TouchesNothing(ReleasePlatform platform)
+    {
+        // Any local user may send "install" (the macOS socket is 0666). While the started installer runs (updating.flag
+        // present) a second request must not delete or replace the package it reads, nor start a second installer.
+        var rig = NewRig(r => Route(r, InstallerHash), platform: platform);
+        var release = platform == ReleasePlatform.MacOSArm64 ? MacRelease() : Release();
+        Assert.Equal(InstallOutcome.Started, await rig.Updater.InstallAsync(release, CancellationToken.None));
+        var installer = Assert.Single(Directory.GetFiles(DownloadDir));
+        File.WriteAllText(Path.Combine(DownloadDir, "update-1.2.3.log"), "the running installer's log");
+        var requests = rig.Handler.Requests.Count;
+        var log = new ListLogger();
+        var second = NewRig(r => Route(r, InstallerHash), platform: platform, log: log);
+
+        var outcome = await second.Updater.InstallAsync(release, CancellationToken.None);
+
+        Assert.Equal(InstallOutcome.AlreadyInstalling, outcome);
+        Assert.Empty(second.Handler.Requests);
+        Assert.Empty(second.Started);
+        Assert.Equal(requests, rig.Handler.Requests.Count);
+        Assert.Equal(InstallerBytes, File.ReadAllBytes(installer));
+        Assert.Equal("the running installer's log", File.ReadAllText(Path.Combine(DownloadDir, "update-1.2.3.log")));
+        Assert.Equal(2, Directory.GetFiles(DownloadDir).Length);
+        Assert.True(File.Exists(AppPaths.UpdatingFlag));
+        Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
+        Assert.Contains(log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("already being installed"));
+    }
+
     [MacFact]
     [SupportedOSPlatform("macos")]
     public async Task Install_Mac_InstallerCommand_WritesItsOutputIntoTheUpdateFolderLog()
@@ -943,12 +973,11 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Null(DownloadDirectory.Verify(MacUpdateDir, Me));
     }
 
-    [MacFact]
+    [MacFactWhenNotRoot] // the refusal needs a folder that root does not own
     [SupportedOSPlatform("macos")]
     public void DownloadDirectory_Mac_ProductionOwnerIsRoot()
     {
         Assert.Equal(0u, DownloadDirectory.RootUserId);
-        if (Me == 0) return; // the refusal below needs a folder that root does not own
         Directory.CreateDirectory(AppRoot);
 
         var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir);
@@ -958,15 +987,14 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.False(Directory.Exists(MacUpdateDir));
     }
 
-    [MacFact]
+    [MacFactWhenNotRoot]
     [SupportedOSPlatform("macos")]
-    public async Task Install_Mac_DefaultSecurity_FolderNotOwnedByRoot_Refused_NothingDownloaded()
+    public async Task Install_MacPkg_DefaultSecurity_FolderNotOwnedByRoot_Refused_NothingDownloaded()
     {
-        if (Me == 0) return;
         Directory.CreateDirectory(AppRoot);
-        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir);
+        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir, platform: ReleasePlatform.MacOSArm64);
 
-        var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
+        var outcome = await rig.Updater.InstallAsync(MacRelease(), CancellationToken.None);
 
         Assert.Equal(InstallOutcome.Failed, outcome);
         Assert.Empty(rig.Handler.Requests);
@@ -1213,6 +1241,7 @@ public sealed class UpdaterTests : AppRootTestBase
         var log = new ListLogger();
 
         await NewRig(r => Route(r, InstallerHash), log: log).Updater.InstallAsync(Release(), CancellationToken.None);
+        File.Delete(AppPaths.UpdatingFlag); // as the installer does when it is done
         await NewRig(r => Route(r, new string('0', 64)), log: log).Updater.InstallAsync(Release(), CancellationToken.None);
         var busy = NewRig(r => Route(r, InstallerHash), giveUp: TimeSpan.FromMilliseconds(30), log: log);
         busy.Busy = () => true;
