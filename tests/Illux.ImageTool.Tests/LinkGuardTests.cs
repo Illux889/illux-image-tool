@@ -46,6 +46,45 @@ public sealed class LinkGuardTests : IDisposable
         Assert.Throws<IOException>(() => LinkGuard.ThrowIfLinkedFolder(link));
     }
 
+    [MacFact]
+    public void OnMac_FolderSymlink_IsRefused()
+    {
+        var link = Path.Combine(_dir, "link");
+        Directory.CreateSymbolicLink(link, Elsewhere());
+
+        Assert.True(LinkGuard.IsLink(link));
+        Assert.True(LinkGuard.IsLink(new DirectoryInfo(link)));
+        Assert.Throws<IOException>(() => LinkGuard.ThrowIfLinkedFolder(link));
+    }
+
+    [MacFact]
+    public void OnMac_DanglingSymlink_IsALink()
+    {
+        var link = Path.Combine(_dir, "dangling");
+        File.CreateSymbolicLink(link, Path.Combine(_dir, "missing"));
+
+        Assert.True(LinkGuard.IsLink(link));
+        Assert.Throws<IOException>(() => LinkGuard.ThrowIfLinkedFile(link));
+    }
+
+    [MacFact]
+    public async Task Watcher_OnMac_ConfiguredOutFolderMayBeASymlink()
+    {
+        // The administrator chose the path; a symbolic link there (for example to another volume) keeps working.
+        var realOut = Path.Combine(_dir, "real-out");
+        Directory.CreateDirectory(realOut);
+        var outLink = Path.Combine(_dir, "Out");
+        Directory.CreateSymbolicLink(outLink, realOut);
+        var folder = new WatchedFolder { Name = "t", In = Path.Combine(_dir, "In"), Out = outLink, Error = Path.Combine(_dir, "Error") };
+        TestImages.Write(folder.In, "a.jpg", 60, 40, ColorSpace.sRGB, 8, 300);
+        var scanner = new FolderScanner(folder, NullLogger.Instance, isUpdating: () => false);
+
+        await scanner.ScanOnceAsync(CancellationToken.None);
+        await scanner.ScanOnceAsync(CancellationToken.None);
+
+        Assert.True(File.Exists(Path.Combine(realOut, "a.jpg")));
+    }
+
     [FactWhenFileSymlinksWork]
     public async Task FileProcessor_TargetIsASymbolicLink_ErrorAndLinkTargetUntouched()
     {
