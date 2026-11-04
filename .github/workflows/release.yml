@@ -221,6 +221,7 @@ jobs:
         env:
           VERSION: ${{ needs.build.outputs.version }}
           MAC_VERSION: ${{ needs.macos.outputs.version }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -eu
           if [ "$RELEASE_TAG" != "v$VERSION" ] || [ "$MAC_VERSION" != "$VERSION" ]; then
@@ -242,17 +243,22 @@ jobs:
             echo "$checksum"
           done
           echo "All four files are present, named for $VERSION, and match their checksums."
+          cd ..
+          if [ "$EVENT" = "push" ] && [ ! -f "docs/release-notes/v$VERSION.md" ]; then
+            echo "docs/release-notes/v$VERSION.md is missing: a release needs its release notes."; exit 1
+          fi
 
       - name: Create the release
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
-        # One full release: neither --draft nor --prerelease (the updaters ignore both). The body is
+        # One full release: neither --draft nor --prerelease (the updaters ignore both). +
++        # docs/release-notes/vX.Y.Z.md when it exists, else generated notes.
         # docs/release-notes/vX.Y.Z.md when it exists, else generated notes.
         run: |
           set -eu
-          if [ -f "docs/release-notes/v$VERSION.md" ]; then notes=(--notes-file "docs/release-notes/v$VERSION.md"); else notes=(--generate-notes); fi
+          notes=(--notes-file "docs/release-notes/v$VERSION.md")
           gh release create "$RELEASE_TAG" \
             "release-files/IlluxImageTool-Setup-$VERSION.exe" \
             "release-files/IlluxImageTool-Setup-$VERSION.exe.sha256" \
@@ -269,4 +275,4 @@ jobs:
           echo "Manual run: everything above passed. No release was created (a release is only made by pushing a tag)."
           if [ "$DRY_RUN" != "true" ]; then echo "::warning::dry-run=false is ignored: releases come only from a tag push."; fi
           if [ -f "docs/release-notes/v$VERSION.md" ]; then echo "Release notes found: docs/release-notes/v$VERSION.md"
-          else echo "::warning::No docs/release-notes/v$VERSION.md; a real release would use generated notes."; fi
+          else echo "::error::No docs/release-notes/v$VERSION.md; a real release (tag push) would be refused."; exit 1; fi
