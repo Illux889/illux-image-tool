@@ -248,7 +248,7 @@ public sealed class WatchWorkerTests : IDisposable
         Assert.False(worker.Busy);
     }
 
-    [Fact]
+    [WindowsFact] // disabled on macOS (see FolderScanner.RemoveStaleTempFolders)
     public async Task Worker_AtStart_RemovesOldTempFoldersFromOut()
     {
         var folder = Folder("cleanup");

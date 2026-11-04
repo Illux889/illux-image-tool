@@ -307,8 +307,11 @@ public sealed class WatcherTests : IDisposable
             File.WriteAllBytes(Path.Combine(In, name), [1, 2, 3]);
         var hidden = Jpeg("e.jpg");
         File.SetAttributes(hidden, FileAttributes.Hidden);
-        var system = Jpeg("f.jpg");
-        File.SetAttributes(system, FileAttributes.System);
+        if (OperatingSystem.IsWindows()) // macOS has no System attribute (File.SetAttributes ignores it there)
+        {
+            var system = Jpeg("f.jpg");
+            File.SetAttributes(system, FileAttributes.System);
+        }
         TestImages.Write(Path.Combine(In, ".illux-tmp-abc"), "g.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
         var before = Names(In);
 
@@ -622,13 +625,20 @@ public sealed class WatcherTests : IDisposable
         Assert.Equal(Path.Combine(_dir, "elsewhere"), folder.OriginalsOrDefault);
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(@"D:\", @"D:\Originals")]
     [InlineData(@"D:\In", @"D:\Originals")]
     [InlineData(@"\\srv\share", @"\\srv\share\Originals")]
     [InlineData(@"\\srv\share\", @"\\srv\share\Originals")]
     public void OriginalsOrDefault_InAtARoot_IsAFullPath(string inFolder, string expected) =>
         Assert.Equal(expected, new WatchedFolder { In = inFolder }.OriginalsOrDefault);
+
+    [MacFact]
+    public void OriginalsOrDefault_OnMac_IsSiblingOfIn()
+    {
+        Assert.Equal("/Users/Shared/Job/Originals", new WatchedFolder { In = "/Users/Shared/Job/In" }.OriginalsOrDefault);
+        Assert.Equal("/Users/Shared/Job/Originals", new WatchedFolder { In = "/Users/Shared/Job/In/" }.OriginalsOrDefault);
+    }
 
     [Fact]
     public void ConfigStore_RoundTrip()
@@ -663,7 +673,7 @@ public sealed class WatcherTests : IDisposable
         Assert.Null(b.Originals);
         Assert.True(b.Enabled);
         Assert.Empty(b.Parameters);
-        Assert.Equal(@"\\srv\b\Originals", b.OriginalsOrDefault);
+        if (OperatingSystem.IsWindows()) Assert.Equal(@"\\srv\b\Originals", b.OriginalsOrDefault); // a UNC path means nothing on macOS
         Assert.Contains("\n", File.ReadAllText(path)); // indented
         Assert.Equal(["config.json"], Names(Path.GetDirectoryName(path)!)); // no temp file left behind
     }

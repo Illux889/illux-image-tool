@@ -11,7 +11,7 @@ public sealed class ConfigStoreSaveTests : IDisposable
         try { Directory.Delete(_dir, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
-    [Fact]
+    [WindowsFact] // Windows file sharing; on macOS a reader never blocks the replace
     public void Save_RetriesWhileAReaderHasTheFileOpen()
     {
         var path = Path.Combine(_dir, "config.json");
@@ -33,7 +33,7 @@ public sealed class ConfigStoreSaveTests : IDisposable
         Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(f => Path.GetFileName(f)!).ToArray());
     }
 
-    [Fact]
+    [WindowsFact]
     public void Save_GivesUpWhenTheFileStaysLocked()
     {
         var path = Path.Combine(_dir, "config.json");
@@ -44,5 +44,20 @@ public sealed class ConfigStoreSaveTests : IDisposable
         var ex = Record.Exception(() => ConfigStore.Save(new WatcherConfig { PollSeconds = 9 }, path));
         Assert.True(ex is IOException or UnauthorizedAccessException, $"unexpected: {ex}");
         Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(f => Path.GetFileName(f)!).ToArray()); // temp file cleaned up
+    }
+
+    [MacFact]
+    public void Save_OnMac_AReaderDoesNotBlockTheReplace()
+    {
+        var path = Path.Combine(_dir, "config.json");
+        ConfigStore.Save(new WatcherConfig { PollSeconds = 5 }, path);
+
+        using var reader = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var failedAttempts = 0;
+        ConfigStore.Save(new WatcherConfig { PollSeconds = 9 }, path, onRetry: attempt => failedAttempts = attempt);
+
+        Assert.Equal(0, failedAttempts);
+        Assert.Equal(9, ConfigStore.Load(path).PollSeconds);
+        Assert.Equal(["config.json"], Directory.GetFiles(_dir).Select(f => Path.GetFileName(f)!).ToArray());
     }
 }

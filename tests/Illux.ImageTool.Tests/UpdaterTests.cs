@@ -348,7 +348,7 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Equal(UpdatePhase.Failed, UpdateStateStore.Load().Phase);
     }
 
-    [Fact]
+    [WindowsFact] // macOS has advisory locks only; there the root-only 0700 update folder keeps others out
     public async Task Install_InstallerLockedAgainstWriteAndDeleteWhileStarting()
     {
         var rig = NewRig(r => Route(r, InstallerHash));
