@@ -185,6 +185,17 @@ public sealed class StaleUpdatingFlagTests : AppRootTestBase
     [Fact]
     public void NoFlag_NothingHappens() =>
         Assert.False(StaleUpdatingFlag.RemoveIfStale(Now, () => false, NullLogger.Instance));
+
+    [Theory]
+    [InlineData("IlluxImageTool-Setup-0.2.0", true, true)]
+    [InlineData("illuximagetool-setup-0.2.0.tmp", true, true)]
+    [InlineData("installer", true, false)]
+    [InlineData("installer", false, true)]
+    [InlineData("Installer", false, false)]
+    [InlineData("installerd", false, false)]
+    [InlineData("IlluxImageTool-Setup-0.2.0", false, false)]
+    public void InstallerProcess_IsTheSetupOnWindows_AndInstallerOnMac(string processName, bool windows, bool expected) =>
+        Assert.Equal(expected, StaleUpdatingFlag.IsInstallerProcess(processName, windows));
 }
 
 [Collection("AppRoot")]
@@ -200,5 +211,43 @@ public sealed class FileLoggerDefaultFolderTests : AppRootTestBase
         Assert.Single(files);
         Assert.Contains("hello from the service", File.ReadAllText(files[0]));
         Assert.False(Directory.Exists(AppPaths.LogsDir)); // R38
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void ServiceLogs_OnMac_AreOwnerOnly()
+    {
+        Directory.CreateDirectory(AppPaths.ServiceLogsDir);
+        File.SetUnixFileMode(AppPaths.ServiceLogsDir, (UnixFileMode)0b111_101_101);
+
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the daemon");
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(AppPaths.ServiceLogsDir));
+        Assert.Single(Directory.GetFiles(AppPaths.ServiceLogsDir, FileLoggerProvider.Prefix + "*.log"));
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void ServiceLogs_OnMac_NewFolderIsOwnerOnly()
+    {
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the daemon");
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(AppPaths.ServiceLogsDir));
+    }
+
+    [MacFact]
+    public void ServiceLogs_OnMac_FolderThatIsALink_IsNotWrittenThrough()
+    {
+        var elsewhere = Path.Combine(Dir, "elsewhere");
+        Directory.CreateDirectory(elsewhere);
+        Directory.CreateDirectory(AppPaths.Root);
+        Directory.CreateSymbolicLink(AppPaths.ServiceLogsDir, elsewhere);
+
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the daemon");
+
+        Assert.Empty(Directory.GetFiles(elsewhere));
     }
 }

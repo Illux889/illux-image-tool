@@ -12,9 +12,13 @@ try
 {
     var builder = Host.CreateApplicationBuilder(args);
 
-    builder.Services.AddWindowsService(options => options.ServiceName = WatcherInfo.ServiceName);
+    // Windows: a Windows service. macOS: a plain process that launchd starts as the daemon and stops with SIGTERM
+    // (handled by the default console lifetime); no Windows service or event log APIs there.
+    if (OperatingSystem.IsWindows())
+        builder.Services.AddWindowsService(options => options.ServiceName = WatcherInfo.ServiceName);
 
-    // File log always; the event log (Warning and above) is best effort (R5). The defaults added above are replaced.
+    // File log always (service-logs); on Windows also the event log (Warning and above), best effort (R5). The
+    // defaults added above are replaced.
     builder.Logging.ClearProviders();
     builder.Logging.SetMinimumLevel(LogLevel.Information);
     builder.Logging.AddProvider(new FileLoggerProvider());
@@ -49,7 +53,7 @@ try
 }
 catch (Exception ex)
 {
-    // The service would otherwise stop with nothing but a generic message in the Windows logs.
+    // The service would otherwise stop with nothing but a generic message in the Windows logs (or launchd's).
     try
     {
         new FileLoggerProvider().CreateLogger("Startup").LogCritical(ex, "The watcher service stopped because of an unhandled error");

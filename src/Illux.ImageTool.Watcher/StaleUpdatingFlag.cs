@@ -7,13 +7,16 @@ namespace Illux.ImageTool.Watcher;
 /// <summary>
 /// R31: the updater writes <c>updating.flag</c> before it starts the installer and the installer removes it again.
 /// If the installer died, the flag would block every command-line run forever, so the service removes a flag that is
-/// older than 15 minutes when no installer is running.
+/// older than 15 minutes when no installer is running: the setup program on Windows, Apple's <c>installer</c> on macOS.
 /// </summary>
 public static class StaleUpdatingFlag
 {
     public static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(15);
 
     public const string InstallerProcessPrefix = "IlluxImageTool-Setup-";
+
+    /// <summary>The daemon installs a pkg with <c>/usr/sbin/installer</c>.</summary>
+    public const string MacInstallerProcessName = "installer";
 
     public static bool RemoveIfStale(TimeProvider clock, Func<bool> installerRunning, ILogger log)
     {
@@ -43,7 +46,7 @@ public static class StaleUpdatingFlag
             {
                 using (process)
                 {
-                    if (process.ProcessName.StartsWith(InstallerProcessPrefix, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (IsInstallerProcess(process.ProcessName, OperatingSystem.IsWindows())) return true;
                 }
             }
             return false;
@@ -53,4 +56,8 @@ public static class StaleUpdatingFlag
             return true; // cannot tell: leave the flag alone
         }
     }
+
+    internal static bool IsInstallerProcess(string processName, bool windows) => windows
+        ? processName.StartsWith(InstallerProcessPrefix, StringComparison.OrdinalIgnoreCase)
+        : string.Equals(processName, MacInstallerProcessName, StringComparison.Ordinal);
 }

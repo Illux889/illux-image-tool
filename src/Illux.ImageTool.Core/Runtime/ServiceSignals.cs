@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Microsoft.Extensions.Logging;
 using Microsoft.Win32.SafeHandles;
 
 namespace Illux.ImageTool.Runtime;
@@ -10,8 +11,9 @@ namespace Illux.ImageTool.Runtime;
 /// named kernel events (R37), not as files: the service never opens, reads or deletes a path a standard user controls.
 /// The service creates the events with a DACL that lets interactive users only set (signal) them; they are
 /// auto-reset, so each click is consumed exactly once and nothing is left behind when the service is not running.
+/// An instance (<see cref="Open"/>) is the service's <see cref="IServiceSignals"/> on Windows.
 /// </summary>
-public static class ServiceSignals
+public sealed class ServiceSignals : IServiceSignals
 {
     public const string CheckNowName = @"Global\IlluxImageTool.CheckNow";
 
@@ -26,6 +28,51 @@ public static class ServiceSignals
     private const int ErrorAlreadyExists = 183;
     private const int SeKernelObject = 6;
     private const uint OwnerSecurityInformation = 1;
+
+    private readonly WaitHandle? _checkNow;
+    private readonly WaitHandle? _installNow;
+
+    private ServiceSignals(WaitHandle? checkNow, WaitHandle? installNow)
+    {
+        _checkNow = checkNow;
+        _installNow = installNow;
+    }
+
+    /// <summary>
+    /// For the service: creates both events (<see cref="Create"/>). One that cannot be created is logged and never
+    /// signals; the other still works and periodic update checks still run.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    public static ServiceSignals Open(ILogger log, string checkNowName = CheckNowName, string installNowName = InstallNowName) =>
+        new(TryCreate(checkNowName, log), TryCreate(installNowName, log));
+
+    /// <inheritdoc/>
+    /// <remarks>An event that could not be created returns false at once.</remarks>
+    public bool TryWaitCheckNow(TimeSpan timeout) => _checkNow?.WaitOne(timeout) == true;
+
+    /// <inheritdoc/>
+    /// <remarks>An event that could not be created returns false at once.</remarks>
+    public bool TryWaitInstallNow(TimeSpan timeout) => _installNow?.WaitOne(timeout) == true;
+
+    public void Dispose()
+    {
+        _checkNow?.Dispose();
+        _installNow?.Dispose();
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static WaitHandle? TryCreate(string name, ILogger log)
+    {
+        try
+        {
+            return Create(name);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Could not create the request event '{Name}'; the settings window and tray cannot reach the service", name);
+            return null;
+        }
+    }
 
     /// <summary>Creates (or, after a quick service restart, reopens) an auto-reset event with <see cref="Sddl"/>; for the service.</summary>
     /// <exception cref="UnauthorizedAccessException">The event exists and was not created by SYSTEM or Administrators.</exception>
@@ -81,8 +128,8 @@ public static class ServiceSignals
             var error = Marshal.GetLastPInvokeError();
             throw error switch
             {
-                ErrorFileNotFound => new IOException("The Illux Image Tool service is not running, so it cannot receive the request."),
-                ErrorAccessDenied => new UnauthorizedAccessException("This account may not send requests to the Illux Image Tool service."),
+                ErrorFileNotFound => new IOException(ServiceRequests.NotRunningMessage),
+                ErrorAccessDenied => new UnauthorizedAccessException(ServiceRequests.NotAllowedMessage),
                 _ => new IOException(new Win32Exception(error).Message),
             };
         }

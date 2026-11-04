@@ -7,7 +7,8 @@ namespace Illux.ImageTool.Watcher.Logging;
 
 /// <summary>
 /// Daily log file <c>service-logs\watcher-YYYYMMDD.log</c>, 30 days kept. The folder is SYSTEM/Administrators only
-/// (R38): the service never creates, appends to or deletes a file by name in a folder standard users can write. The
+/// (R38): the service never creates, appends to or deletes a file by name in a folder standard users can write. On
+/// macOS the daemon keeps the folder at mode 0700 (root only) and never writes through a folder that is a link. The
 /// file is opened per entry with <see cref="FileShare.ReadWrite"/> so the settings window can read it and other
 /// writers can append; a logging failure never reaches the caller.
 /// </summary>
@@ -48,7 +49,7 @@ public sealed class FileLoggerProvider : ILoggerProvider
             lock (_gate)
             {
                 var directory = _directory();
-                Directory.CreateDirectory(directory);
+                PrepareDirectory(directory);
                 var path = Path.Combine(directory, Prefix + now.ToString(DateFormat, CultureInfo.InvariantCulture) + ".log");
                 using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
                 {
@@ -68,6 +69,25 @@ public sealed class FileLoggerProvider : ILoggerProvider
         {
             // Best effort only.
         }
+    }
+
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    private static void PrepareDirectory(string directory)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Directory.CreateDirectory(directory); // the installer gave the parent the ACL this folder inherits
+            return;
+        }
+
+        if (!LinkGuard.IsLink(directory) && !Directory.Exists(directory))
+        {
+            if (Path.GetDirectoryName(directory) is { Length: > 0 } parent) Directory.CreateDirectory(parent); // not 0700
+            Directory.CreateDirectory(directory, OwnerOnly);
+        }
+        LinkGuard.ThrowIfLinkedFolder(directory);
+        if (File.GetUnixFileMode(directory) != OwnerOnly) File.SetUnixFileMode(directory, OwnerOnly);
     }
 
     private static void DeleteOldFiles(string directory, DateOnly today)

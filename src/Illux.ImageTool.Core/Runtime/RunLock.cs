@@ -5,6 +5,9 @@ namespace Illux.ImageTool.Runtime;
 /// <see cref="AppPaths.RunsDir"/> held open exclusively; the operating system releases it if the process dies, which
 /// leaves a stale file. Users may write in <c>runs\</c>, so the privileged side (<see cref="AnyActive"/>, called by
 /// the service) only ever reads there (R39); stale files are removed by <see cref="Acquire"/>, which runs as the user.
+/// On macOS a run holds an exclusive flock (what .NET does for <see cref="FileShare.None"/>); there both sides probe
+/// with non-blocking libc calls, so a FIFO, socket or device someone planted in the world-writable <c>runs/</c> is
+/// ignored and never blocks the root daemon or a run (ruling V4).
 /// </summary>
 public sealed class RunLock : IDisposable
 {
@@ -33,6 +36,11 @@ public sealed class RunLock : IDisposable
             foreach (var file in new DirectoryInfo(AppPaths.RunsDir).EnumerateFiles("*.lock"))
             {
                 if (LinkGuard.IsLink(file)) continue;
+                if (UnixNative.IsSupported)
+                {
+                    if (UnixNative.IsLockedExclusively(file.FullName)) return true;
+                    continue;
+                }
                 try
                 {
                     // A live run holds the file with FileShare.None, so even a read-only open fails while it runs.
@@ -63,6 +71,11 @@ public sealed class RunLock : IDisposable
             foreach (var file in new DirectoryInfo(AppPaths.RunsDir).EnumerateFiles("*.lock"))
             {
                 if (LinkGuard.IsLink(file)) continue;
+                if (UnixNative.IsSupported)
+                {
+                    UnixNative.DeleteIfUnlocked(file.FullName);
+                    continue;
+                }
                 try
                 {
                     using var probe = new FileStream(file.FullName, FileMode.Open, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);

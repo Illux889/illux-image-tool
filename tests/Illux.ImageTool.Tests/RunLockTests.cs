@@ -103,6 +103,61 @@ public sealed class RunLockTests : AppRootTestBase
         }
     }
 
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "mkfifo", SetLastError = true)]
+    private static extern int MakeFifo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string path, ushort mode);
+
+    /// <summary>Runs <paramref name="action"/> on another thread and fails the test if it does not finish in time.</summary>
+    private static T Within<T>(Func<T> action, string what)
+    {
+        var task = Task.Run(action);
+        Assert.True(task.Wait(TimeSpan.FromSeconds(10)), what + " blocked");
+        return task.Result;
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void AnyActive_OnMac_FifoNamedLikeALock_IsIgnoredAndNeverBlocks()
+    {
+        // runs/ is writable by every user (1777); the daemon calling AnyActive runs as root (ruling V4).
+        Directory.CreateDirectory(AppPaths.RunsDir);
+        var fifo = Path.Combine(AppPaths.RunsDir, "1-fifo.lock");
+        Assert.Equal(0, MakeFifo(fifo, 0b110_110_110));
+
+        Assert.False(Within(RunLock.AnyActive, "AnyActive"));
+
+        using (Within(RunLock.Acquire, "Acquire"))
+            Assert.True(Within(RunLock.AnyActive, "AnyActive"));
+
+        Assert.False(Within(RunLock.AnyActive, "AnyActive"));
+        Assert.Equal(UnixNative.FifoType, UnixNative.LStat(fifo)!.Value.Type);
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void AnyActive_OnMac_SocketNamedLikeALock_IsIgnoredAndNeverBlocks()
+    {
+        // A socket path is limited to 103 bytes: use a short root for this test.
+        var shortRoot = Path.Combine("/tmp", "illux-" + Guid.NewGuid().ToString("N")[..10]);
+        Environment.SetEnvironmentVariable("ILLUX_IMAGETOOL_ROOT", shortRoot);
+        try
+        {
+            Directory.CreateDirectory(AppPaths.RunsDir);
+            using var listening = new System.Net.Sockets.Socket(
+                System.Net.Sockets.AddressFamily.Unix, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Unspecified);
+            listening.Bind(new System.Net.Sockets.UnixDomainSocketEndPoint(Path.Combine(AppPaths.RunsDir, "1-sock.lock")));
+            listening.Listen(1);
+
+            Assert.False(Within(RunLock.AnyActive, "AnyActive"));
+            using (Within(RunLock.Acquire, "Acquire"))
+                Assert.True(Within(RunLock.AnyActive, "AnyActive"));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("ILLUX_IMAGETOOL_ROOT", AppRoot);
+            try { Directory.Delete(shortRoot, true); } catch (IOException) { }
+        }
+    }
+
     [FactWhenFileSymlinksWork]
     public void AnyActive_SkipsLinks_AndAcquireLeavesThemAlone()
     {

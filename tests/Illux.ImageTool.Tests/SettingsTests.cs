@@ -303,8 +303,56 @@ public sealed class ServiceSignalsTests
     {
         // No service on a development machine or CI test step: both requests report that plainly.
         if (CanOpen(ServiceSignals.CheckNowName, EventModifyState)) return; // a real service is installed here
-        Assert.Contains("not running", Assert.Throws<IOException>(ServiceRequests.RequestCheckNow).Message);
-        Assert.Contains("not running", Assert.Throws<IOException>(ServiceRequests.RequestInstallNow).Message);
+        Assert.False(ServiceRequests.RequestCheckNow(out var error));
+        Assert.Contains("not running", error);
+        Assert.False(ServiceRequests.RequestInstallNow(out error));
+        Assert.Contains("not running", error);
+        Assert.False(ServiceRequests.RequestCheckNow());
+    }
+
+    [Fact]
+    public void Open_ForTheService_SignalsEachRequestOnce()
+    {
+        var check = NewName();
+        var install = NewName();
+        using var signals = ServiceSignals.Open(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, check, install);
+        Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
+
+        ServiceSignals.Signal(install);
+
+        Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
+        Assert.True(signals.TryWaitInstallNow(TimeSpan.Zero));
+        Assert.False(signals.TryWaitInstallNow(TimeSpan.Zero));
+        ServiceSignals.Signal(check);
+        Assert.True(signals.TryWaitCheckNow(TimeSpan.FromSeconds(5)));
+    }
+
+    [FactWhenNotElevated]
+    public void Open_EventThatCannotBeCreated_IsLogged_TheOtherStillWorks()
+    {
+        var check = NewName();
+        var install = NewName();
+        using var planted = ServiceSignals.Create(check); // owned by this (non-admin) user: refused
+        var log = new ListLogger();
+
+        using var signals = ServiceSignals.Open(log, check, install);
+
+        Assert.Contains(log.Entries, e => e.Contains(check));
+        Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
+        ServiceSignals.Signal(install);
+        Assert.True(signals.TryWaitInstallNow(TimeSpan.Zero));
+    }
+
+    private sealed class ListLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public List<string> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add(formatter(state, exception));
     }
 }
 

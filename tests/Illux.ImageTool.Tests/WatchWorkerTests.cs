@@ -394,7 +394,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     }
 
     private async Task<UpdateWorker> StartAsync(
-        bool periodicChecks = true, TimeSpan? initialDelay = null, bool useConfigFile = false, TimeSpan? checkInterval = null)
+        bool periodicChecks = true, TimeSpan? initialDelay = null, bool useConfigFile = false, TimeSpan? checkInterval = null,
+        IServiceSignals? signals = null)
     {
         var http = new HttpClient(new FakeHandler(Respond));
         var updater = new Updater(
@@ -410,13 +411,35 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
             InitialDelay = initialDelay ?? TimeSpan.Zero,
             CheckInterval = checkInterval ?? TimeSpan.FromHours(6),
             SignalPollInterval = TimeSpan.FromMilliseconds(20),
-            CheckNowSignal = _checkNowName,
-            InstallNowSignal = _installNowName,
+            Signals = () => signals ?? OpenSignals(),
             PeriodicChecksEnabled = useConfigFile ? null : () => periodicChecks,
         });
         _workers.Add(worker);
         await worker.StartAsync(CancellationToken.None);
         return worker;
+    }
+
+    /// <summary>Test-only events on Windows (R37); elsewhere a fake nobody signals unless a test does.</summary>
+    private IServiceSignals OpenSignals() =>
+        OperatingSystem.IsWindows() ? ServiceSignals.Open(NullLogger.Instance, _checkNowName, _installNowName) : new FakeSignals();
+
+    /// <summary>A request channel a test sets directly; auto-reset like the real ones.</summary>
+    private sealed class FakeSignals : IServiceSignals
+    {
+        private int _checkNow;
+        private int _installNow;
+
+        public bool Disposed { get; private set; }
+
+        public void RequestCheckNow() => Interlocked.Exchange(ref _checkNow, 1);
+
+        public void RequestInstallNow() => Interlocked.Exchange(ref _installNow, 1);
+
+        public bool TryWaitCheckNow(TimeSpan timeout) => Interlocked.Exchange(ref _checkNow, 0) == 1;
+
+        public bool TryWaitInstallNow(TimeSpan timeout) => Interlocked.Exchange(ref _installNow, 0) == 1;
+
+        public void Dispose() => Disposed = true;
     }
 
     /// <summary>What the settings window and tray do; retried until the worker has created its events.</summary>
@@ -527,6 +550,49 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         await Task.Delay(300);
         Assert.Equal(1, ApiRequests()); // acted on once: the event resets itself
         Assert.Equal(0, StartedCount());
+    }
+
+    [Fact]
+    public async Task UpdateWorker_UsesInterface()
+    {
+        var signals = new FakeSignals();
+        var worker = await StartAsync(periodicChecks: false, signals: signals);
+        await Task.Delay(200);
+        Assert.Equal(0, ApiRequests());
+
+        signals.RequestCheckNow();
+        Assert.True(await WaitUntil(() => ApiRequests() == 1));
+        await Task.Delay(200);
+        Assert.Equal(1, ApiRequests()); // consumed once
+        Assert.Equal(0, StartedCount());
+
+        signals.RequestInstallNow();
+        Assert.True(await WaitUntil(() => StartedCount() == 1), "the installer was not started");
+        Assert.Equal(1, ApiRequests()); // the release from the check was reused
+
+        await worker.StopAsync(CancellationToken.None);
+        Assert.True(signals.Disposed);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_ChannelThatCannotBeOpened_PeriodicChecksStillRun()
+    {
+        var http = new HttpClient(new FakeHandler(Respond));
+        var updater = new Updater(
+            new ReleaseClient(http), http, new Version(1, 0, 0), () => false,
+            (path, args) => new Process(), NullLogger.Instance,
+            downloadDirectory: Path.Combine(Dir, "download"), trustDownloadDirectory: true);
+        var worker = new UpdateWorker(updater, NullLogger.Instance, new UpdateWorkerOptions
+        {
+            InitialDelay = TimeSpan.Zero,
+            SignalPollInterval = TimeSpan.FromMilliseconds(20),
+            Signals = () => throw new IOException("the control socket cannot be opened"),
+            PeriodicChecksEnabled = () => true,
+        });
+        _workers.Add(worker);
+        await worker.StartAsync(CancellationToken.None);
+
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().AvailableVersion == "9.9.9"));
     }
 
     [Fact]

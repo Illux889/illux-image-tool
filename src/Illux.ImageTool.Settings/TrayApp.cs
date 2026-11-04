@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Illux.ImageTool.Runtime;
 using Illux.ImageTool.Update;
 
 namespace Illux.ImageTool.Settings;
@@ -75,15 +76,10 @@ internal sealed class TrayApp : ApplicationContext
 
     private void CheckNow()
     {
-        try
-        {
-            ServiceRequests.RequestCheckNow();
+        if (ServiceRequests.RequestCheckNow(out var error))
             _icon.ShowBalloonTip(3000, "Illux Image Tool", "Checking for updates...", ToolTipIcon.Info);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _icon.ShowBalloonTip(5000, "Illux Image Tool", "Could not send the request: " + ex.Message, ToolTipIcon.Error);
-        }
+        else
+            _icon.ShowBalloonTip(5000, "Illux Image Tool", "Could not send the request: " + error, ToolTipIcon.Error);
     }
 
     private static void OpenSettings()
@@ -155,13 +151,9 @@ internal sealed class UpdatePopup : Form
 
     private void StartUpdate()
     {
-        try
+        if (!ServiceRequests.RequestInstallNow(out var error))
         {
-            ServiceRequests.RequestInstallNow();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            _text.Text = "Could not send the request: " + ex.Message;
+            _text.Text = "Could not send the request: " + error;
             return;
         }
 

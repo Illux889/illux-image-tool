@@ -279,18 +279,13 @@ internal sealed class MainForm : Form
         _updateNote.Text = "Checking...";
     }
 
-    private bool TrySendRequest(Action send)
+    private delegate bool ServiceRequest(out string? error);
+
+    private bool TrySendRequest(ServiceRequest send)
     {
-        try
-        {
-            send();
-            return true;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            MessageBox.Show(this, "Could not send the request to the service.\r\n" + ex.Message, "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
-        }
+        if (send(out var error)) return true;
+        MessageBox.Show(this, "Could not send the request to the service.\r\n" + error, "Illux Image Tool", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        return false;
     }
 
     private void RefreshLive()
