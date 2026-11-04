@@ -74,6 +74,23 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  test-macos:
+    name: Test on macOS (Apple silicon)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build jpegtran
+        run: ./build/fetch-jpegtran.sh
+
+      - name: Test
+        run: dotnet test -c Release
+
   smoke-test:
     name: Install, upgrade and uninstall
     needs: build

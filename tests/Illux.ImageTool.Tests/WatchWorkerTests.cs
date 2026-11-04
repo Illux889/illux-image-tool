@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.Versioning;
 using System.Text;
 using Illux.ImageTool.Batch;
 using Illux.ImageTool.Options;
@@ -419,6 +420,7 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     }
 
     /// <summary>What the settings window and tray do; retried until the worker has created its events.</summary>
+    [SupportedOSPlatform("windows")]
     private async Task Request(bool install)
     {
         var name = install ? _installNowName : _checkNowName;
@@ -466,7 +468,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.False(File.Exists(AppPaths.UpdatingFlag));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_InstallRequest_TriggersInstall()
     {
         await StartAsync();
@@ -481,7 +484,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(1, ApiRequests()); // the release from the earlier check was reused
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_InstallRequest_WithoutEarlierCheck_ChecksFirst()
     {
         await StartAsync(periodicChecks: false);
@@ -494,7 +498,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(1, ApiRequests());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_InstallRequest_NoRelease_InstallsNothing()
     {
         _releaseAvailable = false;
@@ -508,7 +513,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(0, StartedCount());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_CheckNowRequest_ChecksEvenWhenPeriodicChecksAreOff()
     {
         await StartAsync(periodicChecks: false);
@@ -533,7 +539,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.True(await WaitUntil(() => ApiRequests() == 1));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_UnexpectedCheckFailure_IsNotRetriedEveryLoop_AndWorkerSurvives()
     {
         _throwOnApi = true;
@@ -549,7 +556,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(2, ApiRequests());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_StoppedWorker_NoLongerListens()
     {
         var worker = await StartAsync(periodicChecks: false);

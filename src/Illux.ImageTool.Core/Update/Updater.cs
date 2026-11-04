@@ -194,7 +194,7 @@ public sealed partial class Updater
 
     private string? PrepareDownloadDirectory()
     {
-        if (_trustDownloadDirectory || !OperatingSystem.IsWindows())
+        if (_trustDownloadDirectory)
         {
             Directory.CreateDirectory(_downloadDirectory);
             return null;

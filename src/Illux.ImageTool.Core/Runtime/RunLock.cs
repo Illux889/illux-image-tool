@@ -32,7 +32,7 @@ public sealed class RunLock : IDisposable
         {
             foreach (var file in new DirectoryInfo(AppPaths.RunsDir).EnumerateFiles("*.lock"))
             {
-                if (file.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+                if (LinkGuard.IsLink(file)) continue;
                 try
                 {
                     // A live run holds the file with FileShare.None, so even a read-only open fails while it runs.
@@ -62,7 +62,7 @@ public sealed class RunLock : IDisposable
         {
             foreach (var file in new DirectoryInfo(AppPaths.RunsDir).EnumerateFiles("*.lock"))
             {
-                if (file.Attributes.HasFlag(FileAttributes.ReparsePoint)) continue;
+                if (LinkGuard.IsLink(file)) continue;
                 try
                 {
                     using var probe = new FileStream(file.FullName, FileMode.Open, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);

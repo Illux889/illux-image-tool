@@ -3,6 +3,8 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- Lets the solution build on macOS (the WinForms window only runs on Windows; Task 6 replaces it). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>Illux.ImageTool.Settings</RootNamespace>
     <AssemblyName>IlluxImageToolSettings</AssemblyName>

@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Tests;
@@ -69,7 +70,8 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.False(RunLock.AnyActive());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public void AnyActive_LockThatCannotBeRead_DoesNotBlockUpdatesForever()
     {
         var unreadable = Stale();
@@ -81,6 +83,24 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.Throws<UnauthorizedAccessException>(() => File.ReadAllText(unreadable));
 
         Assert.False(RunLock.AnyActive());
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void AnyActive_OnMac_LockThatCannotBeRead_DoesNotBlockUpdatesForever()
+    {
+        var unreadable = Stale();
+        File.SetUnixFileMode(unreadable, UnixFileMode.None);
+        try
+        {
+            Assert.Throws<UnauthorizedAccessException>(() => File.ReadAllText(unreadable));
+
+            Assert.False(RunLock.AnyActive());
+        }
+        finally
+        {
+            File.SetUnixFileMode(unreadable, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
     }
 
     [FactWhenFileSymlinksWork]
@@ -113,7 +133,7 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.Equal(Path.Combine(AppRoot, "service-logs"), AppPaths.ServiceLogsDir);
     }
 
-    [Fact]
+    [WindowsFact]
     public void AppPaths_DefaultRootIsProgramData()
     {
         Environment.SetEnvironmentVariable("ILLUX_IMAGETOOL_ROOT", null);
@@ -121,5 +141,23 @@ public sealed class RunLockTests : AppRootTestBase
         Assert.Equal(
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Illux Image Tool"),
             AppPaths.Root);
+    }
+
+    [MacFact]
+    public void AppPaths_MacDefault()
+    {
+        Environment.SetEnvironmentVariable("ILLUX_IMAGETOOL_ROOT", null);
+
+        Assert.Equal("/Library/Application Support/Illux Image Tool", AppPaths.Root);
+        Assert.Equal("/Library/Application Support/Illux Image Tool/config.json", AppPaths.ConfigFile);
+    }
+
+    [Fact]
+    public void AppPaths_DefaultRootPerOs()
+    {
+        var common = Path.Combine(Dir, "ProgramData");
+
+        Assert.Equal(Path.Combine(common, "Illux Image Tool"), AppPaths.DefaultRoot(windows: true, common));
+        Assert.Equal("/Library/Application Support/Illux Image Tool", AppPaths.DefaultRoot(windows: false, common));
     }
 }

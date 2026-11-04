@@ -126,7 +126,7 @@ public sealed class WatcherTests : IDisposable
         Directory.SetLastWriteTimeUtc(folder, old);
     }
 
-    [Fact]
+    [WindowsFact]
     public void RemoveStaleTempFolders_OnlyOldTempFoldersMadeByTheToolInOut()
     {
         var old = ToolTempFolder();
@@ -145,7 +145,7 @@ public sealed class WatcherTests : IDisposable
         Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
     }
 
-    [Fact]
+    [WindowsFact]
     public void RemoveStaleTempFolders_PlantedFolderWithInheritedPermissions_IsLeftAlone()
     {
         // N1: anyone who may create folders in Out can make one with this name; the watcher (SYSTEM) must not delete it.
@@ -194,6 +194,23 @@ public sealed class WatcherTests : IDisposable
         Assert.False(Directory.Exists(temp));
         Assert.True(File.Exists(Path.Combine(elsewhere.FullName, "canary.txt")));
         Assert.Equal(["canary.txt"], Names(elsewhere.FullName));
+    }
+
+    [MacFact]
+    public void RemoveStaleTempFolders_OnMac_IsDisabled_NothingIsDeleted()
+    {
+        // No recursive deletes as root in folders users may write to; an administrator removes leftovers by hand.
+        var old = ToolTempFolder();
+        File.WriteAllText(Path.Combine(old, "half.jpg"), "partial");
+        Age(old);
+
+        Scanner().RemoveStaleTempFolders();
+        Scanner().RemoveStaleTempFolders();
+
+        Assert.True(File.Exists(Path.Combine(old, "half.jpg")));
+        Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
+        // Said once per process (Information); another test in this process may already have triggered it.
+        Assert.True(_log.Entries.Count(e => e.Message.Contains("not removed automatically on macOS")) <= 1);
     }
 
     [Fact]

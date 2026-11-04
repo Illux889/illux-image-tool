@@ -3,7 +3,7 @@ using ImageMagick;
 
 namespace Illux.ImageTool.Tests;
 
-/// <summary>Runs the real wrapper scripts (scripts/ae) against the built CLI, the way Esko's Script Runner would.</summary>
+/// <summary>Runs the real wrapper scripts (scripts/ae) against the built CLI, the way Esko's Script Runner would. Windows only (.bat/.ps1; no AE on macOS).</summary>
 [Collection("AppRoot")]
 public sealed class AeScriptTests : AppRootTestBase
 {
@@ -78,19 +78,19 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("ERROR: Unknown parameter 'bogus'.", bad.Output);
     }
 
-    [Fact]
+    [WindowsFact]
     public void Bat_ForwardsArgsAndExitCode()
     {
         AssertForwardsArgsAndExitCode("IlluxImageTool.bat");
     }
 
-    [Fact]
+    [WindowsFact]
     public void Ps1_ForwardsArgsAndExitCode()
     {
         AssertForwardsArgsAndExitCode("IlluxImageTool.ps1");
     }
 
-    [Fact]
+    [WindowsFact]
     public void Bat_TwelveParams_AllForwarded()
     {
         var a = Tiff16("a.tif");
@@ -105,7 +105,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("Result: OK", output);
     }
 
-    [Fact]
+    [WindowsFact]
     public async Task Bat_WaitsForUpdatingFlag()
     {
         var a = Tiff16("a.tif");
@@ -121,7 +121,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.True(File.Exists(Path.Combine(Out, "a.tif")));
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_UpdateNeverFinishes_Returns2(string name)
     {
@@ -137,7 +137,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.False(Directory.Exists(Out));
     }
 
-    [Fact]
+    [WindowsFact]
     public async Task Ps1_WaitsForUpdatingFlag()
     {
         var a = Tiff16("a.tif");
@@ -152,7 +152,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("Result: OK", output);
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_ExeMissing_Returns2(string name)
     {
@@ -165,7 +165,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("nope.exe", output);
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_OutputFolderWithTrailingBackslash_Works(string name)
     {
@@ -177,7 +177,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.True(File.Exists(Path.Combine(Out, "a.tif")));
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(false)]
     [InlineData(true)]
     public void Bat_NameValueParams_AreNotSplitByCmd(bool quoted)
@@ -191,7 +191,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(p => Path.GetFileName(p)!).ToArray());
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(false)]
     [InlineData(true)]
     public void Bat_ResampleWithPpi_IsKept_AndRejectedWithTheSettingsMessage(bool quoted)
@@ -209,7 +209,7 @@ public sealed class AeScriptTests : AppRootTestBase
         }
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(false)]
     [InlineData(true)]
     public void Bat_NameValueParams_WithOtherParamBetween(bool quoted)
@@ -222,7 +222,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(p => Path.GetFileName(p)!).ToArray());
     }
 
-    [Fact]
+    [WindowsFact]
     public void Bat_ResampleWithoutPpi_DoesNotSwallowNextParam()
     {
         foreach (var name in new[] { "resample", "upsample" })
@@ -238,7 +238,7 @@ public sealed class AeScriptTests : AppRootTestBase
         }
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_ExeCannotStart_Returns2(string name)
     {
@@ -251,7 +251,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Equal(2, exit);
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(ScriptsWithExitCodes))]
     public void Script_ExitCodeOtherThan0Or1_BecomesError(string name, int exeExit, int expected)
     {

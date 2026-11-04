@@ -174,8 +174,25 @@ public sealed class JpegTranTests : IDisposable
         var ex = await Assert.ThrowsAsync<JpegTranException>(
             () => JpegTran.ToBaselineAsync(input, Path.Combine(_dir, "out.jpg"), missing, CancellationToken.None));
 
-        Assert.Contains(@"build\fetch-jpegtran.ps1", ex.Message);
+        Assert.Contains(OperatingSystem.IsWindows() ? @"build\fetch-jpegtran.ps1" : "build/fetch-jpegtran.sh", ex.Message);
         Assert.Contains(missing, ex.Message);
         Assert.False(File.Exists(Path.Combine(_dir, "out.jpg")));
+    }
+
+    [Fact]
+    public void JpegTran_ExeName_PerOs()
+    {
+        Assert.Equal("jpegtran.exe", JpegTran.ExeFileName(windows: true));
+        Assert.Equal("jpegtran", JpegTran.ExeFileName(windows: false));
+        Assert.Equal(Path.Combine(AppContext.BaseDirectory, "tools", "jpegtran", OperatingSystem.IsWindows() ? "jpegtran.exe" : "jpegtran"),
+            JpegTran.ExePath);
+        Assert.True(File.Exists(JpegTran.ExePath), $"{JpegTran.ExePath} was not copied next to the tests");
+    }
+
+    [Fact]
+    public void MissingExeMessage_NamesTheFetchScriptOfThisOs()
+    {
+        Assert.Equal(@"jpegtran.exe not found at 'x'. Run build\fetch-jpegtran.ps1 and rebuild.", JpegTran.MissingExeMessage("x", windows: true));
+        Assert.Equal("jpegtran not found at 'x'. Run build/fetch-jpegtran.sh and rebuild.", JpegTran.MissingExeMessage("x", windows: false));
     }
 }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using Illux.ImageTool.Runtime;
@@ -87,7 +88,8 @@ public sealed class UpdaterTests : AppRootTestBase
         TimeProvider? time = null,
         ILogger? log = null,
         bool trust = true,
-        long maxInstallerBytes = Updater.DefaultMaxInstallerBytes)
+        long maxInstallerBytes = Updater.DefaultMaxInstallerBytes,
+        string? downloadDirectory = null)
     {
         var handler = new FakeHandler(respond);
         var http = new HttpClient(handler);
@@ -98,7 +100,7 @@ public sealed class UpdaterTests : AppRootTestBase
             (path, args) => { rig!.Started.Add((path, args)); return rig.OnStart((path, args)); },
             log ?? NullLogger.Instance,
             timeProvider: time,
-            downloadDirectory: DownloadDir,
+            downloadDirectory: downloadDirectory ?? DownloadDir,
             recheckInterval: recheck ?? TimeSpan.FromMilliseconds(10),
             giveUpAfter: giveUp ?? TimeSpan.FromSeconds(5),
             trustDownloadDirectory: trust,
@@ -662,7 +664,8 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Equal(Path.Combine(AppRoot, "update", "IlluxImageTool-Setup-1.2.3.exe"), startedPath);
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public void DownloadDirectory_OnlySystemAndAdministratorsAreTrustedOwners()
     {
         using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
@@ -754,6 +757,135 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Equal(UpdatePhase.Failed, UpdateStateStore.Load().Phase);
     }
 
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    private string MacUpdateDir => Path.Combine(AppRoot, "update");
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_CreatedBelowRoot_OwnerOnly()
+    {
+        Directory.CreateDirectory(AppRoot);
+
+        Assert.Null(DownloadDirectory.PrepareTrusted(MacUpdateDir));
+
+        Assert.True(Directory.Exists(MacUpdateDir));
+        Assert.Equal(OwnerOnly, File.GetUnixFileMode(MacUpdateDir));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_ExistingFolderIsTightened()
+    {
+        Directory.CreateDirectory(MacUpdateDir);
+        File.SetUnixFileMode(MacUpdateDir, OwnerOnly | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+
+        Assert.Null(DownloadDirectory.PrepareTrusted(MacUpdateDir));
+
+        Assert.Equal(OwnerOnly, File.GetUnixFileMode(MacUpdateDir));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_FolderIsALink_IsRefused()
+    {
+        var target = Directory.CreateDirectory(Path.Combine(Dir, "elsewhere")).FullName;
+        var targetMode = File.GetUnixFileMode(target);
+        Directory.CreateDirectory(AppRoot);
+        Directory.CreateSymbolicLink(MacUpdateDir, target);
+
+        var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir);
+
+        Assert.NotNull(problem);
+        Assert.Contains("link", problem);
+        Assert.Equal(targetMode, File.GetUnixFileMode(target)); // the link's target is not re-permissioned
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_RootIsALink_IsRefused()
+    {
+        var target = Directory.CreateDirectory(Path.Combine(Dir, "elsewhere")).FullName;
+        Directory.CreateSymbolicLink(AppRoot, target);
+
+        var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir);
+
+        Assert.NotNull(problem);
+        Assert.Contains("link", problem);
+        Assert.False(Directory.Exists(Path.Combine(target, "update")));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_BelowALinkBelowRoot_IsRefused()
+    {
+        var target = Directory.CreateDirectory(Path.Combine(Dir, "elsewhere")).FullName;
+        Directory.CreateDirectory(AppRoot);
+        Directory.CreateSymbolicLink(Path.Combine(AppRoot, "sub"), target);
+
+        var problem = DownloadDirectory.PrepareTrusted(Path.Combine(AppRoot, "sub", "update"));
+
+        Assert.NotNull(problem);
+        Assert.Contains("link", problem);
+        Assert.False(Directory.Exists(Path.Combine(target, "update")));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_GroupOrOtherWritable_IsRefused()
+    {
+        Directory.CreateDirectory(MacUpdateDir);
+        File.SetUnixFileMode(AppRoot, OwnerOnly | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute);
+        Assert.Contains("writable", DownloadDirectory.PrepareTrusted(MacUpdateDir));
+
+        File.SetUnixFileMode(AppRoot, OwnerOnly);
+        File.SetUnixFileMode(MacUpdateDir, OwnerOnly | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+        Assert.Contains("writable", DownloadDirectory.PrepareTrusted(MacUpdateDir));
+        Assert.Equal(OwnerOnly | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute, File.GetUnixFileMode(MacUpdateDir)); // refused, not repaired
+    }
+
+    [MacFact]
+    public void DownloadDirectory_Mac_OutsideRoot_IsRefused()
+    {
+        var problem = DownloadDirectory.PrepareTrusted(DownloadDir);
+
+        Assert.NotNull(problem);
+        Assert.Contains("not below", problem);
+        Assert.False(Directory.Exists(DownloadDir));
+    }
+
+    [MacFact]
+    public async Task Install_Mac_DefaultSecurity_LinkedFolder_Refused_NothingDownloadedOrDeleted()
+    {
+        var target = Path.Combine(Dir, "elsewhere");
+        Directory.CreateDirectory(target);
+        var victim = Path.Combine(target, "IlluxImageTool-Setup-1.2.3.exe");
+        File.WriteAllText(victim, "someone else's file");
+        Directory.CreateDirectory(AppRoot);
+        Directory.CreateSymbolicLink(MacUpdateDir, target);
+        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir);
+
+        var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
+
+        Assert.Equal(InstallOutcome.Failed, outcome);
+        Assert.Empty(rig.Handler.Requests);
+        Assert.Empty(rig.Started);
+        Assert.Equal("someone else's file", File.ReadAllText(victim));
+        Assert.Contains("link", UpdateStateStore.Load().Error);
+    }
+
+    [MacFact]
+    public async Task Install_Mac_DefaultSecurity_SafeFolder_Starts()
+    {
+        Directory.CreateDirectory(AppRoot);
+        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir);
+
+        var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
+
+        Assert.Equal(InstallOutcome.Started, outcome);
+        Assert.Single(rig.Started);
+    }
+
     [Fact]
     public async Task Install_StartThrowsCancellation_FlagStillRemoved()
     {
@@ -811,7 +943,8 @@ public sealed class UpdaterTests : AppRootTestBase
             Entries.Add((logLevel, formatter(state, exception)));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task Check_StateNotWritable_OneClearError()
     {
         // What a named service account that is not a local Administrator meets: Root is SYSTEM/Administrators only.

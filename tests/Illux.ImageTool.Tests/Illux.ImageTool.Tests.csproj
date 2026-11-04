@@ -1,7 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    On Windows the tests also cover the WinForms settings window (net10.0-windows). Elsewhere (macOS) they target plain
+    net10.0 without the settings window and its tests; Windows-only tests skip themselves ([WindowsFact]).
+    -p:IlluxWindowsTests=false builds the macOS shape on Windows (for checking CA1416 warnings).
+  -->
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <IlluxWindowsTests Condition="'$(IlluxWindowsTests)' == ''">$([MSBuild]::IsOSPlatform('Windows'))</IlluxWindowsTests>
+    <TargetFramework Condition="'$(IlluxWindowsTests)' == 'true'">net10.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(IlluxWindowsTests)' != 'true'">net10.0</TargetFramework>
     <RootNamespace>Illux.ImageTool.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
@@ -22,7 +29,14 @@
     <ProjectReference Include="..\..\src\Illux.ImageTool.Core\Illux.ImageTool.Core.csproj" />
     <ProjectReference Include="..\..\src\Illux.ImageTool.Cli\Illux.ImageTool.Cli.csproj" />
     <ProjectReference Include="..\..\src\Illux.ImageTool.Watcher\Illux.ImageTool.Watcher.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IlluxWindowsTests)' == 'true'">
     <ProjectReference Include="..\..\src\Illux.ImageTool.Settings\Illux.ImageTool.Settings.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(IlluxWindowsTests)' != 'true'">
+    <Compile Remove="SettingsTests.cs;SettingsHardeningTests.cs" />
   </ItemGroup>
 
 </Project>

@@ -25,6 +25,7 @@ public sealed class FolderScanner
     private static readonly TimeSpan LockedLogAfter = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan StaleTempAge = TimeSpan.FromHours(1);
     private static readonly string[] IgnoredExtensions = [".tmp", ".part", ".crdownload"];
+    private static int _staleTempCleanupNoticeLogged;
 
     private readonly WatchedFolder _folder;
     private readonly ILogger _log;
@@ -194,10 +195,17 @@ public sealed class FolderScanner
     /// in the middle of a file (for example by an installer after its time-out) leaves one behind. Only a folder the tool
     /// made itself (owner and protected ACL, see <see cref="TempFolder"/>) is removed, and no link is followed (R46);
     /// anything else is logged and left for an administrator. Best effort.
+    /// On macOS this is disabled (no recursive deletes as root in folders users may write to); that is logged once per
+    /// process at Information.
     /// </summary>
     public void RemoveStaleTempFolders()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            if (Interlocked.Exchange(ref _staleTempCleanupNoticeLogged, 1) == 0)
+                _log.LogInformation("Unfinished temporary folders ({Prefix}*) in Out are not removed automatically on macOS; an administrator may remove old ones.", FileProcessor.TempPrefix);
+            return;
+        }
         try
         {
             var outFolder = new DirectoryInfo(_folder.Out);
