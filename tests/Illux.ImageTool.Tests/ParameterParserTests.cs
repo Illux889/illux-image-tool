@@ -107,7 +107,6 @@ public class ParameterParserTests
     }
 
     [Theory]
-    [InlineData("upsample=2401")]
     [InlineData("quality=101")]
     [InlineData("quality=0")]
     [InlineData("output=png")]
@@ -120,6 +119,15 @@ public class ParameterParserTests
     public void Parse_BadValues_Throw(string parameter)
     {
         Assert.Throws<ParameterException>(() => ParameterParser.Parse([parameter]));
+    }
+
+    [Theory]
+    [InlineData("upsample=2401")]
+    [InlineData("resample=300")]
+    public void Parse_PpiInTicket_SaysItIsSetInSettings(string parameter)
+    {
+        var ex = Assert.Throws<ParameterException>(() => ParameterParser.Parse([parameter]));
+        Assert.Equal("ppi is set in Illux Image Tool Settings (Resolution rules), not in the AE ticket", ex.Message);
     }
 
     [Fact]

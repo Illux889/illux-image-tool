@@ -96,6 +96,21 @@ public sealed class BatchTests : IDisposable
     }
 
     [Fact]
+    public async Task Batch_DownscaledImage_PdfKeepsPhysicalSize()
+    {
+        // 60 x 40 px at 600 ppi is above the 350 ppi limit of the small rule: resampled to 300 ppi (30 x 20 px).
+        // The physical size is kept, so the page stays 7.2 x 4.8 pt.
+        var input = Jpeg("d.jpg", ppi: 600);
+
+        var status = await Run([input], Out, new StringWriter(), ProcessingOptions.Default with { Output = OutputMode.Both });
+
+        Assert.Equal(Status.Ok, status);
+        using (var written = new MagickImage(Path.Combine(Out, "d.jpg"))) Assert.Equal(30u, written.Width);
+        var raw = System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(Path.Combine(Out, "d.pdf")));
+        Assert.Contains("/MediaBox [0 0 7.2 4.8]", raw);
+    }
+
+    [Fact]
     public async Task Batch_OutputBoth_WritesImageAndPdf()
     {
         var input = Jpeg("a.jpg");

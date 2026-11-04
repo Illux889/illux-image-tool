@@ -62,7 +62,7 @@ Write each parameter on its own line. They are not case sensitive.
 
 The ppi comes from **Settings → Resolution rules**, the same for Automation Engine and the watched folders. Changes apply to the next run; nothing needs restarting.
 
-The print size of an image is its pixels ÷ ppi (per side, in cm). The rules are checked from top to bottom and the first rule the print size fits is used. If the image's ppi is inside that rule's "leave alone" range it is not resampled; otherwise it is resampled to the rule's target ppi and keeps its print size. Width and height are checked separately: only a side outside the range is resampled.
+The print size of an image in cm is pixels ÷ ppi × 2.54 (per side). The rules are checked from top to bottom and the first rule the print size fits is used. If the image's ppi is inside that rule's "leave alone" range it is not resampled; otherwise it is resampled to the rule's target ppi and keeps its print size. Width and height are checked separately: only a side outside the range is resampled.
 
 Defaults:
 
@@ -71,7 +71,7 @@ Defaults:
 | Small | Fits within 40 × 30 cm (either way round) | 300 ppi | 250–350 ppi |
 | Large | All other images | 200 ppi | 150–250 ppi |
 
-The task log names the rule, for example `300→200 ppi (rule "Large": 62.3 × 41.5 cm; 7360×4912 → 4907×3275, bicubic)`.
+The task log names the rule, for example `300→200 ppi (rule "Large": 62.3 × 41.6 cm; 7360×4912 → 4907×3275, bicubic)`.
 
 If the rules in `config.json` are not valid, the tool uses the defaults above and the task ends with a Warning that says so.
 

@@ -38,7 +38,7 @@ public static class CliHelp
         operation on or off. An unknown parameter is an error.
 
         Resolution rules (Illux Image Tool Settings; checked top to bottom, the first that fits is used):
-        the print size is pixels / ppi. Defaults:
+        the print size in cm is pixels / ppi x 2.54. Defaults:
           Small   fits within 40 x 30 cm   target 300 ppi, left alone at 250-350 ppi
           Large   all other images         target 200 ppi, left alone at 150-250 ppi
         The ppi cannot be set in a parameter: resample=N is an error.

@@ -110,38 +110,21 @@ jobs:
           echo "version=0.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "upgrade_version=0.0.$((GITHUB_RUN_NUMBER + 1))" >> "$GITHUB_OUTPUT"
 
-      - name: Build packages
-        env:
-          VERSION: ${{ steps.versions.outputs.version }}
-          UPGRADE_VERSION: ${{ steps.versions.outputs.upgrade_version }}
-        run: |
-          ./installer/macos/build-pkg.sh "$VERSION"
-          ./installer/macos/build-pkg.sh "$UPGRADE_VERSION"
-
-      - name: Verify checksum file
-        working-directory: artifacts/installer
-        env:
-          VERSION: ${{ steps.versions.outputs.version }}
-        run: shasum -a 256 -c "IlluxImageTool-$VERSION-macOS-arm64.pkg.sha256"
+      - name: Build, check and smoke test the packages
+        uses: ./.github/actions/macos-package
+        with:
+          version: ${{ steps.versions.outputs.version }}
+          upgrade-version: ${{ steps.versions.outputs.upgrade_version }}
 
       - name: Upload package
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64
           path: |
             artifacts/installer/IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64.pkg
             artifacts/installer/IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64.pkg.sha256
-          if-no-files-found: error
-
-      - name: Smoke test (sudo on a throw-away runner)
-        env:
-          VERSION: ${{ steps.versions.outputs.version }}
-          UPGRADE_VERSION: ${{ steps.versions.outputs.upgrade_version }}
-        run: >
-          ./build/smoke-test-macos.sh
-          "artifacts/installer/IlluxImageTool-$VERSION-macOS-arm64.pkg"
-          "artifacts/installer/IlluxImageTool-$UPGRADE_VERSION-macOS-arm64.pkg"
-          "$VERSION" "$UPGRADE_VERSION" "$RUNNER_TEMP/smoke"
+          if-no-files-found: ignore
 
       - name: Upload smoke-test logs
         if: always()
