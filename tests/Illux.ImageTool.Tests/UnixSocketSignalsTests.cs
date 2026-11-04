@@ -52,13 +52,28 @@ public sealed class UnixSocketSignalsTests : IDisposable
 
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
 
-    /// <summary>Sends raw bytes the way any local process could, then closes.</summary>
+    /// <summary>
+    /// Sends raw bytes the way any local process could, then closes. macOS refuses a connection while the listen queue
+    /// is full, which a burst of test connections can reach before the daemon (one at a time) has taken them: retried.
+    /// </summary>
     private void SendRaw(byte[] bytes)
     {
-        using var client = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        client.Connect(new UnixDomainSocketEndPoint(SocketPath));
-        client.Send(bytes);
-        // Closing ends the request; no shutdown, which fails when the daemon already closed its end.
+        var watch = Stopwatch.StartNew();
+        while (true)
+        {
+            using var client = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            try
+            {
+                client.Connect(new UnixDomainSocketEndPoint(SocketPath));
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionRefused && watch.Elapsed < Wait)
+            {
+                Thread.Sleep(20);
+                continue;
+            }
+            client.Send(bytes);
+            return; // closing ends the request; no shutdown, which fails when the daemon already closed its end
+        }
     }
 
     private void SendRaw(string text) => SendRaw(Encoding.UTF8.GetBytes(text));
