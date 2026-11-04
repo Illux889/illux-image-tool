@@ -12,8 +12,10 @@ namespace Illux.ImageTool.Batch;
 /// get in the output folder itself (its "files" entries are copied as inherit-only), so an output keeps the output
 /// folder's permissions after it is moved into place. The watcher (SYSTEM) only removes an old temp folder that still
 /// looks like this, and never follows a link while doing so.
-/// On macOS the folder is created with mode 0700 (only the account running the tool may enter or change it), and the
-/// watcher never removes old ones (see <see cref="Watch.FolderScanner.RemoveStaleTempFolders"/>).
+/// On macOS only the command-line tool uses it (as the user who runs it): the folder is created with mode 0700 (only that
+/// account may enter or change it) and old ones are never removed automatically. The macOS watched folders do not use it
+/// at all: the folders job stages each file in its private <c>folder-work/</c> and renames the result into Out
+/// (<see cref="FileProcessor"/>, V15 and final review C2), so no temporary folder is ever made in Out there.
 /// </summary>
 internal static class TempFolder
 {

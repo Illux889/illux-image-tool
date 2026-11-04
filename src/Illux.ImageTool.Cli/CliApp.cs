@@ -42,7 +42,7 @@ public static class CliApp
         }
         catch (Exception ex) when (ex is UsageException or ParameterException)
         {
-            stdout.WriteLine($"ERROR: {ex.Message}");
+            stdout.WriteLine($"ERROR: {LogText.Clean(ex.Message)}");
             return (int)Status.Error;
         }
         catch (OperationCanceledException)
@@ -53,7 +53,7 @@ public static class CliApp
         catch (Exception ex)
         {
             LogFile.Write(ex);
-            try { stdout.WriteLine($"ERROR: {ex.Message}"); } catch (Exception) { /* stdout is gone; the exit code still tells AE */ }
+            try { stdout.WriteLine($"ERROR: {LogText.Clean(ex.Message)}"); } catch (Exception) { /* stdout is gone; the exit code still tells AE */ }
             return (int)Status.Error;
         }
     }
@@ -66,8 +66,8 @@ public static class CliApp
         }
 
         // First two lines of the AE task log: they show what AE really passed as %1 and %2.
-        stdout.WriteLine($"Inputs: {args[1]}");
-        stdout.WriteLine($"Output folder: {args[2]}");
+        stdout.WriteLine($"Inputs: {LogText.Clean(args[1])}");
+        stdout.WriteLine($"Output folder: {LogText.Clean(args[2])}");
 
         var inputs = InputListParser.Split(args[1]);
         var options = ParameterParser.Parse(args.Skip(3));

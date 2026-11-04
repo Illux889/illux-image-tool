@@ -714,6 +714,178 @@ public sealed class WatcherTests : IDisposable
     public void OriginalsOrDefault_InAtARoot_IsAFullPath(string inFolder, string expected) =>
         Assert.Equal(expected, new WatchedFolder { In = inFolder }.OriginalsOrDefault);
 
+    // ----- final review: the folders job on folders others may write to (C1, C2, I1, M5) -----
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "mkfifo", SetLastError = true)]
+    private static extern int MakeFifo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string path, ushort mode);
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int HardLink(
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string existing,
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string link);
+
+    [MacFact]
+    public async Task Scan_OnMac_FifoInIn_BlocksNothing_AndIsLeftAlone()
+    {
+        Directory.CreateDirectory(In);
+        Assert.Equal(0, MakeFifo(Path.Combine(In, "pipe.jpg"), 0b110_110_110));
+        Jpeg("z.jpg", ppi: 300);
+        var scanner = Scanner();
+
+        var scans = Task.Run(() => ScanTwice(scanner));
+        Assert.True(scans.Wait(TimeSpan.FromSeconds(60)), "a FIFO in In blocked the scan");
+        await scans;
+
+        Assert.Equal(["z.jpg"], Names(Out));
+        Assert.Equal(["pipe.jpg"], Names(In));
+        Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_LinkInIn_IsSkipped()
+    {
+        var outside = TestImages.Write(Path.Combine(_dir, "outside"), "secret.jpg", 60, 40, ColorSpace.sRGB, 8, 300);
+        Directory.CreateDirectory(In);
+        File.CreateSymbolicLink(Path.Combine(In, "link.jpg"), outside);
+        Assert.Equal(0, HardLink(outside, Path.Combine(In, "hard.jpg"))); // a regular file: processed as the account may read it
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal(["hard.jpg"], Names(Out));
+        Assert.Equal(["link.jpg"], Names(In));
+        Assert.True(File.Exists(outside));
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_WarningsLogThatIsAHardLink_IsNotWrittenThrough()
+    {
+        // C1: someone plants a second name of a file the folder account must not change in place of _warnings.log.
+        var victim = Path.Combine(_dir, "victim.txt");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(victim, "keep");
+        Directory.CreateDirectory(Out);
+        Assert.Equal(0, HardLink(victim, Path.Combine(Out, "_warnings.log")));
+        Jpeg("a.jpg", ppi: null); // no ppi: a Warning, which is appended to _warnings.log
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal("keep", File.ReadAllText(victim));
+        Assert.Equal(["a.jpg"], Names(Originals)); // the file itself is done all the same
+        Assert.Contains(_log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("could not write _warnings.log"));
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_FileNameWithControlCharacters_IsLoggedOnOneLine()
+    {
+        Jpeg("a\nforged line.jpg", ppi: null);
+
+        await ScanTwice(Scanner());
+
+        var warnings = File.ReadAllText(Path.Combine(Out, "_warnings.log"));
+        Assert.Contains(" aforged line.jpg", warnings);
+        Assert.DoesNotContain(warnings.Split('\n'), line => line.StartsWith("forged", StringComparison.Ordinal));
+        Assert.All(_log.Entries, e => Assert.DoesNotContain('\n', e.Message));
+    }
+
+    private string StagingFolder()
+    {
+        var staging = Path.Combine(_dir, "folder-work");
+        Directory.CreateDirectory(staging);
+        if (OperatingSystem.IsMacOS()) File.SetUnixFileMode(staging, (UnixFileMode)0b111_000_000);
+        return staging;
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_WithStagingFolder_NoTempFolderInOut_NothingLeftInStaging()
+    {
+        // C2: the output is made in the private work folder and moved into Out; Out never holds a temp folder.
+        Jpeg("a.jpg", ppi: 300);
+        var staging = StagingFolder();
+        var scanner = new FolderScanner(Folder(), _log, _clock, () => false, stagingFolder: staging);
+        string[]? stagedWhileVerifying = null;
+        scanner.OutputVerifier = outputs =>
+        {
+            stagedWhileVerifying = Names(staging);
+            return FolderScanner.VerifyOutputs(outputs);
+        };
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(["a.jpg"], Names(Out));
+        Assert.Empty(stagedWhileVerifying!);
+        Assert.Empty(Names(staging));
+        Assert.Equal(["a.jpg"], Names(Originals));
+    }
+
+    [MacFact]
+    public void RemoveStaleTempFolders_OnMac_WithStagingFolder_RemovesOnlyOldStagingFoldersThere()
+    {
+        var staging = StagingFolder();
+        var old = Path.Combine(staging, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(old);
+        File.WriteAllText(Path.Combine(old, "half.jpg"), "partial");
+        Age(old);
+        var fresh = Path.Combine(staging, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(fresh);
+        var magickTemp = Path.Combine(staging, "IlluxImageTool");
+        Directory.CreateDirectory(magickTemp);
+        Age(magickTemp);
+        var inOut = ToolTempFolder(); // Out is never touched on macOS
+        Age(inOut);
+
+        new FolderScanner(Folder(), _log, _clock, () => false, stagingFolder: staging).RemoveStaleTempFolders();
+
+        Assert.False(Directory.Exists(old));
+        Assert.True(Directory.Exists(fresh));
+        Assert.True(Directory.Exists(magickTemp));
+        Assert.True(Directory.Exists(inOut));
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public async Task Scan_OnMac_StagingFolderOthersMayWrite_FileGoesToError()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        var staging = StagingFolder();
+        File.SetUnixFileMode(staging, (UnixFileMode)0b111_111_111);
+
+        await ScanTwice(new FolderScanner(Folder(), _log, _clock, () => false, stagingFolder: staging));
+
+        Assert.Empty(Names(Out));
+        Assert.Equal(["a.jpg", "a.jpg.error.txt"], Names(Error));
+        Assert.Contains("writable by group or others", File.ReadAllText(Path.Combine(Error, "a.jpg.error.txt")));
+        Assert.Empty(Names(staging));
+    }
+
+    [Fact]
+    public void MoveClash_IsRecognisedAsNameTaken()
+    {
+        // M5: the name-clash retry of the moves to Originals and Error must see "already exists" on every system.
+        Directory.CreateDirectory(_dir);
+        var a = Path.Combine(_dir, "a.jpg");
+        var b = Path.Combine(_dir, "b.jpg");
+        File.WriteAllText(a, "a");
+        File.WriteAllText(b, "b");
+
+        var ex = Assert.ThrowsAny<IOException>(() => File.Move(a, b, overwrite: false));
+
+        Assert.True(FolderScanner.IsAlreadyExists(ex, b));
+        Assert.False(FolderScanner.IsAlreadyExists(new IOException("disk full"), Path.Combine(_dir, "free.jpg")));
+    }
+
+    [FactWhenFileSymlinksWork]
+    public async Task Scan_OriginalsNameTakenByADanglingLink_GetsTheNextFreeName()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        Directory.CreateDirectory(Originals);
+        File.CreateSymbolicLink(Path.Combine(Originals, "a.jpg"), Path.Combine(_dir, "nowhere.jpg"));
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal(["a (2).jpg", "a.jpg"], Names(Originals));
+        Assert.False(File.Exists(Path.Combine(_dir, "nowhere.jpg")));
+    }
+
     [MacFact]
     public void OriginalsOrDefault_OnMac_IsSiblingOfIn()
     {

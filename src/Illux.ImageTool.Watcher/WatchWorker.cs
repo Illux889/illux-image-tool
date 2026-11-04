@@ -25,6 +25,12 @@ public sealed class WatchWorkerOptions
     /// a file, so the updater in the root job sees the work (a lock in <c>runs/</c>). Null: only <see cref="WatchWorker.Busy"/>.
     /// </summary>
     public Func<IDisposable?>? RunMarker { get; init; }
+
+    /// <summary>
+    /// macOS folders job (V15, final review C2): the account's private work folder in which each file is staged, instead
+    /// of a temporary folder in Out. Null: the temporary folder in Out (Windows, R46).
+    /// </summary>
+    public string? StagingFolder { get; init; }
 }
 
 /// <summary>
@@ -203,7 +209,8 @@ public sealed class WatchWorker : BackgroundService
                 try
                 {
                     var scanner = _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(
-                        folder, _log, isUpdating: _options.IsUpdating, rules: () => _config.ResolutionRules, runMarker: _options.RunMarker);
+                        folder, _log, isUpdating: _options.IsUpdating, rules: () => _config.ResolutionRules, runMarker: _options.RunMarker,
+                        stagingFolder: _options.StagingFolder);
                     scanner.RemoveStaleTempFolders();
                     next.Add(new ScannerEntry(key, folder.Name, scanner));
                 }

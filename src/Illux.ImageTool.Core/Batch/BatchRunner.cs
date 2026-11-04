@@ -1,4 +1,5 @@
 using Illux.ImageTool.Options;
+using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Batch;
 
@@ -18,7 +19,7 @@ public static class BatchRunner
         var worst = Status.Ok;
         foreach (var warning in warnings ?? [])
         {
-            log.WriteLine($"WARNING: {warning}");
+            log.WriteLine($"WARNING: {LogText.Clean(warning)}");
             worst = Status.Warning;
         }
 
@@ -65,6 +66,7 @@ public static class BatchRunner
     {
         var prefix = result.Status switch { Status.Error => "ERROR: ", Status.Warning => "WARNING: ", _ => "" };
         var messages = result.Messages.Count == 0 ? "OK" : string.Join("; ", result.Messages);
-        return $"{prefix}{Path.GetFileName(result.Input)}: {messages}";
+        // File names (and messages quoting them) may hold control characters: one line per file all the same.
+        return LogText.Clean($"{prefix}{Path.GetFileName(result.Input)}: {messages}");
     }
 }

@@ -15,7 +15,8 @@
 #    user), which folder-account names.
 # 3. Writes config.json in place as the user (as the settings app does) with a watched folder below /Users/Shared and
 #    drops a 20 x 15 cm, 150 ppi JPEG: the output is 300 ppi, 2362 x 1772 px (default rule "Small"), owned by the
-#    folder account.
+#    folder account. Final review: a hard link to a root-owned file planted as Out/_warnings.log is not written through,
+#    a FIFO in In blocks nothing, and /tmp/IlluxImageTool squatted as a file before the install changes nothing.
 # 4. Upgrades the way the daemon does: plants updating.flag and an "Installing" update state, then runs the updater's
 #    exact command line (sh -c 'exec /usr/sbin/installer ...') as a child of a throw-away launchd job that carries the
 #    daemon's label and AbandonProcessGroup, so the package's preinstall boots out the installer's parent job. The
@@ -131,6 +132,10 @@ mkdir -p "$WORK"
 # =====================================================================================================================
 section 'Install over an untrusted data folder'
 SYSTEM_MODES_BEFORE="$(system_folder_modes)"
+# I2: ImageMagick's temp folder used to be /tmp/IlluxImageTool; any user could squat that name (here: a file).
+SQUAT=/tmp/IlluxImageTool
+if [[ ! -e "$SQUAT" && ! -L "$SQUAT" ]]; then printf 'squatted\n' > "$SQUAT"; fi
+check "$SQUAT was squatted as a file before the install" test -f "$SQUAT" -a ! -L "$SQUAT"
 # A data folder that someone other than root controls (as a user who created it before the install could).
 sudo mkdir -p "$ROOT"
 sudo chown "$(id -u)" "$ROOT"
@@ -315,6 +320,39 @@ drop_and_check print-20x15cm-150ppi.jpg 'after install'
 check_eq 'Originals was made by the folders job (folder account)' "$ME" "$(stat -f %Su "$WATCH/Originals")"
 check 'the root job did no watched-folder work' not log_has 'Watched folder'
 check 'the root job runs no watcher loop' not log_has 'Watcher started'
+check "the squatted $SQUAT changed nothing (still the planted file)" test -f "$SQUAT" -a ! -L "$SQUAT"
+check_eq "ImageMagick's temp folder is the folders job's own" "$ME:$(id -gn) 0700" "$(owner_mode "$ROOT/folder-work/IlluxImageTool")"
+
+section 'Watched folder: planted links and FIFOs'
+# C1: a hard link in place of Out/_warnings.log to a file the runner may not write (root-owned, made for the test).
+VICTIM="$WORK/root-owned-victim"
+sudo sh -c 'printf "root only\n" > "$1" && chown root:wheel "$1" && chmod 0644 "$1"' sh "$VICTIM"
+rm -f "$WATCH/Out/_warnings.log"
+ln "$VICTIM" "$WATCH/Out/_warnings.log"
+check_eq 'a hard link to a root-owned file is planted as Out/_warnings.log' 2 "$(stat -f %l "$VICTIM")"
+VICTIM_HASH=$(sha "$VICTIM")
+# A PNG without a stored resolution: a Warning, which the folders job appends to _warnings.log.
+python3 -I - "$WORK/drop/no-ppi.png" <<'EOF'
+import struct, sys, zlib
+w, h = 120, 80
+rows = b''.join(b'\0' + bytes(v for x in range(w) for v in (x * 2, y * 3, 90)) for y in range(h))
+def chunk(kind, data):
+    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+png += chunk(b'IDAT', zlib.compress(rows, 6)) + chunk(b'IEND', b'')
+open(sys.argv[1], 'wb').write(png)
+EOF
+mv "$WORK/drop/no-ppi.png" "$WATCH/In/no-ppi.png"
+check 'the PNG without a resolution was converted' wait_until 120 test -f "$WATCH/Originals/no-ppi.png"
+check 'the folders job refused to append through the planted link' wait_until 30 folder_log_has 'could not write _warnings.log'
+check_eq 'the root-owned file behind the planted link is unchanged' "$VICTIM_HASH" "$(sha "$VICTIM")"
+check_eq 'the root-owned file is still root-owned' 'root:wheel 0644' "$(owner_mode "$VICTIM")"
+
+# I1: a FIFO in In must not hold up the folder.
+mkfifo "$WATCH/In/pipe.jpg"
+drop_and_check after-fifo.jpg 'with a FIFO in In'
+check 'the FIFO in In was left alone' test -p "$WATCH/In/pipe.jpg"
+rm -f "$WATCH/In/pipe.jpg"
 
 # =====================================================================================================================
 section 'Upgrade the way the daemon runs it'

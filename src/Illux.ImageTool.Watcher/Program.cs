@@ -64,7 +64,12 @@ try
             var log = sp.GetRequiredService<ILoggerFactory>().CreateLogger<WatchWorker>();
             // The macOS folders job: the updater runs in the root job and sees this work only through runs/ (R30).
             var runLock = role == WatcherRole.Folders ? new FolderRunLock(log) : null;
-            return new WatchWorker(log, new WatchWorkerOptions { RunMarker = runLock is null ? null : runLock.TryAcquire });
+            // There each file is also staged in the account's private folder-work/ instead of a temporary folder in Out.
+            return new WatchWorker(log, new WatchWorkerOptions
+            {
+                RunMarker = runLock is null ? null : runLock.TryAcquire,
+                StagingFolder = role == WatcherRole.Folders ? AppPaths.FolderWorkDir : null,
+            });
         });
         builder.Services.AddHostedService(sp => sp.GetRequiredService<WatchWorker>());
     }
@@ -91,7 +96,12 @@ try
     using var host = builder.Build();
     var startupLog = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
     startupLog.LogInformation("Illux Image Tool watcher {Version} is running (role: {Role})", WatcherInfo.CurrentVersion, WatcherRoles.Name(role));
-    if (WatcherRoles.RunsFolders(role)) MagickSetup.Configure();
+    if (WatcherRoles.RunsFolders(role))
+    {
+        MagickSetup.Configure();
+        // I2: said once here; every file is then refused with the same reason until it is fixed.
+        if (MagickSetup.TempDirectoryProblem() is { } tempProblem) startupLog.LogError("{Problem}", tempProblem);
+    }
     if (WatcherRoles.RunsUpdates(role)) StaleUpdatingFlag.RemoveIfStale(TimeProvider.System, StaleUpdatingFlag.IsInstallerRunning, startupLog);
     await host.RunAsync();
     return 0;

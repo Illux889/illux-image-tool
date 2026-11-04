@@ -83,7 +83,6 @@ internal static class DownloadDirectory
     }
 
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
-    private const UnixFileMode GroupOrOtherWrite = UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
 
     [UnsupportedOSPlatform("windows")]
     private static string? PrepareTrustedUnix(string directory, string root, uint owner)
@@ -120,15 +119,12 @@ internal static class DownloadDirectory
 
         foreach (var path in chain)
         {
-            var d = new DirectoryInfo(path);
-            if (!d.Exists && !LinkGuard.IsLink(path)) continue; // a dangling link does not "exist" but is still a link
-            if (LinkGuard.IsLink(d))
-                return $"The update folder '{directory}' is (or sits below) a link ('{d.FullName}'); refusing to use it.";
-            if ((d.UnixFileMode & GroupOrOtherWrite) != 0)
-                return $"The folder '{d.FullName}' on the way to the update folder is writable by group or others; refusing to use it.";
-            // lstat: the entry itself, so a link swapped in after the check above is not followed to its owner.
-            if (UnixNative.LStat(path) is { } status && status.Owner != owner)
-                return $"The folder '{d.FullName}' on the way to the update folder is owned by user {status.Owner}, not {owner}; refusing to use it.";
+            // lstat: the entry itself; a dangling link does not "exist" but is still there (and a link).
+            if (UnixNative.LStat(path) is not { } status) continue;
+            if (status.Type == UnixNative.SymbolicLinkType)
+                return $"The update folder '{directory}' is (or sits below) a link ('{path}'); refusing to use it.";
+            if (TrustedFolder.Problem(path, owner) is { } reason)
+                return $"The folder '{path}' on the way to the update folder {reason}; refusing to use it.";
         }
         return null;
     }

@@ -187,11 +187,10 @@ public sealed class UnixSocketSignals : IServiceSignals
     private static void RequireTrustedRoot(string root, uint owner)
     {
         if (UnixNative.LStat(root) is null) Directory.CreateDirectory(root);
-        var status = RequireFolder(root);
-        if (status.Owner != owner)
-            throw new UnauthorizedAccessException($"The folder '{root}' is owned by user {status.Owner}, not {owner}; the control socket is not opened.");
-        if ((status.Mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0)
-            throw new IOException($"The folder '{root}' is writable by group or others; the control socket is not opened.");
+        var (reason, wrongOwner) = TrustedFolder.Check(root, owner);
+        if (reason is null) return;
+        var message = $"The folder '{root}' {reason}; the control socket is not opened.";
+        throw wrongOwner ? new UnauthorizedAccessException(message) : new IOException(message);
     }
 
     /// <summary>

@@ -124,7 +124,7 @@ public static class ConfigStore
     {
         ArgumentNullException.ThrowIfNull(config);
         var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
-        if (UntrustedFolderReason(folder, expectedFolderOwner) is { } reason)
+        if (TrustedFolder.Problem(folder, expectedFolderOwner) is { } reason)
             throw new IOException($"'{folder}' {reason}; config.json is not saved. Reinstall Illux Image Tool to repair the folder.");
         var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Json));
         try
@@ -135,18 +135,5 @@ public static class ConfigStore
         {
             throw new IOException($"'{path}' is missing. Reinstall Illux Image Tool to create it.", ex);
         }
-    }
-
-    /// <summary>Why <paramref name="folder"/> is not a real folder owned by <paramref name="owner"/> and closed to group and others (lstat), or null.</summary>
-    [SupportedOSPlatform("macos")]
-    private static string? UntrustedFolderReason(string folder, uint owner)
-    {
-        var status = UnixNative.LStat(folder);
-        if (status is not { } s) return "does not exist";
-        if (s.Type == UnixNative.SymbolicLinkType) return "is a link";
-        if (s.Type != UnixNative.DirectoryType) return "is not a folder";
-        if (s.Owner != owner) return owner == RootUserId ? $"is owned by user {s.Owner}, not root" : $"is owned by user {s.Owner}, not {owner}";
-        if ((s.Mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0) return "may be written by group or others";
-        return null;
     }
 }

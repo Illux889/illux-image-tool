@@ -47,8 +47,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
             var text = new StringBuilder()
                 .Append(now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture))
                 .Append(" [").Append(Abbreviate(level)).Append("] ")
-                .Append(category).Append(": ").Append(message).AppendLine();
-            if (exception is not null) text.AppendLine(exception.ToString());
+                .Append(category).Append(": ").Append(LogText.Clean(message)).AppendLine();
+            // One entry per line: a file name with a line break cannot forge another entry (final review C1).
+            if (exception is not null) text.AppendLine(LogText.Indented(exception.ToString()));
 
             lock (_gate)
             {
