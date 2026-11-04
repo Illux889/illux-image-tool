@@ -193,6 +193,38 @@ public sealed class CliTests : AppRootTestBase
         Assert.Equal(before, File.ReadAllBytes(a));
     }
 
+    [MacFact]
+    public async Task Cli_Run_OnMac_OutIsASymlinkToTheInputFolder_ErrorAndOriginalUntouched()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+        var alias = Path.Combine(Dir, "alias");
+        Directory.CreateSymbolicLink(alias, In);
+
+        var (exit, output) = await Run("run", a, "--out", alias);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("output would replace the input file", output);
+        Assert.Equal(before, File.ReadAllBytes(a));
+    }
+
+    [MacFact]
+    public async Task Cli_Run_OnMac_OutputIsAHardLinkToTheInput_ErrorAndOriginalUntouched()
+    {
+        var a = ChangingJpeg("a.jpg");
+        var before = File.ReadAllBytes(a);
+        Directory.CreateDirectory(Out);
+        var link = System.Diagnostics.Process.Start("/bin/ln", [a, Path.Combine(Out, "a.jpg")])!;
+        link.WaitForExit();
+        Assert.Equal(0, link.ExitCode);
+
+        var (exit, output) = await Run("run", a, "--out", Out);
+
+        Assert.Equal(2, exit);
+        Assert.Contains("output would replace the input file", output);
+        Assert.Equal(before, File.ReadAllBytes(a));
+    }
+
     [Fact]
     public async Task Cli_Ae_OutEqualsInputFolder_OutputPdf_IsAllowed()
     {
