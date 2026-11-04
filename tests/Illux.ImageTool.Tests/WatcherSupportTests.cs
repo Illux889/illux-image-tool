@@ -251,3 +251,52 @@ public sealed class FileLoggerDefaultFolderTests : AppRootTestBase
         Assert.Empty(Directory.GetFiles(elsewhere));
     }
 }
+
+/// <summary>The watcher as launchd runs it on macOS: a plain process (no Windows service, no event log) that SIGTERM stops.</summary>
+[Collection("AppRoot")]
+public sealed class WatcherHostTests : AppRootTestBase
+{
+    [MacFact]
+    public void Watcher_OnMac_RunsAsPlainProcess_LogsToServiceLogs_AndStopsOnSigterm()
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "IlluxImageToolWatcher"))
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = "/",
+        };
+        psi.Environment["ILLUX_IMAGETOOL_ROOT"] = AppRoot;
+        using var watcher = System.Diagnostics.Process.Start(psi)!;
+        var output = watcher.StandardOutput.ReadToEndAsync();
+        var errors = watcher.StandardError.ReadToEndAsync();
+        try
+        {
+            // Not root here, so the control socket is refused (run/ is not owned by root) and that is logged.
+            string? log = null;
+            for (var waited = 0; waited < 30000 && log is null; waited += 200)
+            {
+                Thread.Sleep(200);
+                if (watcher.HasExited) Assert.Fail("the watcher stopped on its own: " + errors.Result);
+                var files = Directory.Exists(AppPaths.ServiceLogsDir) ? Directory.GetFiles(AppPaths.ServiceLogsDir, FileLoggerProvider.Prefix + "*.log") : [];
+                if (files.Length == 1)
+                {
+                    var text = File.ReadAllText(files[0]);
+                    if (text.Contains("control socket", StringComparison.Ordinal)) log = text;
+                }
+            }
+            Assert.NotNull(log);
+            Assert.Contains("not 0", log);
+
+            using (var kill = System.Diagnostics.Process.Start("kill", ["-TERM", watcher.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)]))
+                kill.WaitForExit();
+            Assert.True(watcher.WaitForExit(20000), "SIGTERM did not stop the watcher");
+            Assert.Equal(0, watcher.ExitCode);
+            Assert.DoesNotContain("Unhandled", errors.Result + output.Result, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!watcher.HasExited) watcher.Kill();
+        }
+    }
+}

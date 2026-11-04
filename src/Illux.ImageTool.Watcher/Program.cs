@@ -10,10 +10,13 @@ using Microsoft.Extensions.Logging.EventLog;
 
 try
 {
-    var builder = Host.CreateApplicationBuilder(args);
-
     // Windows: a Windows service. macOS: a plain process that launchd starts as the daemon and stops with SIGTERM
-    // (handled by the default console lifetime); no Windows service or event log APIs there.
+    // (handled by the default console lifetime); no Windows service or event log APIs there. launchd starts it in
+    // "/", so there the content root (where optional configuration files are read and watched) is the app's folder.
+    var builder = OperatingSystem.IsWindows()
+        ? Host.CreateApplicationBuilder(args)
+        : Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { Args = args, ContentRootPath = AppContext.BaseDirectory });
+
     if (OperatingSystem.IsWindows())
         builder.Services.AddWindowsService(options => options.ServiceName = WatcherInfo.ServiceName);
 
