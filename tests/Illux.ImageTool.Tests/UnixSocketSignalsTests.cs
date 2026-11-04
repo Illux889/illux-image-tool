@@ -58,7 +58,7 @@ public sealed class UnixSocketSignalsTests : IDisposable
         using var client = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         client.Connect(new UnixDomainSocketEndPoint(SocketPath));
         client.Send(bytes);
-        client.Shutdown(SocketShutdown.Send);
+        // Closing ends the request; no shutdown, which fails when the daemon already closed its end.
     }
 
     private void SendRaw(string text) => SendRaw(Encoding.UTF8.GetBytes(text));

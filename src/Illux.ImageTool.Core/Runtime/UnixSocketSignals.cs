@@ -103,7 +103,8 @@ public sealed class UnixSocketSignals : IServiceSignals
             using (var timeout = new CancellationTokenSource(RequestTimeout))
                 socket.ConnectAsync(new UnixDomainSocketEndPoint(path), timeout.Token).AsTask().GetAwaiter().GetResult();
             socket.Send(Encoding.ASCII.GetBytes(command + "\n"));
-            socket.Shutdown(SocketShutdown.Send);
+            // No shutdown: the daemon may already have closed its end after the line, which would make it fail.
+            // Closing the socket ends the request just as well.
         }
         catch (OperationCanceledException ex)
         {
