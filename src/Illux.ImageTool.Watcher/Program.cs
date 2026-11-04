@@ -39,11 +39,11 @@ try
         var loggers = sp.GetRequiredService<ILoggerFactory>();
         var http = new HttpClient();
         var updater = new Updater(
-            new ReleaseClient(http),
+            new ReleaseClient(http, ReleasePlatform.Current),
             http,
             WatcherInfo.CurrentVersion,
             () => sp.GetRequiredService<WatchWorker>().Busy,
-            (path, installerArgs) => Process.Start(new ProcessStartInfo(path, installerArgs) { UseShellExecute = false }),
+            Process.Start,
             loggers.CreateLogger<Updater>());
         return new UpdateWorker(updater, loggers.CreateLogger<UpdateWorker>());
     });

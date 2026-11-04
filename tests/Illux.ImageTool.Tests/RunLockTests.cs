@@ -114,6 +114,37 @@ public sealed class RunLockTests : AppRootTestBase
         return task.Result;
     }
 
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int HardLink(
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string existing,
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string link);
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void AnyActive_OnMac_HardLinkNamedLikeALock_IsIgnoredAndNeverDeleted()
+    {
+        // A hard link in the world-writable runs/ to someone else's file is not a lock of ours: a lock a run made has
+        // exactly one name.
+        Directory.CreateDirectory(AppPaths.RunsDir);
+        var original = Path.Combine(Dir, "original.txt");
+        File.WriteAllText(original, "not a lock");
+        var link = Path.Combine(AppPaths.RunsDir, "1-hard.lock");
+        Assert.Equal(0, HardLink(original, link));
+        Assert.Equal(2, UnixNative.LStat(link)!.Value.LinkCount);
+
+        using (new FileStream(original, FileMode.Open, FileAccess.Read, FileShare.None)) // an exclusive flock on the file
+        {
+            Assert.False(RunLock.AnyActive());
+        }
+
+        RunLock.Acquire().Dispose(); // removes lock files nobody holds, but not this one
+        Assert.True(File.Exists(link));
+        Assert.Equal("not a lock", File.ReadAllText(original));
+
+        using (RunLock.Acquire())
+            Assert.True(RunLock.AnyActive()); // a real lock (one name) still counts
+    }
+
     [MacFact]
     [SupportedOSPlatform("macos")]
     public void AnyActive_OnMac_FifoNamedLikeALock_IsIgnoredAndNeverBlocks()

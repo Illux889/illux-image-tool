@@ -9,8 +9,10 @@ namespace Illux.ImageTool.Runtime;
 /// The macOS daemon's <see cref="IServiceSignals"/>: a Unix socket <c>run/control.sock</c> below
 /// <see cref="AppPaths.Root"/> that any local user may connect to and send one line, <c>check</c> or <c>install</c>.
 /// <list type="bullet">
-/// <item>The daemon creates or verifies <c>run/</c>: a real folder (no link, and Root is no link either) owned by the
-/// daemon's user (root in production), mode 0755, so nobody else can replace the socket.</item>
+/// <item>Root must be a real folder (no link) owned by the daemon's user (root in production) that group and others may
+/// not write to; otherwise <c>run/</c> is not touched and the socket is not opened.</item>
+/// <item>The daemon creates or verifies <c>run/</c>: a real folder (no link) owned by the daemon's user, mode 0755, so
+/// nobody else can replace the socket.</item>
 /// <item>A stale <c>control.sock</c> is removed only when it is a socket owned by the daemon's user; anything else there
 /// (a file, folder, link, someone else's socket) is left alone and the socket is not opened.</item>
 /// <item>The socket is made 0666 after binding. One connection is handled at a time, on its own task: at most
@@ -66,10 +68,11 @@ public sealed class UnixSocketSignals : IServiceSignals
     public static UnixSocketSignals Start(ILogger log) => Start(AppPaths.Root, RootUserId, log);
 
     /// <summary>As <see cref="Start(ILogger)"/> below <paramref name="root"/>, insisting on <paramref name="expectedOwner"/>
-    /// as the owner of <c>run/</c> and of a stale socket (tests run as an ordinary user).</summary>
+    /// as the owner of Root, of <c>run/</c> and of a stale socket (tests run as an ordinary user).</summary>
     internal static UnixSocketSignals Start(string root, uint expectedOwner, ILogger log)
     {
         if (!UnixNative.IsSupported) throw new PlatformNotSupportedException("The control socket needs macOS on Apple silicon.");
+        RequireTrustedRoot(root, expectedOwner);
         var runFolder = PrepareRunFolder(root, expectedOwner);
         var socketPath = Path.Combine(runFolder, "control.sock");
         RemoveStaleSocket(socketPath, expectedOwner);
@@ -96,10 +99,12 @@ public sealed class UnixSocketSignals : IServiceSignals
     {
         if (command is not (CheckCommand or InstallCommand)) throw new ArgumentException($"Unknown command '{command}'.", nameof(command));
         var path = SocketPath(root);
-        using var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        socket.SendTimeout = (int)RequestTimeout.TotalMilliseconds;
+        Socket? socket = null;
         try
         {
+            // Inside the try: a socket that cannot even be created is reported like any other failed request.
+            socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.SendTimeout = (int)RequestTimeout.TotalMilliseconds;
             using (var timeout = new CancellationTokenSource(RequestTimeout))
                 socket.ConnectAsync(new UnixDomainSocketEndPoint(path), timeout.Token).AsTask().GetAwaiter().GetResult();
             socket.Send(Encoding.ASCII.GetBytes(command + "\n"));
@@ -122,6 +127,10 @@ public sealed class UnixSocketSignals : IServiceSignals
         {
             throw new IOException(ex.Message, ex);
         }
+        finally
+        {
+            socket?.Dispose();
+        }
     }
 
     public bool TryWaitCheckNow(TimeSpan timeout) => _checkNow.WaitOne(timeout);
@@ -143,8 +152,25 @@ public sealed class UnixSocketSignals : IServiceSignals
         _installNow.Dispose();
     }
 
-    /// <summary>Root must be a real folder; <c>run/</c> is created (0755) or must be a real folder owned by <paramref name="owner"/>.</summary>
-    private static string PrepareRunFolder(string root, uint owner)
+    /// <summary>
+    /// Root (created when missing) must be a real folder owned by <paramref name="owner"/> that group and others may not
+    /// write to: whoever may write there could replace <c>run/</c>. Checked before <c>run/</c> is touched.
+    /// </summary>
+    private static void RequireTrustedRoot(string root, uint owner)
+    {
+        if (UnixNative.LStat(root) is null) Directory.CreateDirectory(root);
+        var status = RequireFolder(root);
+        if (status.Owner != owner)
+            throw new UnauthorizedAccessException($"The folder '{root}' is owned by user {status.Owner}, not {owner}; the control socket is not opened.");
+        if ((status.Mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0)
+            throw new IOException($"The folder '{root}' is writable by group or others; the control socket is not opened.");
+    }
+
+    /// <summary>
+    /// Root must be a real folder; <c>run/</c> is created (0755) or must be a real folder owned by <paramref name="owner"/>.
+    /// <see cref="Start(string, uint, ILogger)"/> checks Root's owner and mode first.
+    /// </summary>
+    internal static string PrepareRunFolder(string root, uint owner)
     {
         if (UnixNative.LStat(root) is null) Directory.CreateDirectory(root);
         RequireFolder(root);

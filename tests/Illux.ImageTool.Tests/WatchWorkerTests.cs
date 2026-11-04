@@ -399,9 +399,9 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     {
         var http = new HttpClient(new FakeHandler(Respond));
         var updater = new Updater(
-            new ReleaseClient(http), http, new Version(1, 0, 0),
+            new ReleaseClient(http, ReleasePlatform.WindowsX64), http, new Version(1, 0, 0),
             () => false,
-            (path, args) => { lock (_started) _started.Add((path, args)); return new Process(); },
+            start => { lock (_started) _started.Add((start.FileName, start.Arguments)); return new Process(); },
             NullLogger.Instance,
             downloadDirectory: Path.Combine(Dir, "download"),
             recheckInterval: TimeSpan.FromMilliseconds(10),
@@ -579,20 +579,44 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     {
         var http = new HttpClient(new FakeHandler(Respond));
         var updater = new Updater(
-            new ReleaseClient(http), http, new Version(1, 0, 0), () => false,
-            (path, args) => new Process(), NullLogger.Instance,
+            new ReleaseClient(http, ReleasePlatform.WindowsX64), http, new Version(1, 0, 0), () => false,
+            _ => new Process(), NullLogger.Instance,
             downloadDirectory: Path.Combine(Dir, "download"), trustDownloadDirectory: true);
-        var worker = new UpdateWorker(updater, NullLogger.Instance, new UpdateWorkerOptions
+        var log = new ErrorLogger();
+        var worker = new UpdateWorker(updater, log, new UpdateWorkerOptions
         {
             InitialDelay = TimeSpan.Zero,
             SignalPollInterval = TimeSpan.FromMilliseconds(20),
-            Signals = () => throw new IOException("the control socket cannot be opened"),
+            Signals = () => throw new IOException("the channel cannot be opened"),
             PeriodicChecksEnabled = () => true,
         });
         _workers.Add(worker);
         await worker.StartAsync(CancellationToken.None);
 
         Assert.True(await WaitUntil(() => UpdateStateStore.Load().AvailableVersion == "9.9.9"));
+        // The same words on every system: Windows has named events, not a control socket.
+        var error = Assert.Single(log.Errors);
+        Assert.Equal("Could not open the request channel; the settings app and menu bar cannot reach the service", error);
+    }
+
+    /// <summary>Keeps the messages logged at Error.</summary>
+    private sealed class ErrorLogger : ILogger
+    {
+        private readonly List<string> _errors = [];
+
+        public string[] Errors
+        {
+            get { lock (_errors) return [.. _errors]; }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Error) lock (_errors) _errors.Add(formatter(state, exception));
+        }
     }
 
     [Fact]

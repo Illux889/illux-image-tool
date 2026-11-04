@@ -7,7 +7,7 @@ namespace Illux.ImageTool.Runtime;
 /// the service) only ever reads there (R39); stale files are removed by <see cref="Acquire"/>, which runs as the user.
 /// On macOS a run holds an exclusive flock (what .NET does for <see cref="FileShare.None"/>); there both sides probe
 /// with non-blocking libc calls, so a FIFO, socket or device someone planted in the world-writable <c>runs/</c> is
-/// ignored and never blocks the root daemon or a run (ruling V4).
+/// ignored and never blocks the root daemon or a run (ruling V4); so is a hard link to another file (more than one name).
 /// </summary>
 public sealed class RunLock : IDisposable
 {

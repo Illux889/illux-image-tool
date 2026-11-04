@@ -272,7 +272,7 @@ public sealed class WatcherHostTests : AppRootTestBase
         var errors = watcher.StandardError.ReadToEndAsync();
         try
         {
-            // Not root here, so the control socket is refused (run/ is not owned by root) and that is logged.
+            // Not root here, so the control socket is refused (Root is not owned by root) and that is logged.
             string? log = null;
             for (var waited = 0; waited < 30000 && log is null; waited += 200)
             {
@@ -282,7 +282,7 @@ public sealed class WatcherHostTests : AppRootTestBase
                 if (files.Length == 1)
                 {
                     var text = File.ReadAllText(files[0]);
-                    if (text.Contains("control socket", StringComparison.Ordinal)) log = text;
+                    if (text.Contains("Could not open the request channel", StringComparison.Ordinal)) log = text;
                 }
             }
             Assert.NotNull(log);

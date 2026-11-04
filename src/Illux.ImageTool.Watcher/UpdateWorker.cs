@@ -163,7 +163,7 @@ public sealed class UpdateWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Could not open the control socket; the settings app and menu bar cannot reach the service");
+            _log.LogError(ex, "Could not open the request channel; the settings app and menu bar cannot reach the service");
             return null;
         }
     }

@@ -37,7 +37,11 @@ public sealed class UpdaterTests : AppRootTestBase
         }
     }
 
-    private static string ReleaseJson(string tag = "v1.2.3", bool draft = false, bool prerelease = false, bool withChecksum = true, bool withInstaller = true)
+    private const string MacPkg = "IlluxImageTool-1.2.3-macOS-arm64.pkg";
+
+    private static string ReleaseJson(
+        string tag = "v1.2.3", bool draft = false, bool prerelease = false, bool withChecksum = true, bool withInstaller = true,
+        bool withMacPkg = false, bool withMacChecksum = true)
     {
         var version = tag.TrimStart('v');
         var assets = new List<string>();
@@ -45,6 +49,10 @@ public sealed class UpdaterTests : AppRootTestBase
             assets.Add($$"""{"name":"IlluxImageTool-Setup-{{version}}.exe","browser_download_url":"{{InstallerHost}}IlluxImageTool-Setup-{{version}}.exe"}""");
         if (withChecksum)
             assets.Add($$"""{"name":"IlluxImageTool-Setup-{{version}}.exe.sha256","browser_download_url":"{{InstallerHost}}IlluxImageTool-Setup-{{version}}.exe.sha256"}""");
+        if (withMacPkg)
+            assets.Add($$"""{"name":"IlluxImageTool-{{version}}-macOS-arm64.pkg","browser_download_url":"{{InstallerHost}}IlluxImageTool-{{version}}-macOS-arm64.pkg"}""");
+        if (withMacPkg && withMacChecksum)
+            assets.Add($$"""{"name":"IlluxImageTool-{{version}}-macOS-arm64.pkg.sha256","browser_download_url":"{{InstallerHost}}IlluxImageTool-{{version}}-macOS-arm64.pkg.sha256"}""");
         assets.Add("""{"name":"source.zip","browser_download_url":"https://example.com/source.zip"}""");
         return $$"""{"tag_name":"{{tag}}","draft":{{(draft ? "true" : "false")}},"prerelease":{{(prerelease ? "true" : "false")}},"assets":[{{string.Join(',', assets)}}]}""";
     }
@@ -55,14 +63,15 @@ public sealed class UpdaterTests : AppRootTestBase
     private static HttpResponseMessage Bytes(byte[] body) => new(HttpStatusCode.OK) { Content = new ByteArrayContent(body) };
 
     private static bool IsInstallerRequest(HttpRequestMessage request) =>
-        request.RequestUri!.ToString().EndsWith(".exe", StringComparison.Ordinal);
+        request.RequestUri!.ToString().EndsWith(".exe", StringComparison.Ordinal)
+        || request.RequestUri!.ToString().EndsWith(".pkg", StringComparison.Ordinal);
 
     private static HttpResponseMessage Route(HttpRequestMessage request, string checksumBody)
     {
         var url = request.RequestUri!.ToString();
         if (url.StartsWith("https://api.github.com/", StringComparison.Ordinal)) return Text(ReleaseJson());
         if (url.EndsWith(".sha256", StringComparison.Ordinal)) return Text(checksumBody);
-        if (url.EndsWith(".exe", StringComparison.Ordinal)) return Bytes(InstallerBytes);
+        if (url.EndsWith(".exe", StringComparison.Ordinal) || url.EndsWith(".pkg", StringComparison.Ordinal)) return Bytes(InstallerBytes);
         return new HttpResponseMessage(HttpStatusCode.NotFound);
     }
 
@@ -71,11 +80,17 @@ public sealed class UpdaterTests : AppRootTestBase
         new Uri($"{InstallerHost}IlluxImageTool-Setup-{version}.exe"),
         new Uri($"{InstallerHost}IlluxImageTool-Setup-{version}.exe.sha256"));
 
+    private static ReleaseInfo MacRelease() => new(
+        new Version(1, 2, 3), new Uri($"{InstallerHost}{MacPkg}"), new Uri($"{InstallerHost}{MacPkg}.sha256"));
+
+    private static ReleaseClient WindowsClient(HttpClient http) => new(http, ReleasePlatform.WindowsX64);
+
     private sealed class Rig
     {
         public required FakeHandler Handler { get; init; }
         public required Updater Updater { get; init; }
         public List<(string Path, string Args)> Started { get; } = [];
+        public List<ProcessStartInfo> StartInfos { get; } = [];
         public Func<(string Path, string Args), Process?> OnStart { get; set; } = _ => new Process();
         public Func<bool> Busy { get; set; } = () => false;
     }
@@ -89,22 +104,32 @@ public sealed class UpdaterTests : AppRootTestBase
         ILogger? log = null,
         bool trust = true,
         long maxInstallerBytes = Updater.DefaultMaxInstallerBytes,
-        string? downloadDirectory = null)
+        string? downloadDirectory = null,
+        ReleasePlatform platform = ReleasePlatform.WindowsX64,
+        uint? downloadDirectoryOwner = null)
     {
         var handler = new FakeHandler(respond);
         var http = new HttpClient(handler);
         Rig? rig = null;
         var updater = new Updater(
-            new ReleaseClient(http), http, Version.Parse(current),
+            new ReleaseClient(http, platform), http, Version.Parse(current),
             () => rig!.Busy(),
-            (path, args) => { rig!.Started.Add((path, args)); return rig.OnStart((path, args)); },
+            start =>
+            {
+                rig!.StartInfos.Add(start);
+                rig.Started.Add((start.FileName, start.Arguments));
+                return rig.OnStart((start.FileName, start.Arguments));
+            },
             log ?? NullLogger.Instance,
             timeProvider: time,
             downloadDirectory: downloadDirectory ?? DownloadDir,
             recheckInterval: recheck ?? TimeSpan.FromMilliseconds(10),
             giveUpAfter: giveUp ?? TimeSpan.FromSeconds(5),
             trustDownloadDirectory: trust,
-            maxInstallerBytes: maxInstallerBytes);
+            maxInstallerBytes: maxInstallerBytes)
+        {
+            DownloadDirectoryOwner = downloadDirectoryOwner ?? DownloadDirectory.RootUserId,
+        };
         rig = new Rig { Handler = handler, Updater = updater };
         return rig;
     }
@@ -113,7 +138,7 @@ public sealed class UpdaterTests : AppRootTestBase
     public async Task Latest_ParsesTagAndAssets()
     {
         var handler = new FakeHandler(_ => Text(ReleaseJson("v2.10.4")));
-        var client = new ReleaseClient(new HttpClient(handler));
+        var client = WindowsClient(new HttpClient(handler));
 
         var info = await client.GetLatestAsync(CancellationToken.None);
 
@@ -128,11 +153,57 @@ public sealed class UpdaterTests : AppRootTestBase
     [Fact]
     public async Task Latest_MissingAsset_Null()
     {
-        var noChecksum = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(withChecksum: false)))));
-        var noInstaller = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(withInstaller: false)))));
+        var noChecksum = WindowsClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(withChecksum: false)))));
+        var noInstaller = WindowsClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(withInstaller: false)))));
 
         Assert.Null(await noChecksum.GetLatestAsync(CancellationToken.None));
         Assert.Null(await noInstaller.GetLatestAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Latest_WithMacAssets_WindowsStillResolves()
+    {
+        var client = WindowsClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(withMacPkg: true)))));
+
+        var info = await client.GetLatestAsync(CancellationToken.None);
+
+        Assert.NotNull(info);
+        Assert.Equal(new Version(1, 2, 3), info.Version);
+        Assert.Equal($"{InstallerHost}IlluxImageTool-Setup-1.2.3.exe", info.InstallerUrl.ToString());
+        Assert.Equal($"{InstallerHost}IlluxImageTool-Setup-1.2.3.exe.sha256", info.ChecksumUrl.ToString());
+    }
+
+    [Fact]
+    public async Task Latest_Mac_PicksArm64Pkg()
+    {
+        var client = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(withMacPkg: true)))), ReleasePlatform.MacOSArm64);
+
+        var info = await client.GetLatestAsync(CancellationToken.None);
+
+        Assert.NotNull(info);
+        Assert.Equal(new Version(1, 2, 3), info.Version);
+        Assert.Equal($"{InstallerHost}{MacPkg}", info.InstallerUrl.ToString());
+        Assert.Equal($"{InstallerHost}{MacPkg}.sha256", info.ChecksumUrl.ToString());
+        Assert.Equal(ReleasePlatform.MacOSArm64, client.Platform);
+    }
+
+    [Fact]
+    public async Task Latest_Mac_MissingPkg_Null()
+    {
+        ReleaseClient Mac(string json) => new(new HttpClient(new FakeHandler(_ => Text(json))), ReleasePlatform.MacOSArm64);
+
+        Assert.Null(await Mac(ReleaseJson()).GetLatestAsync(CancellationToken.None)); // Windows assets only
+        Assert.Null(await Mac(ReleaseJson(withMacPkg: true, withMacChecksum: false)).GetLatestAsync(CancellationToken.None));
+        Assert.Null(await Mac(ReleaseJson(withMacPkg: true).Replace("https://github.com/", "https://evil.example.com/"))
+            .GetLatestAsync(CancellationToken.None)); // host allow-list unchanged
+    }
+
+    [Fact]
+    public void ReleasePlatform_Current_IsTheRunningSystem()
+    {
+        Assert.Equal(OperatingSystem.IsMacOS() ? ReleasePlatform.MacOSArm64 : ReleasePlatform.WindowsX64, ReleasePlatform.Current);
+        Assert.Equal("IlluxImageTool-Setup-0.2.0.exe", ReleaseClient.InstallerFileName(ReleasePlatform.WindowsX64, new Version(0, 2, 0)));
+        Assert.Equal("IlluxImageTool-0.2.0-macOS-arm64.pkg", ReleaseClient.InstallerFileName(ReleasePlatform.MacOSArm64, new Version(0, 2, 0)));
     }
 
     [Theory]
@@ -142,7 +213,7 @@ public sealed class UpdaterTests : AppRootTestBase
     [InlineData("release-7")]
     public async Task Latest_UnparsableTag_Null(string tag)
     {
-        var client = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(tag)))));
+        var client = WindowsClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(tag)))));
 
         Assert.Null(await client.GetLatestAsync(CancellationToken.None));
     }
@@ -150,15 +221,15 @@ public sealed class UpdaterTests : AppRootTestBase
     [Fact]
     public async Task Latest_DraftOrPrerelease_Null()
     {
-        Assert.Null(await new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(draft: true))))).GetLatestAsync(CancellationToken.None));
-        Assert.Null(await new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(prerelease: true))))).GetLatestAsync(CancellationToken.None));
+        Assert.Null(await WindowsClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(draft: true))))).GetLatestAsync(CancellationToken.None));
+        Assert.Null(await WindowsClient(new HttpClient(new FakeHandler(_ => Text(ReleaseJson(prerelease: true))))).GetLatestAsync(CancellationToken.None));
     }
 
     [Fact]
     public async Task Latest_NoReleaseYet_Null_AndServerError_Throws()
     {
-        var none = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text("{}", HttpStatusCode.NotFound))));
-        var broken = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text("", HttpStatusCode.InternalServerError))));
+        var none = WindowsClient(new HttpClient(new FakeHandler(_ => Text("{}", HttpStatusCode.NotFound))));
+        var broken = WindowsClient(new HttpClient(new FakeHandler(_ => Text("", HttpStatusCode.InternalServerError))));
 
         Assert.Null(await none.GetLatestAsync(CancellationToken.None));
         await Assert.ThrowsAsync<HttpRequestException>(() => broken.GetLatestAsync(CancellationToken.None));
@@ -168,7 +239,7 @@ public sealed class UpdaterTests : AppRootTestBase
     public async Task Latest_NonHttpsAsset_Null()
     {
         var json = ReleaseJson().Replace("https://github.com", "http://github.com");
-        var client = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(json))));
+        var client = WindowsClient(new HttpClient(new FakeHandler(_ => Text(json))));
 
         Assert.Null(await client.GetLatestAsync(CancellationToken.None));
     }
@@ -254,11 +325,98 @@ public sealed class UpdaterTests : AppRootTestBase
         Assert.Equal(
             $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{Path.Combine(DownloadDir, "update-1.2.3.log")}\"",
             started.Args);
+        var startInfo = Assert.Single(rig.StartInfos);
+        Assert.False(startInfo.UseShellExecute);
+        Assert.Empty(startInfo.ArgumentList);
         Assert.Equal(InstallerBytes, bytesSeenByInstaller);
         Assert.Equal("present", flagSeen); // flag is written before the installer starts
         Assert.True(File.Exists(AppPaths.UpdatingFlag)); // the installer (Task 14) removes it
         Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
         Assert.Equal([Path.Combine(DownloadDir, "IlluxImageTool-Setup-1.2.3.exe")], Directory.GetFiles(DownloadDir));
+    }
+
+    [Fact]
+    public async Task Install_Mac_StartsInstallerWithPkgArgs()
+    {
+        Directory.CreateDirectory(DownloadDir);
+        File.WriteAllText(Path.Combine(DownloadDir, "IlluxImageTool-0.9.0-macOS-arm64.pkg"), "old");
+        File.WriteAllText(Path.Combine(DownloadDir, "IlluxImageTool-1.0.0-macOS-arm64.pkg.part"), "partial");
+        File.WriteAllText(Path.Combine(DownloadDir, "notes.txt"), "keep");
+        var rig = NewRig(r => Route(r, InstallerHash + "  " + MacPkg + "\n"), platform: ReleasePlatform.MacOSArm64);
+        var pkg = Path.Combine(DownloadDir, MacPkg);
+        byte[]? bytesSeenByInstaller = null;
+        string? flagSeen = null;
+        rig.OnStart = _ =>
+        {
+            bytesSeenByInstaller = File.ReadAllBytes(pkg);
+            flagSeen = File.Exists(AppPaths.UpdatingFlag) ? "present" : "missing";
+            return new Process();
+        };
+
+        var outcome = await rig.Updater.InstallAsync(MacRelease(), CancellationToken.None);
+
+        Assert.Equal(InstallOutcome.Started, outcome);
+        Assert.Contains(rig.Handler.Requests, u => u == $"{InstallerHost}{MacPkg}");
+        Assert.Contains(rig.Handler.Requests, u => u == $"{InstallerHost}{MacPkg}.sha256");
+        var start = Assert.Single(rig.StartInfos);
+        // /usr/sbin/installer -pkg <path> -target /, its output going straight into a log in the root-only update folder
+        // (no pipe to this daemon, which the package stops while it installs). exec keeps the process name "installer".
+        Assert.Equal("/bin/sh", start.FileName);
+        Assert.False(start.UseShellExecute);
+        Assert.Equal("", start.Arguments);
+        Assert.Equal(
+            ["-c", "exec /usr/sbin/installer -pkg \"$1\" -target / >\"$2\" 2>&1", "sh", pkg, Path.Combine(DownloadDir, "update-1.2.3.log")],
+            start.ArgumentList);
+        Assert.Equal(InstallerBytes, bytesSeenByInstaller);
+        Assert.Equal("present", flagSeen);
+        Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
+        Assert.Equal(
+            [MacPkg, "notes.txt"],
+            Directory.GetFiles(DownloadDir).Select(f => Path.GetFileName(f)!).Order().ToArray());
+    }
+
+    [Fact]
+    public async Task Install_Mac_ChecksumMismatch_NotStarted_FileDeleted()
+    {
+        var rig = NewRig(r => Route(r, new string('0', 64)), platform: ReleasePlatform.MacOSArm64);
+
+        Assert.Equal(InstallOutcome.ChecksumFailed, await rig.Updater.InstallAsync(MacRelease(), CancellationToken.None));
+
+        Assert.Empty(rig.Started);
+        Assert.Empty(Directory.GetFiles(DownloadDir));
+        Assert.False(File.Exists(AppPaths.UpdatingFlag));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public async Task Install_Mac_InstallerCommand_WritesItsOutputIntoTheUpdateFolderLog()
+    {
+        // The real command, with /usr/sbin/installer swapped for a script that prints its arguments, in a folder whose
+        // name has spaces like "/Library/Application Support/Illux Image Tool/update".
+        var update = Path.Combine(Dir, "Application Support", "update");
+        var fake = Path.Combine(Dir, "fake installer.sh");
+        Directory.CreateDirectory(Dir);
+        File.WriteAllText(fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\necho to-stderr >&2\n");
+        File.SetUnixFileMode(fake, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var rig = NewRig(r => Route(r, InstallerHash), platform: ReleasePlatform.MacOSArm64, downloadDirectory: update);
+        Process? ran = null;
+        rig.OnStart = _ =>
+        {
+            var real = rig.StartInfos[^1];
+            var swapped = new ProcessStartInfo(real.FileName) { UseShellExecute = false };
+            foreach (var argument in real.ArgumentList) swapped.ArgumentList.Add(argument.Replace("/usr/sbin/installer", $"\"{fake}\""));
+            ran = Process.Start(swapped);
+            return ran;
+        };
+
+        Assert.Equal(InstallOutcome.Started, await rig.Updater.InstallAsync(MacRelease(), CancellationToken.None));
+
+        Assert.NotNull(ran);
+        Assert.True(ran.WaitForExit(10000));
+        Assert.Equal(0, ran.ExitCode);
+        Assert.Equal(
+            ["-pkg", Path.Combine(update, MacPkg), "-target", "/", "to-stderr"],
+            File.ReadAllLines(Path.Combine(update, "update-1.2.3.log")));
     }
 
     [Theory]
@@ -595,7 +753,7 @@ public sealed class UpdaterTests : AppRootTestBase
     public async Task Latest_AssetOnForeignHost_Null()
     {
         var json = ReleaseJson().Replace("https://github.com/", "https://evil.example.com/");
-        var client = new ReleaseClient(new HttpClient(new FakeHandler(_ => Text(json))));
+        var client = WindowsClient(new HttpClient(new FakeHandler(_ => Text(json))));
 
         Assert.Null(await client.GetLatestAsync(CancellationToken.None));
     }
@@ -655,8 +813,8 @@ public sealed class UpdaterTests : AppRootTestBase
         var http = new HttpClient(handler);
         string? startedPath = null;
         var updater = new Updater(
-            new ReleaseClient(http), http, new Version(1, 0, 0), () => false,
-            (path, _) => { startedPath = path; return new Process(); },
+            WindowsClient(http), http, new Version(1, 0, 0), () => false,
+            start => { startedPath = start.FileName; return new Process(); },
             NullLogger.Instance, trustDownloadDirectory: true);
 
         await updater.InstallAsync(Release(), CancellationToken.None);
@@ -761,13 +919,68 @@ public sealed class UpdaterTests : AppRootTestBase
 
     private string MacUpdateDir => Path.Combine(AppRoot, "update");
 
+    /// <summary>Tests run as an ordinary user: the owner the daemon insists on (root in production) is this user here.</summary>
+    [SupportedOSPlatform("macos")]
+    private static uint Me => UnixNative.EffectiveUserId;
+
+    [SupportedOSPlatform("macos")]
+    private static string? PrepareAsMe(string directory) => DownloadDirectory.PrepareTrusted(directory, Me);
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_FolderOfAnotherOwner_IsRefused_NothingCreated()
+    {
+        Directory.CreateDirectory(AppRoot);
+
+        var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir, Me + 1);
+
+        Assert.NotNull(problem);
+        Assert.Contains($"owned by user {Me}, not {Me + 1}", problem);
+        Assert.False(Directory.Exists(MacUpdateDir));
+
+        Directory.CreateDirectory(MacUpdateDir, OwnerOnly);
+        Assert.Contains("owned by user", DownloadDirectory.Verify(MacUpdateDir, Me + 1));
+        Assert.Null(DownloadDirectory.Verify(MacUpdateDir, Me));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void DownloadDirectory_Mac_ProductionOwnerIsRoot()
+    {
+        Assert.Equal(0u, DownloadDirectory.RootUserId);
+        if (Me == 0) return; // the refusal below needs a folder that root does not own
+        Directory.CreateDirectory(AppRoot);
+
+        var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir);
+
+        Assert.NotNull(problem);
+        Assert.Contains("not 0", problem);
+        Assert.False(Directory.Exists(MacUpdateDir));
+    }
+
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public async Task Install_Mac_DefaultSecurity_FolderNotOwnedByRoot_Refused_NothingDownloaded()
+    {
+        if (Me == 0) return;
+        Directory.CreateDirectory(AppRoot);
+        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir);
+
+        var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
+
+        Assert.Equal(InstallOutcome.Failed, outcome);
+        Assert.Empty(rig.Handler.Requests);
+        Assert.Empty(rig.Started);
+        Assert.Contains("not 0", UpdateStateStore.Load().Error);
+    }
+
     [MacFact]
     [SupportedOSPlatform("macos")]
     public void DownloadDirectory_Mac_CreatedBelowRoot_OwnerOnly()
     {
         Directory.CreateDirectory(AppRoot);
 
-        Assert.Null(DownloadDirectory.PrepareTrusted(MacUpdateDir));
+        Assert.Null(PrepareAsMe(MacUpdateDir));
 
         Assert.True(Directory.Exists(MacUpdateDir));
         Assert.Equal(OwnerOnly, File.GetUnixFileMode(MacUpdateDir));
@@ -780,7 +993,7 @@ public sealed class UpdaterTests : AppRootTestBase
         Directory.CreateDirectory(MacUpdateDir);
         File.SetUnixFileMode(MacUpdateDir, OwnerOnly | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
-        Assert.Null(DownloadDirectory.PrepareTrusted(MacUpdateDir));
+        Assert.Null(PrepareAsMe(MacUpdateDir));
 
         Assert.Equal(OwnerOnly, File.GetUnixFileMode(MacUpdateDir));
     }
@@ -794,7 +1007,7 @@ public sealed class UpdaterTests : AppRootTestBase
         Directory.CreateDirectory(AppRoot);
         Directory.CreateSymbolicLink(MacUpdateDir, target);
 
-        var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir);
+        var problem = PrepareAsMe(MacUpdateDir);
 
         Assert.NotNull(problem);
         Assert.Contains("link", problem);
@@ -808,7 +1021,7 @@ public sealed class UpdaterTests : AppRootTestBase
         var target = Directory.CreateDirectory(Path.Combine(Dir, "elsewhere")).FullName;
         Directory.CreateSymbolicLink(AppRoot, target);
 
-        var problem = DownloadDirectory.PrepareTrusted(MacUpdateDir);
+        var problem = PrepareAsMe(MacUpdateDir);
 
         Assert.NotNull(problem);
         Assert.Contains("link", problem);
@@ -823,7 +1036,7 @@ public sealed class UpdaterTests : AppRootTestBase
         Directory.CreateDirectory(AppRoot);
         Directory.CreateSymbolicLink(Path.Combine(AppRoot, "sub"), target);
 
-        var problem = DownloadDirectory.PrepareTrusted(Path.Combine(AppRoot, "sub", "update"));
+        var problem = PrepareAsMe(Path.Combine(AppRoot, "sub", "update"));
 
         Assert.NotNull(problem);
         Assert.Contains("link", problem);
@@ -836,18 +1049,19 @@ public sealed class UpdaterTests : AppRootTestBase
     {
         Directory.CreateDirectory(MacUpdateDir);
         File.SetUnixFileMode(AppRoot, OwnerOnly | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute);
-        Assert.Contains("writable", DownloadDirectory.PrepareTrusted(MacUpdateDir));
+        Assert.Contains("writable", PrepareAsMe(MacUpdateDir));
 
         File.SetUnixFileMode(AppRoot, OwnerOnly);
         File.SetUnixFileMode(MacUpdateDir, OwnerOnly | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
-        Assert.Contains("writable", DownloadDirectory.PrepareTrusted(MacUpdateDir));
+        Assert.Contains("writable", PrepareAsMe(MacUpdateDir));
         Assert.Equal(OwnerOnly | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute, File.GetUnixFileMode(MacUpdateDir)); // refused, not repaired
     }
 
     [MacFact]
+    [SupportedOSPlatform("macos")]
     public void DownloadDirectory_Mac_OutsideRoot_IsRefused()
     {
-        var problem = DownloadDirectory.PrepareTrusted(DownloadDir);
+        var problem = PrepareAsMe(DownloadDir);
 
         Assert.NotNull(problem);
         Assert.Contains("not below", problem);
@@ -855,6 +1069,7 @@ public sealed class UpdaterTests : AppRootTestBase
     }
 
     [MacFact]
+    [SupportedOSPlatform("macos")]
     public async Task Install_Mac_DefaultSecurity_LinkedFolder_Refused_NothingDownloadedOrDeleted()
     {
         var target = Path.Combine(Dir, "elsewhere");
@@ -863,7 +1078,7 @@ public sealed class UpdaterTests : AppRootTestBase
         File.WriteAllText(victim, "someone else's file");
         Directory.CreateDirectory(AppRoot);
         Directory.CreateSymbolicLink(MacUpdateDir, target);
-        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir);
+        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir, downloadDirectoryOwner: Me);
 
         var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
 
@@ -875,10 +1090,11 @@ public sealed class UpdaterTests : AppRootTestBase
     }
 
     [MacFact]
+    [SupportedOSPlatform("macos")]
     public async Task Install_Mac_DefaultSecurity_SafeFolder_Starts()
     {
         Directory.CreateDirectory(AppRoot);
-        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir);
+        var rig = NewRig(r => Route(r, InstallerHash), trust: false, downloadDirectory: MacUpdateDir, downloadDirectoryOwner: Me);
 
         var outcome = await rig.Updater.InstallAsync(Release(), CancellationToken.None);
 

@@ -24,7 +24,11 @@ public sealed class UnixSocketSignalsTests : IDisposable
     public UnixSocketSignalsTests()
     {
         Environment.SetEnvironmentVariable(AppPaths.RootOverrideVariable, _root);
-        if (OperatingSystem.IsMacOS()) Directory.CreateDirectory(_root);
+        if (OperatingSystem.IsMacOS())
+        {
+            Directory.CreateDirectory(_root);
+            File.SetUnixFileMode(_root, (UnixFileMode)0b111_101_101); // as the installer leaves Root: 0755
+        }
     }
 
     public void Dispose()
@@ -237,7 +241,10 @@ public sealed class UnixSocketSignalsTests : IDisposable
     {
         Directory.CreateDirectory(RunDir);
 
+        // Start refuses already at Root (same owner); the run folder's own check is reached directly.
         Assert.Throws<UnauthorizedAccessException>(() => Start(owner: Me + 1));
+        var ex = Assert.Throws<UnauthorizedAccessException>(() => UnixSocketSignals.PrepareRunFolder(_root, Me + 1));
+        Assert.Contains(RunDir, ex.Message);
         Assert.False(File.Exists(SocketPath));
     }
 
@@ -245,8 +252,36 @@ public sealed class UnixSocketSignalsTests : IDisposable
     public void Socket_NewRunFolderNotOwnedByTheExpectedUser_IsRefused()
     {
         // In production the daemon runs as root and expects root: a folder this process creates must have that owner.
-        Assert.Throws<UnauthorizedAccessException>(() => Start(owner: 0 == Me ? 1u : 0u));
+        var ex = Assert.Throws<UnauthorizedAccessException>(() => UnixSocketSignals.PrepareRunFolder(_root, 0 == Me ? 1u : 0u));
+        Assert.Contains(RunDir, ex.Message);
         Assert.False(File.Exists(SocketPath));
+    }
+
+    [MacFact]
+    public void Socket_RootOwnedBySomeoneElse_IsRefused_RunFolderNotTouched()
+    {
+        var ex = Assert.Throws<UnauthorizedAccessException>(() => Start(owner: Me + 1));
+
+        Assert.Contains($"owned by user {Me}, not {Me + 1}", ex.Message);
+        Assert.False(Directory.Exists(RunDir));
+    }
+
+    [MacFact]
+    public void Socket_RootWritableByGroupOrOthers_IsRefused_RunFolderNotTouched()
+    {
+        foreach (var mode in new[] { 0b111_111_101, 0b111_101_111, 0b111_111_111 })
+        {
+            File.SetUnixFileMode(_root, (UnixFileMode)mode);
+
+            var ex = Assert.Throws<IOException>(() => Start());
+
+            Assert.Contains("writable by group or others", ex.Message);
+            Assert.False(Directory.Exists(RunDir));
+        }
+
+        File.SetUnixFileMode(_root, (UnixFileMode)0b111_101_101);
+        using var signals = Start();
+        Assert.True(Directory.Exists(RunDir));
     }
 
     [MacFact]
