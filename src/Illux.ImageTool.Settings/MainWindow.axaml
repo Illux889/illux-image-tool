@@ -3,7 +3,7 @@
         xmlns:local="clr-namespace:Illux.ImageTool.Settings"
         x:Class="Illux.ImageTool.Settings.MainWindow"
         Title="Illux Image Tool Settings"
-        Width="780" Height="720" MinWidth="660" MinHeight="640"
+        Width="780" Height="720" MinWidth="660" MinHeight="600"
         WindowStartupLocation="CenterScreen">
   <Window.Styles>
     <Style Selector="Border.group">
@@ -31,7 +31,9 @@
     </Style>
   </Window.Styles>
 
-  <Grid Margin="12" RowDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto">
+  <!-- The content scrolls when the window is short; the two lists have fixed heights. -->
+  <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+  <Grid Margin="12" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto">
     <TextBlock Grid.Row="0" x:Name="ReadOnlyNote" FontWeight="SemiBold" Margin="0,0,0,8" IsVisible="False" />
 
     <Border Grid.Row="1" Classes="group">
@@ -50,7 +52,7 @@
             <TextBlock Grid.Column="3" Classes="cell" FontWeight="SemiBold" Text="Options" />
             <TextBlock Grid.Column="4" Classes="cell" FontWeight="SemiBold" Text="On" />
           </Grid>
-          <ListBox Grid.Row="1" x:Name="FolderList" SelectionMode="Single"
+          <ListBox Grid.Row="1" x:Name="FolderList" Height="150" SelectionMode="Single"
                    ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="local:FolderRow">
@@ -78,7 +80,7 @@
           <TextBlock Grid.Column="2" Classes="cell" FontWeight="SemiBold" Text="Target ppi" />
           <TextBlock Grid.Column="3" Classes="cell" FontWeight="SemiBold" Text="Leave alone" />
         </Grid>
-        <ListBox x:Name="RuleList" Height="80" SelectionMode="Single" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+        <ListBox x:Name="RuleList" Height="90" SelectionMode="Single" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="local:RuleRow">
               <Grid ColumnDefinitions="2*,4*,*,1.2*">
@@ -145,4 +147,5 @@
     </StackPanel>
     <TextBlock Grid.Row="6" x:Name="ServiceLogNote" Classes="note" Margin="0,6,0,0" IsVisible="False" />
   </Grid>
+  </ScrollViewer>
 </Window>

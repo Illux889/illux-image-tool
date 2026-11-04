@@ -199,4 +199,19 @@ public sealed class RulesEditorTests
             CultureInfo.CurrentCulture = old;
         }
     }
+
+    [Fact]
+    public void Build_UnchangedStoredNumber_IsKept_EvenWithThreeDecimals()
+    {
+        var stored = Longest("Odd", 12.125);
+
+        var (rule, problems) = RulesEditor.Build("Odd", SizeTest.LongestSide, null, null, RulesEditor.Num(12.125), null, "250", "200", "300", stored);
+        Assert.Empty(problems);
+        Assert.Equal(12.125, rule!.LimitCm);
+
+        // Changed text is parsed (and refused) as usual.
+        var typed = RulesEditor.Build("Odd", SizeTest.LongestSide, null, null, "12.126", null, "250", "200", "300", stored);
+        Assert.Null(typed.Rule);
+        Assert.Contains("at most 2 decimals", Assert.Single(typed.Problems));
+    }
 }

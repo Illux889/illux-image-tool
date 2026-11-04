@@ -13,6 +13,7 @@ public partial class RuleWindow : Window
     private static readonly SizeTest[] Tests = [SizeTest.FitsWithin, SizeTest.LongestSide, SizeTest.ShortestSide, SizeTest.Area];
 
     private readonly bool _isAll;
+    private readonly ResolutionRule? _original;
 
     public RuleWindow() : this(null)
     {
@@ -22,6 +23,7 @@ public partial class RuleWindow : Window
     {
         InitializeComponent();
         Icon = AppIcon.Get();
+        _original = rule;
         _isAll = rule?.Test == SizeTest.All;
         Title = rule is null ? "Add rule" : "Edit rule";
 
@@ -80,7 +82,7 @@ public partial class RuleWindow : Window
     {
         var test = _isAll ? SizeTest.All : Tests[Math.Clamp(TestBox.SelectedIndex, 0, Tests.Length - 1)];
         var (rule, problems) = RulesEditor.Build(NameBox.Text, test, WidthBox.Text, HeightBox.Text, LimitBox.Text, AreaBox.Text,
-            TargetBox.Text, MinBox.Text, MaxBox.Text);
+            TargetBox.Text, MinBox.Text, MaxBox.Text, _original);
         if (rule is null)
         {
             await MessageWindow.ShowAsync(this, string.Join("\n", problems));

@@ -66,20 +66,21 @@ internal sealed class RulesEditor
     /// A rule from the dialog's text. Only the fields the test needs are read (the others are left null). Text that is
     /// not a number is refused with a message naming the field; a number out of range is not changed here, it is
     /// refused by <see cref="ValidateRule"/> with its normal message.
+    /// Text equal to the <paramref name="original"/> rule's displayed number keeps that number as it is.
     /// </summary>
     internal static (ResolutionRule? Rule, IReadOnlyList<string> Problems) Build(
         string? name, SizeTest test, string? width, string? height, string? limit, string? area,
-        string? target, string? min, string? max)
+        string? target, string? min, string? max, ResolutionRule? original = null)
     {
         var problems = new List<string>();
         double? w = null, h = null, l = null, a = null;
         if (test == SizeTest.FitsWithin)
         {
-            w = ReadSize(width, "Width", problems);
-            h = ReadSize(height, "Height", problems);
+            w = ReadSize(width, "Width", original?.WidthCm, problems);
+            h = ReadSize(height, "Height", original?.HeightCm, problems);
         }
-        else if (test is SizeTest.LongestSide or SizeTest.ShortestSide) l = ReadSize(limit, "Limit", problems);
-        else if (test == SizeTest.Area) a = ReadSize(area, "Area", problems);
+        else if (test is SizeTest.LongestSide or SizeTest.ShortestSide) l = ReadSize(limit, "Limit", original?.LimitCm, problems);
+        else if (test == SizeTest.Area) a = ReadSize(area, "Area", original?.AreaCm2, problems);
         var t = ReadPpi(target, "Target ppi", problems);
         var lo = ReadPpi(min, "Leave alone from", problems);
         var hi = ReadPpi(max, "Leave alone up to", problems);
@@ -120,10 +121,12 @@ internal sealed class RulesEditor
             && int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out value);
     }
 
-    private static double? ReadSize(string? text, string field, List<string> problems)
+    private static double? ReadSize(string? text, string field, double? stored, List<string> problems)
     {
+        // A stored value such as 12.125 is shown as it is; unchanged text keeps it instead of being parsed again.
+        if (stored is { } s && text?.Trim() == Num(s)) return s;
         if (TryParseNumber(text, out var v)) return v;
-        problems.Add($"{field}: enter a number such as 40 or 40.5 (no thousands separator).");
+        problems.Add($"{field}: enter a number such as 40 or 40.5 (no thousands separator; use at most 2 decimals, e.g. 12.25).");
         return null;
     }
 
