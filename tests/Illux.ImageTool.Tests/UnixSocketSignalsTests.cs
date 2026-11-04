@@ -153,6 +153,7 @@ public sealed class UnixSocketSignalsTests : IDisposable
     {
         using var signals = Start();
         using var slow = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        slow.ReceiveTimeout = 5000; // set up front: macOS refuses socket options once the peer has closed
         slow.Connect(new UnixDomainSocketEndPoint(SocketPath));
         slow.Send("che"u8.ToArray()); // and never finishes the line
         var watch = Stopwatch.StartNew();
@@ -161,7 +162,6 @@ public sealed class UnixSocketSignalsTests : IDisposable
         Assert.True(signals.TryWaitInstallNow(Wait), "a request behind a slow client must still arrive");
         Assert.InRange(watch.Elapsed, TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(8));
 
-        slow.ReceiveTimeout = 5000;
         Assert.Equal(0, slow.Receive(new byte[16])); // the daemon closed it
         Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
     }
