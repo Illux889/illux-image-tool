@@ -3,7 +3,7 @@
         xmlns:local="clr-namespace:Illux.ImageTool.Settings"
         x:Class="Illux.ImageTool.Settings.MainWindow"
         Title="Illux Image Tool Settings"
-        Width="780" Height="880" MinWidth="660" MinHeight="780"
+        Width="780" Height="720" MinWidth="660" MinHeight="640"
         WindowStartupLocation="CenterScreen">
   <Window.Styles>
     <Style Selector="Border.group">
@@ -78,7 +78,7 @@
           <TextBlock Grid.Column="2" Classes="cell" FontWeight="SemiBold" Text="Target ppi" />
           <TextBlock Grid.Column="3" Classes="cell" FontWeight="SemiBold" Text="Leave alone" />
         </Grid>
-        <ListBox x:Name="RuleList" Height="110" SelectionMode="Single" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+        <ListBox x:Name="RuleList" Height="80" SelectionMode="Single" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
           <ListBox.ItemTemplate>
             <DataTemplate x:DataType="local:RuleRow">
               <Grid ColumnDefinitions="2*,4*,*,1.2*">

@@ -50,7 +50,7 @@ public partial class MainWindow
         if (!_configUsable || !_mayChange) return;
         var result = await new RuleWindow(null).ShowDialog<ResolutionRule?>(this);
         if (result is null) return;
-        await ModifyRulesAsync(editor => editor.Add(result), select: _config.ResolutionRules.Count - 1);
+        await ModifyRulesAsync(editor => editor.Add(result) ? IndexOf(editor, result) : null, keep: -1);
     }
 
     private async Task EditRuleAsync()
@@ -59,26 +59,25 @@ public partial class MainWindow
         var at = RuleList.SelectedIndex;
         var result = await new RuleWindow(original).ShowDialog<ResolutionRule?>(this);
         if (result is null) return;
-        await ModifyRulesAsync(editor => editor.Replace(IndexOf(editor, original), result), select: at);
+        await ModifyRulesAsync(editor => editor.Replace(IndexOf(editor, original), result) ? IndexOf(editor, result) : null, keep: at);
     }
 
     private async Task RemoveRuleAsync()
     {
         if (SelectedRule() is not { } original) return;
         if (!await MessageWindow.AskAsync(this, $"Remove the rule \"{original.Name}\"?")) return;
-        await ModifyRulesAsync(editor => editor.Remove(IndexOf(editor, original)), select: -1);
+        await ModifyRulesAsync(editor => editor.Remove(IndexOf(editor, original)) ? -1 : null, keep: RuleList.SelectedIndex);
     }
 
     private async Task MoveRuleAsync(bool up)
     {
         if (SelectedRule() is not { } original) return;
-        var moved = -1;
         await ModifyRulesAsync(editor =>
         {
             var at = IndexOf(editor, original);
-            moved = up ? editor.MoveUp(at) : editor.MoveDown(at);
-            return moved >= 0;
-        }, select: RuleList.SelectedIndex + (up ? -1 : 1));
+            var moved = up ? editor.MoveUp(at) : editor.MoveDown(at);
+            return moved >= 0 ? moved : null;
+        }, keep: RuleList.SelectedIndex);
     }
 
     private async Task ResetRulesAsync()
@@ -88,8 +87,8 @@ public partial class MainWindow
         await ModifyRulesAsync(editor =>
         {
             editor.Reset();
-            return true;
-        }, select: -1);
+            return -1;
+        }, keep: -1);
     }
 
     private static int IndexOf(RulesEditor editor, ResolutionRule rule)
@@ -103,13 +102,14 @@ public partial class MainWindow
     /// Re-reads the file first so a change made elsewhere meanwhile is not lost, applies the change, refuses to save a
     /// rule list that <see cref="ResolutionRules.Validate"/> rejects, then saves the way the folders are saved.
     /// </summary>
-    private async Task ModifyRulesAsync(Func<RulesEditor, bool> change, int select)
+    private async Task ModifyRulesAsync(Func<RulesEditor, int?> change, int keep)
     {
+        var select = keep; // the rule to select after the reload: the changed rule, or the old selection when nothing changed
         try
         {
             var config = ConfigStore.Load();
             var editor = new RulesEditor(config.ResolutionRules);
-            if (!change(editor))
+            if (change(editor) is not { } index)
                 await ShowAsync("That rule was changed or removed somewhere else. The list was refreshed.");
             else if (editor.Validate() is { Count: > 0 } problems)
                 await ShowAsync("The rules were not saved.\n" + string.Join("\n", problems));
@@ -117,6 +117,7 @@ public partial class MainWindow
             {
                 config.ResolutionRules = [.. editor.Rules];
                 SettingsPlatform.SaveConfig(config);
+                select = index;
             }
         }
         catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)

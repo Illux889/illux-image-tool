@@ -1,3 +1,4 @@
+using System.Globalization;
 using Illux.ImageTool.Options;
 using Illux.ImageTool.Settings;
 
@@ -112,5 +113,90 @@ public sealed class RulesEditorTests
         Assert.Equal("Shortest side up to 20 cm", RulesEditor.DescribeSize(Longest("A", 20) with { Test = SizeTest.ShortestSide }));
         Assert.Equal("Area up to 900 cm²",
             RulesEditor.DescribeSize(new ResolutionRule("A", SizeTest.Area, null, null, null, 900, 100, 90, 110)));
+    }
+
+    [Theory]
+    [InlineData("40.5", 40.5)]
+    [InlineData("40,5", 40.5)]
+    [InlineData(" 40 ", 40)]
+    [InlineData("0.125", 0.125)]
+    public void ParseNumber_AcceptsPointAndComma(string text, double expected)
+    {
+        Assert.True(RulesEditor.TryParseNumber(text, out var value));
+        Assert.Equal(expected, value);
+    }
+
+    [Theory]
+    [InlineData("1.000")]
+    [InlineData("1,000")]
+    [InlineData("1,000.5")]
+    [InlineData("abc")]
+    [InlineData("")]
+    [InlineData("-5")]
+    [InlineData("4e2")]
+    public void ParseNumber_RefusesThousandsSeparatorsAndJunk(string text) =>
+        Assert.False(RulesEditor.TryParseNumber(text, out _));
+
+    [Fact]
+    public void Build_FromText_ReadsBothSeparatorsAndRefusesBadText()
+    {
+        var (rule, problems) = RulesEditor.Build("A", SizeTest.FitsWithin, "40,5", "30.5", "x", "y", "300", "250", "350");
+        Assert.Empty(problems);
+        Assert.Equal(40.5, rule!.WidthCm);
+        Assert.Equal(30.5, rule.HeightCm);
+
+        var bad = RulesEditor.Build("A", SizeTest.LongestSide, null, null, "abc", null, "300", "250", "350");
+        Assert.Null(bad.Rule);
+        Assert.Contains("Limit", Assert.Single(bad.Problems));
+
+        var thousand = RulesEditor.Build("A", SizeTest.LongestSide, null, null, "1.000", null, "300", "250", "350");
+        Assert.Null(thousand.Rule);
+
+        var fraction = RulesEditor.Build("A", SizeTest.LongestSide, null, null, "40", null, "300.5", "250", "350");
+        Assert.Contains("Target ppi", Assert.Single(fraction.Problems));
+    }
+
+    [Fact]
+    public void Build_OutOfRange_IsNotClamped_AndGetsTheValidateMessage()
+    {
+        var size = RulesEditor.Build("Big", SizeTest.LongestSide, null, null, "5000", null, "300", "250", "350");
+        Assert.Null(size.Rule);
+        Assert.Contains("the side limit must be between", Assert.Single(size.Problems));
+
+        var ppi = RulesEditor.Build("Dense", SizeTest.LongestSide, null, null, "50", null, "9999", "250", "350");
+        Assert.Null(ppi.Rule);
+        Assert.Contains("2400", Assert.Single(ppi.Problems));
+    }
+
+    [Fact]
+    public void Build_KeepsOnlyTheNumbersTheTestUses()
+    {
+        var rule = RulesEditor.Build("L", SizeTest.LongestSide, 40, 30, 50, 1200, 300, 250, 350);
+
+        Assert.Equal(50, rule.LimitCm);
+        Assert.Null(rule.WidthCm);
+        Assert.Null(rule.HeightCm);
+        Assert.Null(rule.AreaCm2);
+        Assert.Null(RulesEditor.Build("All", SizeTest.All, 40, 30, 50, 1200, 200, 150, 250).LimitCm);
+    }
+
+    [Fact]
+    public void TextIsTheSameInEveryCulture()
+    {
+        var old = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("da-DK");
+            Assert.Equal("Fits within 40 × 30 cm → 300 ppi (leave 250–350)", RulesEditor.Describe(ResolutionRules.Defaults[0]));
+            Assert.Equal("Longest side up to 12.5 cm", RulesEditor.DescribeSize(Longest("A", 12.5)));
+            Assert.Equal("12.5", RulesEditor.Num(12.5));
+            Assert.Equal("250–350", RuleRow.From(ResolutionRules.Defaults[0]).Leave);
+            Assert.True(RulesEditor.TryParseNumber("40.5", out var value));
+            Assert.Equal(40.5, value);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = old;
+        }
     }
 }

@@ -41,10 +41,13 @@ public partial class RuleWindow : Window
         {
             NameBox.Text = "";
             TestBox.SelectedIndex = 0;
-            WidthBox.Value = 40;
-            HeightBox.Value = 30;
-            LimitBox.Value = 40;
-            AreaBox.Value = 1200;
+            WidthBox.Text = "40";
+            HeightBox.Text = "30";
+            LimitBox.Text = "40";
+            AreaBox.Text = "1200";
+            TargetBox.Text = "300";
+            MinBox.Text = "250";
+            MaxBox.Text = "350";
         }
         ShowSizeFields();
     }
@@ -53,13 +56,13 @@ public partial class RuleWindow : Window
     {
         NameBox.Text = rule.Name;
         if (!_isAll) TestBox.SelectedIndex = Math.Max(Array.IndexOf(Tests, rule.Test), 0);
-        WidthBox.Value = (decimal?)rule.WidthCm ?? 40;
-        HeightBox.Value = (decimal?)rule.HeightCm ?? 30;
-        LimitBox.Value = (decimal?)rule.LimitCm ?? 40;
-        AreaBox.Value = (decimal?)rule.AreaCm2 ?? 1200;
-        TargetBox.Value = rule.TargetPpi;
-        MinBox.Value = rule.MinPpi;
-        MaxBox.Value = rule.MaxPpi;
+        WidthBox.Text = RulesEditor.Num(rule.WidthCm ?? 40);
+        HeightBox.Text = RulesEditor.Num(rule.HeightCm ?? 30);
+        LimitBox.Text = RulesEditor.Num(rule.LimitCm ?? 40);
+        AreaBox.Text = RulesEditor.Num(rule.AreaCm2 ?? 1200);
+        TargetBox.Text = rule.TargetPpi.ToString();
+        MinBox.Text = rule.MinPpi.ToString();
+        MaxBox.Text = rule.MaxPpi.ToString();
     }
 
     private void ShowSizeFields()
@@ -76,16 +79,9 @@ public partial class RuleWindow : Window
     private async Task TryAcceptAsync()
     {
         var test = _isAll ? SizeTest.All : Tests[Math.Clamp(TestBox.SelectedIndex, 0, Tests.Length - 1)];
-        var rule = new ResolutionRule(
-            (NameBox.Text ?? "").Trim(), test,
-            test == SizeTest.FitsWithin ? (double?)WidthBox.Value : null,
-            test == SizeTest.FitsWithin ? (double?)HeightBox.Value : null,
-            test is SizeTest.LongestSide or SizeTest.ShortestSide ? (double?)LimitBox.Value : null,
-            test == SizeTest.Area ? (double?)AreaBox.Value : null,
-            (int)(TargetBox.Value ?? 0), (int)(MinBox.Value ?? 0), (int)(MaxBox.Value ?? 0));
-
-        var problems = RulesEditor.ValidateRule(rule);
-        if (problems.Count > 0)
+        var (rule, problems) = RulesEditor.Build(NameBox.Text, test, WidthBox.Text, HeightBox.Text, LimitBox.Text, AreaBox.Text,
+            TargetBox.Text, MinBox.Text, MaxBox.Text);
+        if (rule is null)
         {
             await MessageWindow.ShowAsync(this, string.Join("\n", problems));
             return;

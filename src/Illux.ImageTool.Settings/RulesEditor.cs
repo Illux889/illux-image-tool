@@ -58,8 +58,80 @@ internal sealed class RulesEditor
     /// <summary>Problems with one rule on its own (for the rule dialog).</summary>
     internal static IReadOnlyList<string> ValidateRule(ResolutionRule rule)
     {
-        var all = ResolutionRules.Defaults[1];
+        var all = new ResolutionRule("All other images", SizeTest.All, null, null, null, null, 200, 150, 250);
         return ResolutionRules.Validate(rule.Test == SizeTest.All ? [rule] : [rule, all]);
+    }
+
+    /// <summary>
+    /// A rule from the dialog's text. Only the fields the test needs are read (the others are left null). Text that is
+    /// not a number is refused with a message naming the field; a number out of range is not changed here, it is
+    /// refused by <see cref="ValidateRule"/> with its normal message.
+    /// </summary>
+    internal static (ResolutionRule? Rule, IReadOnlyList<string> Problems) Build(
+        string? name, SizeTest test, string? width, string? height, string? limit, string? area,
+        string? target, string? min, string? max)
+    {
+        var problems = new List<string>();
+        double? w = null, h = null, l = null, a = null;
+        if (test == SizeTest.FitsWithin)
+        {
+            w = ReadSize(width, "Width", problems);
+            h = ReadSize(height, "Height", problems);
+        }
+        else if (test is SizeTest.LongestSide or SizeTest.ShortestSide) l = ReadSize(limit, "Limit", problems);
+        else if (test == SizeTest.Area) a = ReadSize(area, "Area", problems);
+        var t = ReadPpi(target, "Target ppi", problems);
+        var lo = ReadPpi(min, "Leave alone from", problems);
+        var hi = ReadPpi(max, "Leave alone up to", problems);
+        if (problems.Count > 0) return (null, problems);
+
+        var rule = Build(name, test, w, h, l, a, t, lo, hi);
+        var invalid = ValidateRule(rule);
+        return invalid.Count > 0 ? (null, invalid) : (rule, []);
+    }
+
+    /// <summary>A rule that carries only the size numbers its test uses.</summary>
+    internal static ResolutionRule Build(string? name, SizeTest test, double? width, double? height, double? limit, double? area,
+        int target, int min, int max) =>
+        new((name ?? "").Trim(), test,
+            test == SizeTest.FitsWithin ? width : null,
+            test == SizeTest.FitsWithin ? height : null,
+            test is SizeTest.LongestSide or SizeTest.ShortestSide ? limit : null,
+            test == SizeTest.Area ? area : null,
+            target, min, max);
+
+    /// <summary>"40.5" and "40,5" both read 40.5. No thousands separators: "1.000" and "1,000.5" are refused.</summary>
+    internal static bool TryParseNumber(string? text, out double value)
+    {
+        value = 0;
+        var s = (text ?? "").Trim();
+        if (!System.Text.RegularExpressions.Regex.IsMatch(s, @"^[0-9]+([.,][0-9]+)?$")) return false;
+        var at = s.IndexOfAny(['.', ',']);
+        if (at > 0 && s.Length - at - 1 == 3 && s[..at] != "0") return false; // looks like 1.000 (a thousand)
+        return double.TryParse(s.Replace(',', '.'), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out value);
+    }
+
+    /// <summary>Whole numbers only, digits only.</summary>
+    internal static bool TryParseWhole(string? text, out int value)
+    {
+        value = 0;
+        var s = (text ?? "").Trim();
+        return System.Text.RegularExpressions.Regex.IsMatch(s, "^[0-9]{1,9}$")
+            && int.TryParse(s, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static double? ReadSize(string? text, string field, List<string> problems)
+    {
+        if (TryParseNumber(text, out var v)) return v;
+        problems.Add($"{field}: enter a number such as 40 or 40.5 (no thousands separator).");
+        return null;
+    }
+
+    private static int ReadPpi(string? text, string field, List<string> problems)
+    {
+        if (TryParseWhole(text, out var v)) return v;
+        problems.Add($"{field}: enter a whole number.");
+        return 0;
     }
 
     /// <summary>For example <c>Fits within 40 × 30 cm → 300 ppi (leave 250–350)</c>.</summary>
@@ -84,7 +156,8 @@ internal sealed class RulesEditor
 
     private bool InRange(int index) => index >= 0 && index < _rules.Count;
 
-    private static string Num(double? value) => (value ?? 0).ToString("0.##", CultureInfo.InvariantCulture);
+    /// <summary>The one number format for the table and the dialog: a point, no thousands separator, whatever the culture.</summary>
+    internal static string Num(double? value) => (value ?? 0).ToString("0.######", CultureInfo.InvariantCulture);
 }
 
 /// <summary>One line of the rules table in <see cref="MainWindow"/>.</summary>

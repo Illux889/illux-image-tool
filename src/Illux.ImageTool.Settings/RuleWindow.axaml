@@ -26,25 +26,25 @@
     </ComboBox>
 
     <TextBlock Grid.Row="2" Classes="label" Text="Width (cm)" x:Name="WidthLabel" />
-    <NumericUpDown Grid.Row="2" Grid.Column="1" x:Name="WidthBox" Minimum="0.1" Maximum="1000" Increment="1" FormatString="0.##" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="2" Grid.Column="1" x:Name="WidthBox" Width="150" HorizontalAlignment="Left" />
 
     <TextBlock Grid.Row="3" Classes="label" Text="Height (cm)" x:Name="HeightLabel" />
-    <NumericUpDown Grid.Row="3" Grid.Column="1" x:Name="HeightBox" Minimum="0.1" Maximum="1000" Increment="1" FormatString="0.##" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="3" Grid.Column="1" x:Name="HeightBox" Width="150" HorizontalAlignment="Left" />
 
     <TextBlock Grid.Row="4" Classes="label" Text="Limit (cm)" x:Name="LimitLabel" />
-    <NumericUpDown Grid.Row="4" Grid.Column="1" x:Name="LimitBox" Minimum="0.1" Maximum="1000" Increment="1" FormatString="0.##" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="4" Grid.Column="1" x:Name="LimitBox" Width="150" HorizontalAlignment="Left" />
 
     <TextBlock Grid.Row="5" Classes="label" Text="Area (cm²)" x:Name="AreaLabel" />
-    <NumericUpDown Grid.Row="5" Grid.Column="1" x:Name="AreaBox" Minimum="0.01" Maximum="1000000" Increment="100" FormatString="0.##" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="5" Grid.Column="1" x:Name="AreaBox" Width="150" HorizontalAlignment="Left" />
 
     <TextBlock Grid.Row="6" Classes="label" Text="Target ppi" />
-    <NumericUpDown Grid.Row="6" Grid.Column="1" x:Name="TargetBox" Minimum="1" Maximum="2400" Increment="1" FormatString="0" Value="300" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="6" Grid.Column="1" x:Name="TargetBox" Width="150" HorizontalAlignment="Left" />
 
     <TextBlock Grid.Row="7" Classes="label" Text="Leave alone from" />
-    <NumericUpDown Grid.Row="7" Grid.Column="1" x:Name="MinBox" Minimum="1" Maximum="2400" Increment="1" FormatString="0" Value="250" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="7" Grid.Column="1" x:Name="MinBox" Width="150" HorizontalAlignment="Left" />
 
     <TextBlock Grid.Row="8" Classes="label" Text="Leave alone up to" />
-    <NumericUpDown Grid.Row="8" Grid.Column="1" x:Name="MaxBox" Minimum="1" Maximum="2400" Increment="1" FormatString="0" Value="350" Width="150" HorizontalAlignment="Left" />
+    <TextBox Grid.Row="8" Grid.Column="1" x:Name="MaxBox" Width="150" HorizontalAlignment="Left" />
 
     <StackPanel Grid.Row="9" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,6,0,0">
       <Button x:Name="OkButton" Content="OK" Width="90" HorizontalContentAlignment="Center" IsDefault="True" />
