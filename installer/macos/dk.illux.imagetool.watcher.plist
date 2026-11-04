@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The watcher daemon: runs as root from boot, without anyone logged in, and is restarted when it stops.
+  AbandonProcessGroup: the updater starts /usr/sbin/installer as a child of this daemon, and the package's preinstall
+  boots this job out; without the flag launchd would kill the installer together with the daemon.
+  Standard output is discarded; standard error (only an unhandled crash writes there, the daemon logs into its own
+  files) goes to the root-only service-logs folder, never to a folder users can write to.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dk.illux.imagetool.watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Application Support/Illux Image Tool/bin/IlluxImageToolWatcher</string>
+    </array>
+    <key>UserName</key>
+    <string>root</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>AbandonProcessGroup</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Application Support/Illux Image Tool/service-logs/launchd-stderr.log</string>
+</dict>
+</plist>

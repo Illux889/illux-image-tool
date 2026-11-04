@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The menu-bar helper (the settings app with tray mode, without a Dock icon), started for every user who logs in to
+  the desktop, as that user. Like the Windows tray helper it is not restarted after the user quits it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dk.illux.imagetool.tray</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Illux Image Tool.app/Contents/MacOS/IlluxImageToolSettings</string>
+        <string>--tray</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

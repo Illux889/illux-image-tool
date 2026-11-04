@@ -1,0 +1,111 @@
+#!/bin/sh
+# Runs as root after the payload was copied: sets up the data folders and their owners and modes, creates config.json
+# when it is missing (never overwrites it), clears updating.flag, resets the update state to Idle, starts the watcher
+# daemon and starts the menu-bar helper for the users logged in to the desktop.
+#
+# Data folder (/Library/Application Support/Illux Image Tool):
+#   .               root:admin 0755  checked by the daemon: owned by root, not writable by group or others
+#   config.json     root:admin 0664  saved in place by the settings app (administrators); readable by all
+#   bin/            root:wheel 0755  the command-line tool and the daemon (payload)
+#   uninstall.sh    root:wheel 0700
+#   update/         root:wheel 0700  downloaded installers (the daemon checks owner and mode)
+#   service-logs/   root:wheel 0700  the daemon's logs
+#   run/            root:wheel 0755  the daemon's control socket
+#   logs/, runs/    root:wheel 1777  written by the command-line tool as the user (sticky); root never writes there
+set -u
+SCRIPT_NAME=postinstall
+. "$(dirname "$0")/common.sh"
+
+fail() { say "ERROR: $*"; exit 1; }
+
+# preinstall moved an untrusted Root aside before the payload went in; here it must be ours.
+reason=$(untrusted_reason "$ROOT" strict)
+[ -z "$reason" ] || fail "'$ROOT' cannot be used: $reason"
+chown root:admin "$ROOT" && chmod 0755 "$ROOT" || fail "could not set the owner and mode of '$ROOT'"
+
+# A known folder that is a link, not a folder or not owned by root is moved aside and made again; a kept one gets its
+# owner and mode back. Only the folder itself is changed, never what users put into logs/ or runs/.
+ensure_dir() { # name mode
+    dir="$ROOT/$1"
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        reason=$(untrusted_reason "$dir")
+        if [ -n "$reason" ]; then move_aside "$dir" "$reason" || return 1; fi
+    fi
+    if [ ! -e "$dir" ]; then mkdir "$dir" || return 1; fi
+    [ -z "$(untrusted_reason "$dir")" ] || return 1
+    chown -h root:wheel "$dir" && chmod -h "$2" "$dir"
+}
+for spec in update:0700 service-logs:0700 run:0755 logs:1777 runs:1777; do
+    ensure_dir "${spec%%:*}" "${spec##*:}" || fail "could not set up '$ROOT/${spec%%:*}'"
+done
+
+# Program files (payload): root:wheel, nobody else may write.
+[ -z "$(untrusted_reason "$ROOT/bin")" ] || fail "'$ROOT/bin' is not a root-owned folder"
+chown -R root:wheel "$ROOT/bin" && chmod -R u+rwX,go+rX,go-w "$ROOT/bin" || fail "could not set the owner and mode of '$ROOT/bin'"
+[ -f "$ROOT/uninstall.sh" ] && [ ! -L "$ROOT/uninstall.sh" ] || fail "'$ROOT/uninstall.sh' is missing"
+chown root:wheel "$ROOT/uninstall.sh" && chmod 0700 "$ROOT/uninstall.sh" || fail "could not secure uninstall.sh"
+for plist in "$DAEMON_PLIST" "$TRAY_PLIST"; do
+    chown root:wheel "$plist" && chmod 0644 "$plist" || fail "could not set the owner and mode of '$plist'"
+done
+
+# config.json: never overwritten. Created ({} = defaults) when missing. The settings app saves it in place, so it must
+# be a regular file of its own (one link); a link or anything else is moved aside, and a file with a second name (hard
+# link) gets a copy of its own with the same content.
+config="$ROOT/config.json"
+if [ -L "$config" ] || { [ -e "$config" ] && [ ! -f "$config" ]; }; then
+    move_aside "$config" "it is a link or not a regular file" || fail "could not move '$config' aside"
+fi
+temp="$ROOT/.config.json.tmp-$$"
+if [ -f "$config" ]; then
+    if [ "$(stat -f %l "$config")" != 1 ]; then
+        say "config.json has more than one link; giving it a copy of its own"
+        cp -p "$config" "$temp" && mv -f "$temp" "$config" || fail "could not copy '$config'"
+    fi
+else
+    (umask 022 && printf '{}\n' > "$temp") && mv "$temp" "$config" || fail "could not create '$config'"
+    say "created config.json with the default settings"
+fi
+chown root:admin "$config" && chmod 0664 "$config" || fail "could not set the owner and mode of '$config'"
+
+# R31: the flag goes before the daemon starts, or the daemon could see a fresh flag and wait.
+rm -f "$ROOT/updating.flag"
+
+# The update state (written by the daemon, read by the settings app) back to Idle, as on Windows only when present.
+write_state() { # optional error text (plain, no quotes)
+    state="$ROOT/update-state.json"
+    if [ -d "$state" ] && [ ! -L "$state" ]; then say "'$state' is a folder; not resetting the update state"; return; fi
+    if [ -z "${1:-}" ] && [ ! -e "$state" ] && [ ! -L "$state" ]; then return; fi
+    temp="$ROOT/.update-state.json.tmp-$$"
+    if [ -n "${1:-}" ]; then
+        (umask 022 && printf '{\n  "phase": "Idle",\n  "error": "%s"\n}\n' "$1" > "$temp")
+    else
+        (umask 022 && printf '{\n  "phase": "Idle"\n}\n' > "$temp")
+    fi
+    chown root:wheel "$temp" && mv -f "$temp" "$state" || say "could not write '$state'"
+}
+write_state
+
+# The daemon: preinstall booted the old job out, so it is loaded again here (RunAtLoad starts it). Should it still be
+# loaded (bootout failed), kickstart -k restarts it on the new program files.
+if launchctl bootstrap system "$DAEMON_PLIST"; then
+    launchctl kickstart "system/$DAEMON_LABEL"
+elif launchctl print "system/$DAEMON_LABEL" >/dev/null 2>&1; then
+    launchctl kickstart -k "system/$DAEMON_LABEL"
+else
+    false
+fi
+if [ $? -ne 0 ]; then
+    write_state "The watcher service did not start after the installation - see /var/log/install.log."
+    fail "the watcher daemon did not start"
+fi
+say "started the watcher daemon"
+
+# The menu-bar helper for every user logged in to the desktop (best effort: it also starts at their next login).
+for uid in $(gui_users); do
+    if launchctl bootstrap "gui/$uid" "$TRAY_PLIST" 2>/dev/null; then
+        say "started the menu-bar helper for user $uid"
+    else
+        say "could not start the menu-bar helper for user $uid now; it starts at the next login"
+    fi
+done
+exit 0
