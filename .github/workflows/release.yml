@@ -253,9 +253,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
-        # One full release: neither --draft nor --prerelease (the updaters ignore both). +
-+        # docs/release-notes/vX.Y.Z.md when it exists, else generated notes.
-        # docs/release-notes/vX.Y.Z.md when it exists, else generated notes.
+        # One full release: neither --draft nor --prerelease (the updaters ignore both). The body is
+        # docs/release-notes/vX.Y.Z.md, which must exist (checked above).
         run: |
           set -eu
           notes=(--notes-file "docs/release-notes/v$VERSION.md")
