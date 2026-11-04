@@ -465,6 +465,31 @@ public sealed class UnixSocketSignalsTests : IDisposable
         Assert.True(draining.Wait(Wait));
     }
 
+    /// <summary>A Root whose socket path is longer than a Unix socket address can hold (104 bytes on macOS).</summary>
+    private string LongRoot() => Path.Combine(_root, new string('r', 120));
+
+    [MacFact]
+    public void Send_SocketPathTooLong_IsTheUsualNotRunningError()
+    {
+        // UnixDomainSocketEndPoint refuses such a path with an ArgumentException; the client reports it like any other
+        // service it cannot reach (no daemon can listen there either).
+        var ex = Assert.Throws<IOException>(() => UnixSocketSignals.Send(LongRoot(), UnixSocketSignals.CheckCommand));
+
+        Assert.Contains("not running", ex.Message);
+        Assert.IsAssignableFrom<ArgumentException>(ex.InnerException);
+    }
+
+    [MacFact]
+    public void Requests_SocketPathTooLong_FailClearly()
+    {
+        Environment.SetEnvironmentVariable(AppPaths.RootOverrideVariable, LongRoot());
+
+        Assert.False(ServiceRequests.RequestCheckNow(out var error));
+        Assert.Contains("not running", error);
+        Assert.False(ServiceRequests.RequestInstallNow(out error));
+        Assert.Contains("not running", error);
+    }
+
     [MacFact]
     public void Send_SocketGoneBetweenAttempts_IsAnIOExceptionSayingNotRunning()
     {

@@ -28,6 +28,32 @@ public sealed class ResolutionRulesTests : IDisposable
     private static ResolutionRule All(int min = 150, int target = 200, int max = 250) =>
         new("Large", SizeTest.All, null, null, null, null, target, min, max);
 
+    [Fact]
+    public void Validate_Messages_AreTheSameInEveryCulture()
+    {
+        // Settings shows these messages; a Danish Windows must not turn 0.1 into "0,1" or 1000000 into "1.000.000".
+        var previous = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("da-DK");
+        try
+        {
+            var problems = ResolutionRules.Validate(
+            [
+                Fits(0.05, 30),
+                new("Side", SizeTest.LongestSide, null, null, 5000, null, 300, 250, 350),
+                new("Area", SizeTest.Area, null, null, null, 0.001, 300, 250, 350),
+                All(),
+            ]);
+
+            Assert.Contains("Rule 'Small': width and height must be between 0.1 and 1000 cm.", problems);
+            Assert.Contains("Rule 'Side': the side limit must be between 0.1 and 1000 cm.", problems);
+            Assert.Contains("Rule 'Area': the area must be between 0.01 and 1000000 cm2.", problems);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previous;
+        }
+    }
+
     // ----- final review M2: a null entry is a validation problem, never a NullReferenceException -----
 
     [Fact]

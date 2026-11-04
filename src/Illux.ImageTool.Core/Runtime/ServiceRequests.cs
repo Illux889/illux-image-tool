@@ -39,10 +39,16 @@ public static class ServiceRequests
             error = null;
             return true;
         }
-        // A SocketException is mapped by the socket client already; caught here too so no request can ever end the UI.
+        // A SocketException (and the ArgumentException of a socket path that is too long) is mapped by the socket client
+        // already; caught here too so no request can ever end the UI.
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Net.Sockets.SocketException)
         {
             error = ex.Message;
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            error = NotRunningMessage;
             return false;
         }
     }

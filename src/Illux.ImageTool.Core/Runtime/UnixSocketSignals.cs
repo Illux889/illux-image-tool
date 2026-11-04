@@ -145,6 +145,11 @@ public sealed class UnixSocketSignals : IServiceSignals
         {
             throw new IOException("The Illux Image Tool service did not take the request in time.", ex);
         }
+        catch (ArgumentException ex)
+        {
+            // UnixDomainSocketEndPoint: the path is too long for a socket address; no daemon can listen there either.
+            throw new IOException(ServiceRequests.NotRunningMessage, ex);
+        }
         catch (SocketException ex)
         {
             var present = socketPresent(path);

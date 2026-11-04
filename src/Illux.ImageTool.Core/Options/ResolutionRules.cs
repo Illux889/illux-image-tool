@@ -1,3 +1,5 @@
+using static System.FormattableString;
+
 namespace Illux.ImageTool.Options;
 
 public static class ResolutionRules
@@ -48,7 +50,7 @@ public static class ResolutionRules
         return rules[^1];
     }
 
-    /// <summary>Plain-English problems with <paramref name="rules"/>; empty means valid.</summary>
+    /// <summary>Plain-English problems with <paramref name="rules"/>; empty means valid. Numbers are written the same in every culture.</summary>
     public static IReadOnlyList<string> Validate(IReadOnlyList<ResolutionRule> rules)
     {
         var problems = new List<string>();
@@ -64,34 +66,34 @@ public static class ResolutionRules
             if (r is null)
             {
                 // A "null" entry in config.json (final review M2): a problem to report, not a crash.
-                problems.Add($"Rule {i + 1} is empty.");
+                problems.Add(Invariant($"Rule {i + 1} is empty."));
                 continue;
             }
             var label = string.IsNullOrWhiteSpace(r.Name) ? $"Rule {i + 1}" : $"Rule '{r.Name}'";
-            if (string.IsNullOrWhiteSpace(r.Name)) problems.Add($"Rule {i + 1} needs a name.");
+            if (string.IsNullOrWhiteSpace(r.Name)) problems.Add(Invariant($"Rule {i + 1} needs a name."));
 
             if (r.MinPpi < 1 || r.MaxPpi > MaxAllowedPpi || r.MinPpi > r.TargetPpi || r.TargetPpi > r.MaxPpi)
-                problems.Add($"{label}: ppi values must satisfy 1 <= minimum <= target <= maximum <= {MaxAllowedPpi}.");
+                problems.Add(Invariant($"{label}: ppi values must satisfy 1 <= minimum <= target <= maximum <= {MaxAllowedPpi}."));
 
             switch (r.Test)
             {
                 case SizeTest.FitsWithin:
                     if (!InRange(r.WidthCm, MinSizeCm, MaxSizeCm) || !InRange(r.HeightCm, MinSizeCm, MaxSizeCm))
-                        problems.Add($"{label}: width and height must be between {MinSizeCm} and {MaxSizeCm} cm.");
+                        problems.Add(Invariant($"{label}: width and height must be between {MinSizeCm} and {MaxSizeCm} cm."));
                     break;
                 case SizeTest.LongestSide:
                 case SizeTest.ShortestSide:
                     if (!InRange(r.LimitCm, MinSizeCm, MaxSizeCm))
-                        problems.Add($"{label}: the side limit must be between {MinSizeCm} and {MaxSizeCm} cm.");
+                        problems.Add(Invariant($"{label}: the side limit must be between {MinSizeCm} and {MaxSizeCm} cm."));
                     break;
                 case SizeTest.Area:
                     if (!InRange(r.AreaCm2, MinAreaCm2, MaxAreaCm2))
-                        problems.Add($"{label}: the area must be between {MinAreaCm2} and {MaxAreaCm2} cm2.");
+                        problems.Add(Invariant($"{label}: the area must be between {MinAreaCm2} and {MaxAreaCm2} cm2."));
                     break;
                 case SizeTest.All:
                     break;
                 default:
-                    problems.Add($"{label}: unknown size test.");
+                    problems.Add(Invariant($"{label}: unknown size test."));
                     break;
             }
         }

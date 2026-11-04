@@ -20,8 +20,10 @@
   7. Before all of that, when -PreviousReleaseVersion is given: installs that public release (downloaded from GitHub and
      checked against its published .sha256 file), seeds a config.json the way an administrator would (one watched
      folder, no resolutionRules), upgrades to -Installer, and checks that config.json is byte-identical (the installer
-     did not write it), that files the new build no longer ships are gone, and that the CLI applies the default
-     resolution rules (a 20 x 15 cm, 150 ppi JPEG comes out at 300 ppi). It then uninstalls and removes the data folder.
+     did not write it), that every [InstallDelete] file of the .iss that the old version had is gone (unless the new
+     version ships it again, checked after the fresh install below, which also compares the old and new file lists),
+     and that the CLI applies the default resolution rules (a 20 x 15 cm, 150 ppi JPEG comes out at 300 ppi). It then
+     uninstalls and removes the data folder.
   Also checks that the installer is smaller than 100 MB and prints its size.
   Exits 1 if any check failed.
 #>
@@ -47,6 +49,7 @@ $Cli      = Join-Path $App 'IlluxImageTool.exe'
 $StartMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Illux Image Tool'
 $RunKey   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $EventKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Illux Image Tool'
+$Iss      = Join-Path $PSScriptRoot '..\installer\IlluxImageTool.iss'
 $script:Failures = New-Object System.Collections.Generic.List[string]
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -349,7 +352,10 @@ if ($PreviousReleaseVersion) {
     New-Item -ItemType Directory -Force -Path $prevDir | Out-Null
     $prevFile = Join-Path $prevDir $prevName
     $baseUrl = "https://github.com/Illux889/illux-image-tool/releases/download/v$PreviousReleaseVersion"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    # TLS 1.2, and TLS 1.3 where this .NET Framework knows it.
+    $protocols = [Net.SecurityProtocolType]::Tls12
+    if ([Enum]::GetNames([Net.SecurityProtocolType]) -contains 'Tls13') { $protocols = $protocols -bor [Net.SecurityProtocolType]::Tls13 }
+    [Net.ServicePointManager]::SecurityProtocol = $protocols
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri "$baseUrl/$prevName" -OutFile $prevFile -UseBasicParsing
     Invoke-WebRequest -Uri "$baseUrl/$prevName.sha256" -OutFile "$prevFile.sha256" -UseBasicParsing
@@ -359,7 +365,6 @@ if ($PreviousReleaseVersion) {
     Write-Host ('Downloaded {0}, {1:N1} MB, SHA-256 {2}; published: {3}' -f $prevName, ((Get-Item -LiteralPath $prevFile).Length / 1MB), $actualHash, $expectedLine)
     # The file is only run when it matches its published checksum.
     if ($expectedLine -ne "$actualHash  $prevName") { throw "The downloaded $prevName does not match its published .sha256 file." }
-    Check $true "$prevName matches its published .sha256 file"
 
     $code = Invoke-Installer $prevFile 'install-previous.log'
     Check ($code -eq 0) "installer $PreviousReleaseVersion exit code 0 (got $code)"
@@ -367,9 +372,16 @@ if ($PreviousReleaseVersion) {
     Check (Wait-Until { (Get-ServiceState) -eq 'Running' } 60) "service is running after installing $PreviousReleaseVersion (state: $(Get-ServiceState))"
     $prevCliVersion = (& $Cli --version | Out-String).Trim()
     Check ($prevCliVersion -eq $PreviousReleaseVersion) "CLI --version is $PreviousReleaseVersion (got '$prevCliVersion')"
-    # Files of the old version that the new one no longer ships must exist now, or the clean-up check below proves nothing.
-    $stale = @('Magick.NET-Q16-HDRI-x64.dll', 'System.Windows.Forms.dll', 'System.Drawing.Common.dll', 'cs\System.Windows.Forms.resources.dll')
-    foreach ($rel in $stale) { Check (Test-Path -LiteralPath (Join-Path $App $rel)) "$PreviousReleaseVersion installed $rel" }
+    # Every file [InstallDelete] names: it must exist now (a name the old version never had is skipped), or the
+    # clean-up check after the upgrade proves nothing.
+    $installDelete = @(Select-String -LiteralPath $Iss -Pattern '^Type: files; Name: "\{app\}\\(.+)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+    Write-Host "[InstallDelete] in the .iss: $($installDelete.Count) file(s)"
+    Check ($installDelete.Count -gt 0) 'the .iss has [InstallDelete] entries to check'
+    $stale = @($installDelete | Where-Object { Test-Path -LiteralPath (Join-Path $App $_) })
+    foreach ($rel in $installDelete | Where-Object { $stale -notcontains $_ }) { Write-Host "SKIP  $PreviousReleaseVersion never had $rel" }
+    Check ($stale.Count -gt 0) "$PreviousReleaseVersion installed $($stale.Count) of the $($installDelete.Count) [InstallDelete] files"
+    # The old version's program files, to compare with what a fresh install of the new one ships (after the upgrade).
+    $prevFiles = @(Get-ChildItem -LiteralPath $App -Recurse -File | ForEach-Object { $_.FullName.Substring($App.Length + 1) })
 
     # As an administrator would have set it up: one watched folder, no resolutionRules section. No trailing newline:
     # any rewrite of the file by the installer would change the bytes.
@@ -391,7 +403,11 @@ if ($PreviousReleaseVersion) {
     foreach ($rel in 'IlluxImageTool.exe', 'IlluxImageToolWatcher.exe', 'IlluxImageToolSettings.exe', 'Magick.NET-Q16-HDRI-AnyCPU.dll', 'Avalonia.Base.dll', 'unins000.exe') {
         Check (Test-Path -LiteralPath (Join-Path $App $rel)) "installed $rel after the upgrade from $PreviousReleaseVersion"
     }
-    foreach ($rel in $stale) { Check (-not (Test-Path -LiteralPath (Join-Path $App $rel))) "stale file $rel removed by the upgrade" }
+    # An [InstallDelete] file still there after the upgrade must be one the new version ships again (checked after the
+    # fresh install below); all others must be gone.
+    $keptByUpgrade = @($stale | Where-Object { Test-Path -LiteralPath (Join-Path $App $_) })
+    Check ($keptByUpgrade.Count -lt $stale.Count) "the upgrade removed $($stale.Count - $keptByUpgrade.Count) of the $($stale.Count) [InstallDelete] files $PreviousReleaseVersion had"
+    foreach ($rel in $keptByUpgrade) { Write-Host "Still there after the upgrade (must be shipped again): $rel" }
     Check (-not (Get-ChildItem -LiteralPath $App -Recurse -File -Filter 'System.Windows.Forms*.dll' -ErrorAction SilentlyContinue)) 'no System.Windows.Forms file is left in the program folder'
 
     $nowBytes = [IO.File]::ReadAllBytes($configPath)
@@ -449,6 +465,18 @@ foreach ($rel in 'IlluxImageTool.exe', 'IlluxImageToolWatcher.exe', 'IlluxImageT
                  'tools\jpegtran\jpeg62.dll', 'scripts\ae\IlluxImageTool.bat', 'scripts\ae\IlluxImageTool.ps1', 'docs\ae-setup.md',
                  'LICENSE.txt', 'System.Diagnostics.EventLog.Messages.dll', 'unins000.exe') {
     Check (Test-Path -LiteralPath (Join-Path $App $rel)) "installed $rel"
+}
+if ($PreviousReleaseVersion) {
+    # The fresh install shows what this version ships: an [InstallDelete] file the upgrade left must be one of them,
+    # and every program file of the old version that this one does not ship must be an [InstallDelete] entry.
+    $newFiles = @(Get-ChildItem -LiteralPath $App -Recurse -File | ForEach-Object { $_.FullName.Substring($App.Length + 1) })
+    foreach ($rel in $keptByUpgrade) { Check ($newFiles -contains $rel) "$rel, left by the upgrade from $PreviousReleaseVersion, is shipped by $Version" }
+    $notShipped = @($prevFiles | Where-Object { $newFiles -notcontains $_ })
+    $notDeleted = @($notShipped | Where-Object { $installDelete -notcontains $_ })
+    Write-Host "Files of $PreviousReleaseVersion that $Version does not ship: $($notShipped.Count); [InstallDelete] entries: $($installDelete.Count)"
+    Check ($notDeleted.Count -eq 0) "every file of $PreviousReleaseVersion that $Version does not ship is in [InstallDelete] (missing: $($notDeleted -join ', '))"
+    $extra = @($installDelete | Where-Object { $notShipped -notcontains $_ })
+    foreach ($rel in $extra) { Write-Host "Note: [InstallDelete] entry $rel is not a file $PreviousReleaseVersion had and $Version lacks" }
 }
 Check (Test-Path -LiteralPath (Join-Path $StartMenu 'Illux Image Tool Settings.lnk')) 'Start menu: Illux Image Tool Settings'
 Check (Test-Path -LiteralPath (Join-Path $StartMenu 'AE setup guide.lnk')) 'Start menu: AE setup guide'
