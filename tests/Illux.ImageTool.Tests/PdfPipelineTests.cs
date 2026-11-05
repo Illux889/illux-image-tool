@@ -21,6 +21,7 @@ public sealed class PdfPipelineTests : IDisposable
 
     public void Dispose()
     {
+        PdfCheckOutput.Keep(_dir, "pipeline");
         try { Directory.Delete(_dir, true); } catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }

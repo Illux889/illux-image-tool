@@ -55,6 +55,15 @@ runs:
         ./build/smoke-test-installer.ps1 @arguments
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+    - name: Check the smoke test PDFs with qpdf
+      shell: powershell
+      run: |
+        # qpdf is installed on this throw-away runner only, as an independent PDF reader.
+        choco install qpdf -y --no-progress
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+        ./build/check-pdfs-with-qpdf.ps1 -Folder "$env:RUNNER_TEMP\smoke\pdf-check"
+        if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
     - name: Collect logs
       if: always()
       shell: powershell

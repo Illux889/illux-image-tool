@@ -580,6 +580,50 @@ if (Test-Path -LiteralPath $watchedOut) {
 }
 $originals = Join-Path $watch 'Originals\watched.jpg'
 Check (Wait-Until { Test-Path -LiteralPath $originals } 30) 'the original was moved to Originals'
+
+Section 'PDF in the watched folder'
+# A one-page PDF with a synthetic 120 ppi JPEG drawn 61 x 45.7 cm (2882 x 2159 px): rule "Large" scales it to 200 ppi.
+# The PDF is made by the installed CLI (8bit only, so nothing is resampled; output=pdf wraps the JPEG in a one-page PDF).
+$pdfJpeg = Join-Path $Smoke 'chili-like.jpg'
+New-TestJpeg $pdfJpeg 2882 2159 120
+$pdfSrc = Join-Path $Smoke 'pdf-src'; New-Item -ItemType Directory -Force -Path $pdfSrc | Out-Null
+& $Cli run $pdfJpeg --out $pdfSrc 8bit output=pdf | Write-Host
+Check ($LASTEXITCODE -eq 0) "the installed CLI made the one-page PDF (exit code $LASTEXITCODE)"
+$pdfIn = Join-Path $pdfSrc 'chili-like.pdf'
+Check (Test-Path -LiteralPath $pdfIn) 'the one-page PDF exists'
+$mediaBoxPattern = '/MediaBox\s*\[[^\]]*\]'
+function Get-MediaBox([string]$Path) {
+    $m = [regex]::Match([Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($Path)), $mediaBoxPattern)
+    if ($m.Success) { ($m.Value -replace '\s+', ' ') } else { '' }
+}
+$boxIn = Get-MediaBox $pdfIn
+Check ($boxIn -ne '') "the input PDF has a /MediaBox ($boxIn)"
+$pdfCheck = Join-Path $WorkDir 'pdf-check'; New-Item -ItemType Directory -Force -Path $pdfCheck | Out-Null
+
+# The installed CLI on its own: its log line shows the image going to 200 ppi.
+$cliPdfOut = Join-Path $Smoke 'out-cli-pdf'; New-Item -ItemType Directory -Force -Path $cliPdfOut | Out-Null
+$cliLines = (& $Cli run $pdfIn --out $cliPdfOut | Out-String)
+$cliCode = $LASTEXITCODE
+Write-Host $cliLines
+Check ($cliCode -eq 0) "the installed CLI processed the PDF (exit code $cliCode)"
+Check ($cliLines -match 'page 1, image 1: 120\S+200 ppi') 'the CLI log line shows page 1, image 1 going from 120 to 200 ppi'
+if (Test-Path -LiteralPath (Join-Path $cliPdfOut 'chili-like.pdf')) { Copy-Item -LiteralPath (Join-Path $cliPdfOut 'chili-like.pdf') -Destination (Join-Path $pdfCheck 'cli-windows.pdf') }
+else { Check $false 'the CLI wrote chili-like.pdf' }
+
+# The service: the same PDF dropped into the watched folder.
+Copy-Item -LiteralPath $pdfIn -Destination (Join-Path $watch 'In\chili-like.pdf')
+$pdfOut = Join-Path $watch 'Out\chili-like.pdf'
+Check (Wait-Until { Test-Path -LiteralPath $pdfOut } 120) 'the service processed the PDF dropped into the watched In folder'
+Check (Wait-Until { Test-Path -LiteralPath (Join-Path $watch 'Originals\chili-like.pdf') } 30) 'the input PDF was moved to Originals'
+if (Test-Path -LiteralPath $pdfOut) {
+    Start-Sleep -Seconds 1
+    Check ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($pdfOut), 0, 5) -eq "%PDF-") 'Out holds a PDF'
+    Check ((Get-MediaBox $pdfOut) -eq $boxIn) "the output PDF has the page size of the input ($boxIn; got $(Get-MediaBox $pdfOut))"
+    Check ((Get-Item -LiteralPath $pdfOut).Length -gt (Get-Item -LiteralPath $pdfIn).Length) 'the output PDF is larger (the image went up to 200 ppi)'
+    Copy-Item -LiteralPath $pdfOut -Destination (Join-Path $pdfCheck 'watched-windows.pdf')
+}
+Check (@(Get-ChildItem -LiteralPath (Join-Path $watch 'Out') -Filter '*.pdf').Count -eq 1) 'Out holds exactly one PDF'
+Check (Wait-Until { (Get-ServiceLogText) -match 'page 1, image 1: 120\S+200 ppi' } 30) 'the service log shows page 1, image 1 going from 120 to 200 ppi'
 Show-Log (Get-ChildItem -LiteralPath $ServiceLogs -Filter 'watcher*.log' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 
 # =====================================================================================================

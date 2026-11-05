@@ -22,6 +22,7 @@ public sealed class PdfRewriterTests : IDisposable
 
     public void Dispose()
     {
+        PdfCheckOutput.Keep(_dir, "rewriter");
         try { Directory.Delete(_dir, true); } catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }

@@ -35,8 +35,20 @@ jobs:
       - name: Fetch jpegtran
         run: ./build/fetch-jpegtran.ps1
 
+      - name: Install qpdf
+        # CI runner only: an independent PDF reader for the check below.
+        run: |
+          choco install qpdf -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Test
+        env:
+          # PdfPipeline and PdfRewriter tests keep their output PDFs here.
+          ILLUX_PDF_CHECK_DIR: ${{ runner.temp }}\pdf-check
         run: dotnet test -c Release
+
+      - name: Check the test PDFs with qpdf
+        run: ./build/check-pdfs-with-qpdf.ps1 -Folder "$env:RUNNER_TEMP\pdf-check"
 
       - name: Versions
         id: versions
@@ -88,8 +100,16 @@ jobs:
       - name: Build jpegtran
         run: ./build/fetch-jpegtran.sh
 
+      - name: Install qpdf
+        run: brew install qpdf
+
       - name: Test
+        env:
+          ILLUX_PDF_CHECK_DIR: ${{ runner.temp }}/pdf-check
         run: dotnet test -c Release
+
+      - name: Check the test PDFs with qpdf
+        run: ./build/check-pdfs-with-qpdf.sh "$RUNNER_TEMP/pdf-check"
 
   macos-package:
     name: macOS package, install, upgrade and uninstall
