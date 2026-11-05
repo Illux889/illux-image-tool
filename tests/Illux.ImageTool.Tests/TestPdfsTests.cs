@@ -234,9 +234,12 @@ public sealed class TestPdfsTests : IDisposable
     }
 
     [Fact]
-    public void Signed_HasSigFlagsOrByteRange()
+    public void Signed_BlankFieldWithSigFlags_OrByteRange()
     {
-        Assert.Contains("/SigFlags 3", RawText(TestPdfs.Signed(_dir, "s1.pdf")));
+        var blank = RawText(TestPdfs.Signed(_dir, "s1.pdf"));
+        Assert.Contains("/SigFlags 3", blank);
+        Assert.Contains("/FT /Sig /T (Signature1) >>", blank);
+        Assert.DoesNotContain("/ByteRange", blank);
         Assert.Contains("/ByteRange", RawText(TestPdfs.Signed(_dir, "s2.pdf", byteRange: true)));
     }
 }

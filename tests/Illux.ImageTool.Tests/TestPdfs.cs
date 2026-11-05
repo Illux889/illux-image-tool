@@ -72,6 +72,85 @@ internal static class TestPdfs
             return [FullPage(image, size1.Item1, size1.Item2), FullPage(image, size2.Item1, size2.Item2)];
         });
 
+    /// <summary>
+    /// One 5 × 5 cm page whose content draws nothing, and the image used only where the page walk does not go:
+    /// <paramref name="where"/> <c>annotation</c> (a form in an annotation's <c>/AP /N</c> draws it) or <c>pattern</c>
+    /// (a tiling pattern the page fills a rectangle with draws it). With <c>thumb</c> the page draws the image over
+    /// itself and has a small grey thumbnail image in its <c>/Thumb</c>.
+    /// </summary>
+    public static string WithUndrawnImage(string dir, string name, string imagePath, string where) =>
+        Write(dir, name, "1.4", pdf =>
+        {
+            var image = WriteImage(pdf, Encode(imagePath));
+            var side = 5 * PointsPerCm;
+            switch (where)
+            {
+                case "annotation":
+                {
+                    var appearance = pdf.Reserve();
+                    pdf.WriteStream(appearance, $"/Type /XObject /Subtype /Form /BBox [0 0 50 50] /Resources << /XObject << /Im0 {image} 0 R >> >>",
+                        o => o.Write("q 50 0 0 50 0 0 cm /Im0 Do Q"u8));
+                    var annotation = pdf.Reserve();
+                    pdf.WriteObject(annotation, $"<< /Type /Annot /Subtype /Stamp /Rect [0 0 50 50] /AP << /N {appearance} 0 R >> >>");
+                    return [new PageSpec(side, side, "0 0 1 rg 10 10 20 20 re f", "", MoreEntries: $" /Annots [{annotation} 0 R]")];
+                }
+                case "pattern":
+                {
+                    var pattern = pdf.Reserve();
+                    pdf.WriteStream(pattern,
+                        "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20 " +
+                        $"/Resources << /XObject << /Im0 {image} 0 R >> >>",
+                        o => o.Write("q 20 0 0 20 0 0 cm /Im0 Do Q"u8));
+                    return [new PageSpec(side, side, $"/Pattern cs /P0 scn 0 0 {N(side)} {N(side)} re f", "",
+                        MoreResources: $"/Pattern << /P0 {pattern} 0 R >> ")];
+                }
+                case "thumb":
+                {
+                    var thumb = WriteStream(pdf, "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                        [0, 80, 160, 255]);
+                    return [FullPage(image, 5, 5) with { MoreEntries = $" /Thumb {thumb} 0 R" }];
+                }
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(where), where, "annotation, pattern or thumb");
+            }
+        });
+
+    /// <summary>
+    /// One 5 × 5 cm page that draws form 1; form k (1 ≤ k &lt; <paramref name="depth"/>) draws form k + 1
+    /// <paramref name="fanOut"/> times, and the last form draws the image over the page. The image is drawn
+    /// fanOut^(depth − 1) times.
+    /// </summary>
+    public static string NestedForms(string dir, string name, string imagePath, int depth, int fanOut) =>
+        Write(dir, name, "1.4", pdf =>
+        {
+            var image = WriteImage(pdf, Encode(imagePath));
+            var next = pdf.Reserve();
+            pdf.WriteStream(next, $"/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Im0 {image} 0 R >> >>",
+                o => o.Write("/Im0 Do"u8));
+            var draws = string.Join(' ', Enumerable.Repeat("q /F Do Q", fanOut));
+            for (var level = depth - 1; level >= 1; level--)
+            {
+                var form = pdf.Reserve();
+                pdf.WriteStream(form, $"/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /F {next} 0 R >> >>",
+                    o => o.Write(Encoding.ASCII.GetBytes(draws)));
+                next = form;
+            }
+            var side = N(5 * PointsPerCm);
+            return [new PageSpec(5 * PointsPerCm, 5 * PointsPerCm, $"q {side} 0 0 {side} 0 0 cm /F Do Q", $"/F {next} 0 R")];
+        });
+
+    /// <summary>One 5 × 5 cm page that draws, <paramref name="draws"/> times, a form holding one 2 × 2 grey inline image.</summary>
+    public static string InlineImageInForm(string dir, string name, int draws) =>
+        Write(dir, name, "1.4", pdf =>
+        {
+            var form = pdf.Reserve();
+            pdf.WriteStream(form, "/Type /XObject /Subtype /Form /BBox [0 0 1 1]",
+                o => o.Write(Encoding.Latin1.GetBytes("q 1 0 0 1 0 0 cm\nBI /W 2 /H 2 /CS /G /BPC 8 ID \u0000\u0080@ÿ\nEI\nQ")));
+            var side = N(5 * PointsPerCm);
+            var content = string.Join('\n', Enumerable.Repeat($"q {side} 0 0 {side} 0 0 cm /Fm0 Do Q", draws));
+            return [new PageSpec(5 * PointsPerCm, 5 * PointsPerCm, content, $"/Fm0 {form} 0 R")];
+        });
+
     /// <summary>One 5 × 5 cm page with a 2 × 2 pixel grey inline image (<c>BI … ID … EI</c>) drawn over it.</summary>
     public static string WithInlineImage(string dir, string name) =>
         Write(dir, name, "1.4", _ =>
@@ -111,14 +190,20 @@ internal static class TestPdfs
     }
 
     /// <summary>
-    /// One empty 5 × 5 cm page that looks signed: by default the catalog's AcroForm has <c>/SigFlags 3</c>; with
-    /// <paramref name="byteRange"/> instead a signature dictionary with <c>/ByteRange</c> is in the file and the AcroForm
-    /// has no flags. Nothing is actually signed.
+    /// One empty 5 × 5 cm page with a signature field. By default the field is blank (no value) and the catalog's
+    /// AcroForm has <c>/SigFlags 3</c>, as a form with an unsigned signature field has; with
+    /// <paramref name="byteRange"/> the field holds a signature dictionary with <c>/ByteRange</c> and the AcroForm has
+    /// no flags. Nothing is actually signed.
     /// </summary>
     public static string Signed(string dir, string name, bool byteRange = false) =>
         Write(dir, name, "1.4", _ => [new PageSpec(5 * PointsPerCm, 5 * PointsPerCm, "", "")], pdf =>
         {
-            if (!byteRange) return " /AcroForm << /Fields [] /SigFlags 3 >>";
+            if (!byteRange)
+            {
+                var blank = pdf.Reserve();
+                pdf.WriteObject(blank, "<< /FT /Sig /T (Signature1) >>");
+                return $" /AcroForm << /Fields [{blank} 0 R] /SigFlags 3 >>";
+            }
             var signature = pdf.Reserve();
             pdf.WriteObject(signature, "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>");
             var field = pdf.Reserve();

@@ -71,9 +71,15 @@ public static class PdfPipeline
             messages.Add($"{scan.InlineImages} inline image(s) not processed");
             warning = true;
         }
+        if (scan.NotDrawnImages > 0)
+        {
+            messages.Add($"{scan.NotDrawnImages} image(s) not drawn on a page were not processed");
+            warning = true;
+        }
         if (scan.Images.Count == 0)
         {
-            messages.Add("no images found");
+            // "no images found" only when there are none at all; the warnings above already say what there is.
+            if (!warning) messages.Add("no images found");
             File.Copy(inputPdf, outputPdf, overwrite: true);
             return new PipelineResult(Status.Warning, messages, outputPdf, new Resolution(0, 0), false);
         }

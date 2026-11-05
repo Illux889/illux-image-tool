@@ -1,6 +1,7 @@
 using System.Globalization;
 using Illux.ImageTool.Imaging;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Exceptions;
 using UglyToad.PdfPig.Graphics;
@@ -8,6 +9,7 @@ using UglyToad.PdfPig.Graphics.Operations;
 using UglyToad.PdfPig.Graphics.Operations.InlineImages;
 using UglyToad.PdfPig.Graphics.Operations.SpecialGraphicsState;
 using UglyToad.PdfPig.Logging;
+using UglyToad.PdfPig.Outline.Destinations;
 using UglyToad.PdfPig.Parser;
 using UglyToad.PdfPig.Tokens;
 
@@ -16,13 +18,17 @@ namespace Illux.ImageTool.Pdf.Input;
 /// <summary>
 /// Finds every image a PDF draws and the size it is drawn at (decision P2): walks each page's parsed content
 /// operations with the current transformation matrix, follows forms, and takes the drawn size of an image as the
-/// lengths of its two image axes (the column norms of the matrix) times the page's <c>/UserUnit</c>.
+/// lengths of its two image axes (the column norms of the matrix) times the page's <c>/UserUnit</c>. Each form is
+/// parsed once; more than 100,000 <c>Do</c> operators in one document fail the scan
+/// (<c>the PDF could not be read (too many nested drawings)</c>). Image objects the walk does not reach are counted
+/// (ruling Q16).
 /// </summary>
 public static class PdfImageScanner
 {
     private const double CmPerPoint = 2.54 / 72;
     private const int MaxFormDepth = 16;
     private const double SameSizeToleranceCm = 0.01;
+    private const int MaxDrawExpansions = 100_000;
 
     public static PdfScan Scan(string path)
     {
@@ -94,6 +100,16 @@ public static class PdfImageScanner
         public void Error(string message, Exception ex) { }
     }
 
+    /// <summary>A page as only its dictionary (see <see cref="PageDictionaryFactory"/>).</summary>
+    private sealed record PageDictionary(DictionaryToken Dictionary);
+
+    /// <summary>Gives PdfPig's page lookup (page tree, numbering) without PdfPig processing the page's content.</summary>
+    private sealed class PageDictionaryFactory : IPageFactory<PageDictionary>
+    {
+        public PageDictionary Create(int number, DictionaryToken dictionary, PageTreeMembers pageTreeMembers,
+            NamedDestinations namedDestinations) => new(dictionary);
+    }
+
     private sealed class Walker(PdfDocument document)
     {
         private static readonly ILog Log = new NullLog();
@@ -101,22 +117,41 @@ public static class PdfImageScanner
         private readonly List<PdfImageUse> _uses = [];
         private int _inline;
 
+        // Every image object in the file, the page thumbnails and each image's /SMask and /Mask objects (noted by
+        // CheckSupported), and the images the walk reaches (ruling Q16).
+        private readonly HashSet<PdfObjectId> _allImages = [];
+        private readonly HashSet<PdfObjectId> _thumbnails = [];
+        private readonly Dictionary<PdfObjectId, List<PdfObjectId>> _masks = [];
+        private readonly HashSet<PdfObjectId> _reached = [];
+
+        // Each form is parsed once (its inline images are counted then), however often it is drawn; every Do counts
+        // towards the cap, so forms that draw each other many times over cannot keep the walk busy.
+        private readonly Dictionary<IndirectReference, Form> _forms = [];
+        private int _expansions;
+
+        private sealed record Form(IReadOnlyList<IGraphicsStateOperation> Operations, Matrix Matrix, DictionaryToken? Resources);
+
         public PdfScan Scan(string? headerVersion)
         {
             CheckSupported();
+            // PdfPig's own Page would run the page's whole content, forms included, before the walk starts (and so is
+            // not bounded by the cap); only the page dictionary is taken from it.
+            document.AddPageFactory(new PageDictionaryFactory());
             for (var number = 1; number <= document.NumberOfPages; number++) ScanPage(number);
             var header = headerVersion ?? document.Version.ToString("0.0", CultureInfo.InvariantCulture);
             var catalogVersion = (Resolve(Get(document.Structure.Catalog.CatalogDictionary, "Version")) as NameToken)?.Data;
-            return new PdfScan(HigherVersion(header, catalogVersion), document.NumberOfPages, Aggregate(), _inline);
+            return new PdfScan(HigherVersion(header, catalogVersion), document.NumberOfPages, Aggregate(), _inline, NotDrawn());
         }
 
         private void ScanPage(int number)
         {
-            var page = document.GetPage(number);
-            var userUnit = Resolve(Get(page.Dictionary, "UserUnit")) is NumericToken n && n.Double > 0 ? n.Double : 1;
-            var resources = PageResources(page.Dictionary);
+            var page = document.GetPage<PageDictionary>(number).Dictionary;
+            var userUnit = Resolve(Get(page, "UserUnit")) is NumericToken n && n.Double > 0 ? n.Double : 1;
+            var resources = PageResources(page);
+            var operations = PageOperations(number, page);
             var pageUses = new List<(PdfObjectId Image, double Width, double Height)>();
-            Walk(page.Operations, resources, Matrix.Identity, 0, [], (id, m) =>
+            _inline += operations.Count(o => o is BeginInlineImage);
+            Walk(operations, resources, Matrix.Identity, 0, [], (id, m) =>
                 pageUses.Add((id, m.WidthAxis * userUnit * CmPerPoint, m.HeightAxis * userUnit * CmPerPoint)));
 
             var order = new Dictionary<PdfObjectId, int>();
@@ -148,9 +183,6 @@ public static class PdfImageScanner
                     case ModifyCurrentTransformationMatrix cm when cm.Value.Length >= 6:
                         ctm = new Matrix(cm.Value[0], cm.Value[1], cm.Value[2], cm.Value[3], cm.Value[4], cm.Value[5]).Then(ctm);
                         break;
-                    case BeginInlineImage:
-                        _inline++;
-                        break;
                     case InvokeNamedXObject invoke:
                         Invoke(invoke.Name.Data, resources, ctm, depth, activeForms, onImage);
                         break;
@@ -161,6 +193,9 @@ public static class PdfImageScanner
         private void Invoke(string name, DictionaryToken? resources, Matrix ctm, int depth,
             HashSet<IndirectReference> activeForms, Action<PdfObjectId, Matrix> onImage)
         {
+            if (++_expansions > MaxDrawExpansions)
+                throw new UnsupportedImageException("the PDF could not be read (too many nested drawings)");
+
             // A name missing from the resources draws nothing in a viewer either.
             if (Resolve(Get(resources, "XObject")) is not DictionaryToken xObjects) return;
             if (!xObjects.Data.TryGetValue(name, out var entry) || entry is not IndirectReferenceToken reference) return;
@@ -169,19 +204,16 @@ public static class PdfImageScanner
             var subtype = (Resolve(Get(stream.StreamDictionary, "Subtype")) as NameToken)?.Data;
             if (subtype == "Image")
             {
-                onImage(new PdfObjectId(checked((int)reference.Data.ObjectNumber), reference.Data.Generation), ctm);
+                var id = Id(reference.Data);
+                _reached.Add(id);
+                onImage(id, ctm);
             }
             else if (subtype == "Form" && depth < MaxFormDepth && activeForms.Add(reference.Data))
             {
                 try
                 {
-                    var matrix = Resolve(Get(stream.StreamDictionary, "Matrix")) is ArrayToken { Data.Count: >= 6 } array
-                        ? ToMatrix(array) : Matrix.Identity;
-                    var formResources = Resolve(Get(stream.StreamDictionary, "Resources")) as DictionaryToken ?? resources;
-                    var bytes = stream.Decode(document.Structure.FilterProvider, document.Structure.TokenScanner);
-                    var operations = new PageContentParser(ReflectionGraphicsStateOperationFactory.Instance,
-                        new StackDepthGuard(64), true).Parse(1, new MemoryInputBytes(bytes), Log);
-                    Walk(operations, formResources, matrix.Then(ctm), depth + 1, activeForms, onImage);
+                    var form = ParsedForm(reference.Data, stream);
+                    Walk(form.Operations, form.Resources ?? resources, form.Matrix.Then(ctm), depth + 1, activeForms, onImage);
                 }
                 finally
                 {
@@ -189,6 +221,46 @@ public static class PdfImageScanner
                 }
             }
         }
+
+        /// <summary>
+        /// The page's content operations: its <c>/Contents</c> stream, or the streams of a <c>/Contents</c> array joined
+        /// by a line feed (as PdfPig's own page does).
+        /// </summary>
+        private IReadOnlyList<IGraphicsStateOperation> PageOperations(int number, DictionaryToken page)
+        {
+            var streams = Resolve(Get(page, "Contents")) switch
+            {
+                StreamToken single => [single],
+                ArrayToken array => array.Data.Select(Resolve).OfType<StreamToken>().ToList(),
+                _ => new List<StreamToken>(),
+            };
+            if (streams.Count == 0) return [];
+            using var bytes = new MemoryStream();
+            for (var i = 0; i < streams.Count; i++)
+            {
+                if (i > 0) bytes.WriteByte((byte)'\n');
+                bytes.Write(streams[i].Decode(document.Structure.FilterProvider, document.Structure.TokenScanner).Span);
+            }
+            return Parse(number, bytes.GetBuffer().AsMemory(0, (int)bytes.Length));
+        }
+
+        private static IReadOnlyList<IGraphicsStateOperation> Parse(int pageNumber, ReadOnlyMemory<byte> content) =>
+            new PageContentParser(ReflectionGraphicsStateOperationFactory.Instance, new StackDepthGuard(64), true)
+                .Parse(pageNumber, new MemoryInputBytes(content), Log);
+
+        /// <summary>The form's operations, <c>/Matrix</c> and own <c>/Resources</c>, parsed on its first use.</summary>
+        private Form ParsedForm(IndirectReference reference, StreamToken stream)
+        {
+            if (_forms.TryGetValue(reference, out var form)) return form;
+            var matrix = Resolve(Get(stream.StreamDictionary, "Matrix")) is ArrayToken { Data.Count: >= 6 } array
+                ? ToMatrix(array) : Matrix.Identity;
+            var resources = Resolve(Get(stream.StreamDictionary, "Resources")) as DictionaryToken;
+            var operations = Parse(1, stream.Decode(document.Structure.FilterProvider, document.Structure.TokenScanner));
+            _inline += operations.Count(o => o is BeginInlineImage);
+            return _forms[reference] = new Form(operations, matrix, resources);
+        }
+
+        private static PdfObjectId Id(IndirectReference reference) => new(checked((int)reference.ObjectNumber), reference.Generation);
 
         private static Matrix ToMatrix(ArrayToken array)
         {
@@ -218,25 +290,23 @@ public static class PdfImageScanner
             return token is IndirectReferenceToken ? null : token;
         }
 
-        /// <summary>A signed PDF (AcroForm /SigFlags bit 1, or a signature dictionary with /ByteRange) cannot be rewritten.</summary>
         /// <summary>
-        /// Signed PDFs (ruling Q6) and Illustrator files (ruling Q12: <c>/PieceInfo</c> with <c>/Illustrator</c>, or
-        /// <c>AIPrivateData</c> entries, in any object) are refused; a signature wins.
+        /// Visits every object once. Refuses signed PDFs (ruling Q6a: a signature dictionary with <c>/ByteRange</c>;
+        /// <c>/SigFlags</c> alone only marks a signature field, which may be blank) and Illustrator files (ruling Q12a:
+        /// <c>AIPrivateData</c> entries in any object; <c>/PieceInfo /Illustrator</c> alone is not refused); a signature
+        /// wins. Also notes every image object, each image's <c>/SMask</c> and <c>/Mask</c> objects and the page
+        /// thumbnails, for <see cref="NotDrawn"/>.
         /// </summary>
         private void CheckSupported()
         {
-            if (Resolve(Get(document.Structure.Catalog.CatalogDictionary, "AcroForm")) is DictionaryToken acroForm
-                && Resolve(Get(acroForm, "SigFlags")) is NumericToken flags
-                && ((int)flags.Double & 1) != 0)
-                throw new UnsupportedImageException("signed PDFs are not supported");
-
             var illustrator = false;
             foreach (var reference in document.Structure.CrossReferenceTable.ObjectOffsets.Keys)
             {
                 // One object that will not parse (e.g. unreferenced garbage) must not make the whole PDF unreadable.
                 try
                 {
-                    var dictionary = document.Structure.GetObject(reference)?.Data switch
+                    var token = document.Structure.GetObject(reference)?.Data;
+                    var dictionary = token switch
                     {
                         DictionaryToken d => d,
                         StreamToken s => s.StreamDictionary,
@@ -245,7 +315,18 @@ public static class PdfImageScanner
                     if (dictionary is null) continue;
                     if (dictionary.Data.ContainsKey("ByteRange"))
                         throw new UnsupportedImageException("signed PDFs are not supported");
-                    illustrator |= IsIllustrator(dictionary);
+                    illustrator |= dictionary.Data.Keys.Any(k => k.StartsWith("AIPrivateData", StringComparison.Ordinal));
+                    if (Get(dictionary, "Thumb") is IndirectReferenceToken thumbnail) _thumbnails.Add(Id(thumbnail.Data));
+                    if (token is StreamToken && (Resolve(Get(dictionary, "Subtype")) as NameToken)?.Data == "Image")
+                    {
+                        var id = Id(reference);
+                        _allImages.Add(id);
+                        _masks[id] = new[] { "SMask", "Mask" }
+                            .Select(key => Get(dictionary, key))
+                            .OfType<IndirectReferenceToken>()
+                            .Select(mask => Id(mask.Data))
+                            .ToList();
+                    }
                 }
                 catch (UnsupportedImageException)
                 {
@@ -259,20 +340,35 @@ public static class PdfImageScanner
             if (illustrator) throw new UnsupportedImageException(SourceImage.IllustratorMessage);
         }
 
-        private bool IsIllustrator(DictionaryToken dictionary) =>
-            dictionary.Data.Keys.Any(k => k.StartsWith("AIPrivateData", StringComparison.Ordinal))
-            || (Resolve(Get(dictionary, "PieceInfo")) is DictionaryToken pieceInfo && pieceInfo.Data.ContainsKey("Illustrator"));
+        /// <summary>
+        /// Ruling Q16: the image objects the walk did not reach, other than the <c>/SMask</c> or <c>/Mask</c> of an image
+        /// it did reach and the page thumbnails: images used only by annotation appearances, patterns or soft-mask
+        /// groups, or not at all. They are not processed; the pipeline warns about them.
+        /// </summary>
+        private int NotDrawn()
+        {
+            var accounted = new HashSet<PdfObjectId>(_reached);
+            foreach (var image in _reached)
+                if (_masks.TryGetValue(image, out var masks)) accounted.UnionWith(masks);
+            accounted.UnionWith(_thumbnails);
+            return _allImages.Count(image => !accounted.Contains(image));
+        }
 
+        /// <summary>
+        /// One entry per image: where it is first drawn, and (ruling Q17) the longest drawn width axis and the longest
+        /// drawn height axis of all its uses, so it is below the target nowhere.
+        /// </summary>
         private List<PdfImageEntry> Aggregate()
         {
             var entries = new List<PdfImageEntry>();
             foreach (var group in _uses.GroupBy(u => u.Image))
             {
                 var first = group.First();
-                var largest = group.MaxBy(u => u.WidthCm * u.HeightCm)!;
-                var different = group.Any(u => Math.Abs(u.WidthCm - largest.WidthCm) > SameSizeToleranceCm
-                                               || Math.Abs(u.HeightCm - largest.HeightCm) > SameSizeToleranceCm);
-                entries.Add(new PdfImageEntry(group.Key, first.Page, first.Index, largest.WidthCm, largest.HeightCm, different));
+                var width = group.Max(u => u.WidthCm);
+                var height = group.Max(u => u.HeightCm);
+                var different = group.Any(u => Math.Abs(u.WidthCm - width) > SameSizeToleranceCm
+                                               || Math.Abs(u.HeightCm - height) > SameSizeToleranceCm);
+                entries.Add(new PdfImageEntry(group.Key, first.Page, first.Index, width, height, different));
             }
             return entries;
         }

@@ -185,9 +185,72 @@ public sealed class PdfPipelineTests : IDisposable
 
         var result = await Run(pdf, Output());
 
+        // Only the inline-images warning: the PDF does have an image, so "no images found" would contradict it.
         Assert.Equal(Status.Warning, result.Status);
-        Assert.Equal(["1 inline image(s) not processed", "no images found"], result.Messages);
+        Assert.Equal(["1 inline image(s) not processed"], result.Messages);
         Assert.Equal(File.ReadAllBytes(pdf), File.ReadAllBytes(Output()));
+    }
+
+    [Theory]
+    [InlineData("annotation")]
+    [InlineData("pattern")]
+    public async Task Pdf_ImageNotDrawnOnAPage_Warning(string where)
+    {
+        // Ruling Q16: an image the walk does not reach is not skipped silently.
+        var pdf = TestPdfs.WithUndrawnImage(In, where + ".pdf", Jpeg("u.jpg"), where);
+
+        var result = await Run(pdf, Output());
+
+        Assert.Equal(Status.Warning, result.Status);
+        Assert.Equal(["1 image(s) not drawn on a page were not processed"], result.Messages);
+        Assert.Equal(File.ReadAllBytes(pdf), File.ReadAllBytes(Output()));
+    }
+
+    [Fact]
+    public async Task Pdf_PageThumbnail_NoWarning()
+    {
+        var pdf = TestPdfs.WithUndrawnImage(In, "thumb.pdf", Jpeg("t.jpg"), "thumb");
+
+        var result = await Run(pdf, Output());
+
+        Assert.DoesNotContain(result.Messages, m => m.Contains("not drawn", StringComparison.Ordinal));
+        Assert.True(result.Changed); // 60 px drawn 5 cm wide: resampled
+    }
+
+    [Fact]
+    public async Task Pdf_ReusedAtCrossedSizes_PerAxisMaximumInTheWarning()
+    {
+        // Ruling Q17: 10 × 30 cm on page 1, 20 × 10 cm on page 2 → processed for 20 × 30 cm.
+        var pdf = TestPdfs.Reused(In, "crossed.pdf", Jpeg("x.jpg", 600, 900), (10, 30), (20, 10));
+
+        var result = await Run(pdf, Output());
+
+        Assert.Equal("page 1, image 1: drawn at different sizes; processed for the largest (20.0 × 30.0 cm)", result.Messages[0]);
+        var id = PdfImageScanner.Scan(Output()).Images.Single().Image;
+        Assert.Equal((2362, 3543), Size(Output(), id)); // 300 ppi (rule Small: 20 × 30 fits 40 × 30) along 20 and 30 cm
+    }
+
+    [Fact]
+    public async Task Pdf_BlankSignatureField_Processed()
+    {
+        // Ruling Q6a: /SigFlags without a signature dictionary is a blank field; the file is not refused.
+        var pdf = TestPdfs.Signed(In, "blank.pdf");
+
+        var result = await Process(pdf);
+
+        Assert.Equal(Status.Warning, result.Status);
+        Assert.Equal(["no images found"], result.Messages);
+        Assert.Equal(["blank.pdf"], OutNames());
+    }
+
+    [Fact]
+    public async Task Pdf_SignedWithByteRange_Error()
+    {
+        var result = await Process(TestPdfs.Signed(In, "signed.pdf", byteRange: true));
+
+        Assert.Equal(Status.Error, result.Status);
+        Assert.Equal(["signed PDFs are not supported"], result.Messages);
+        Assert.Empty(OutNames());
     }
 
     [Fact]
@@ -595,18 +658,32 @@ public sealed class PdfPipelineTests : IDisposable
         Assert.Equal((180, 120), Size(output, PdfImageScanner.Scan(output).Images.Single().Image));
     }
 
-    [Theory]
-    [InlineData("pieceinfo", "<< /PieceInfo << /Illustrator << /LastModified (D:20260101) /Private 5 0 R >> >> >>", "<< /Type /Private >>")]
-    [InlineData("aiprivatedata", "<< /Type /Private >>", "<< /AIPrivateData1 (x) /NumBlock 1 >>")]
-    public async Task Pdf_IllustratorContent_Error(string name, string object4, string object5)
+    [Fact]
+    public async Task Pdf_IllustratorPrivateData_Error()
     {
-        var pdf = TestPdfs.Classic(In, name + ".pdf", (4, $"4 0 obj\n{object4}\nendobj"), (5, $"5 0 obj\n{object5}\nendobj"));
+        var pdf = TestPdfs.Classic(In, "aiprivatedata.pdf",
+            (4, "4 0 obj\n<< /Type /Private >>\nendobj"), (5, "5 0 obj\n<< /AIPrivateData1 (x) /NumBlock 1 >>\nendobj"));
 
         var result = await Process(pdf);
 
         Assert.Equal(["Illustrator files are not supported"], result.Messages);
         Assert.Equal(Status.Error, result.Status);
         Assert.Empty(OutNames());
+    }
+
+    [Fact]
+    public async Task Pdf_PieceInfoIllustratorAlone_Processed()
+    {
+        // Ruling Q12a: /PieceInfo /Illustrator without AIPrivateData (no private second copy) is processed like any PDF.
+        var pdf = TestPdfs.Classic(In, "pieceinfo.pdf",
+            (4, "4 0 obj\n<< /PieceInfo << /Illustrator << /LastModified (D:20260101) /Private 5 0 R >> >> >>\nendobj"),
+            (5, "5 0 obj\n<< /Type /Private >>\nendobj"));
+
+        var result = await Process(pdf);
+
+        Assert.Equal(Status.Warning, result.Status);
+        Assert.Equal(["no images found"], result.Messages);
+        Assert.Equal(["pieceinfo.pdf"], OutNames());
     }
 
     [Fact]
