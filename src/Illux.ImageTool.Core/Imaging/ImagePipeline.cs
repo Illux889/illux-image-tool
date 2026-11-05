@@ -36,7 +36,19 @@ public static class ImagePipeline
     /// <see cref="ImageTooLargeException"/> when resampling would exceed <see cref="MaxDimension"/>; on any exception no
     /// file is left at <paramref name="outputPath"/>.
     /// </summary>
-    public static async Task<PipelineResult> RunAsync(string inputPath, string outputPath, ProcessingOptions options, CancellationToken ct)
+    public static Task<PipelineResult> RunAsync(string inputPath, string outputPath, ProcessingOptions options, CancellationToken ct) =>
+        RunCoreAsync(inputPath, outputPath, options, null, ct);
+
+    /// <summary>
+    /// As the public <c>RunAsync</c>, except that <paramref name="drawnResolution"/> (the ppi an image is drawn at in a
+    /// PDF) replaces whatever the file stores. The <c>missingppi</c> policy and the "assumed 72" messages never apply.
+    /// </summary>
+    internal static Task<PipelineResult> RunAsync(string inputPath, string outputPath, ProcessingOptions options,
+        Resolution drawnResolution, CancellationToken ct) =>
+        RunCoreAsync(inputPath, outputPath, options, drawnResolution, ct);
+
+    private static async Task<PipelineResult> RunCoreAsync(string inputPath, string outputPath, ProcessingOptions options,
+        Resolution? drawnResolution, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(inputPath);
         ArgumentException.ThrowIfNullOrEmpty(outputPath);
@@ -47,6 +59,7 @@ public static class ImagePipeline
 
         MagickSetup.Configure();
         var source = SourceImage.Inspect(inputPath);
+        if (drawnResolution is { } drawn) source = source with { Resolution = drawn };
         var plan = Plan(source, options);
         if (plan.Error is { } error)
             return new PipelineResult(Status.Error, [error], outputPath, new Resolution(0, 0), false);
@@ -98,6 +111,10 @@ public static class ImagePipeline
         bool To8Bit, (uint Width, uint Height)? NewSize, bool ToBaseline, Resolution FinalResolution,
         List<string> Messages, bool Warning, string? Error);
 
+    /// <summary>
+    /// Decides what to do with <paramref name="source"/>. A source whose <c>Resolution</c> is set (stored, or the drawn
+    /// ppi of an image in a PDF) never triggers the missing-ppi messages.
+    /// </summary>
     internal static PlanResult Plan(SourceImage source, ProcessingOptions options)
     {
         var messages = new List<string>();

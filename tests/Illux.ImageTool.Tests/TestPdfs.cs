@@ -110,7 +110,7 @@ internal static class TestPdfs
     }
 
     /// <summary>
-    /// One empty 5 × 5 cm page that looks signed: by default the catalog's AcroForm has <c>/SigFlags 3</c>; with
+    /// One empty 5 Ã— 5 cm page that looks signed: by default the catalog's AcroForm has <c>/SigFlags 3</c>; with
     /// <paramref name="byteRange"/> instead a signature dictionary with <c>/ByteRange</c> is in the file and the AcroForm
     /// has no flags. Nothing is actually signed.
     /// </summary>
@@ -123,6 +123,31 @@ internal static class TestPdfs
             var field = pdf.Reserve();
             pdf.WriteObject(field, $"<< /FT /Sig /T (Signature1) /V {signature} 0 R >>");
             return $" /AcroForm << /Fields [{field} 0 R] >>";
+        });
+
+    /// <summary>
+    /// One 5 x 5 cm page and an unreferenced object that does not parse (an unterminated dictionary), as damaged
+    /// files sometimes carry.
+    /// </summary>
+    public static string WithBrokenObject(string dir, string name, string imagePath) =>
+        Write(dir, name, "1.4", pdf =>
+        {
+            var image = WriteImage(pdf, Encode(imagePath));
+            pdf.WriteObject(pdf.Reserve(), "<< /Broken [ (unterminated ");
+            return [FullPage(image, 5, 5)];
+        });
+
+    /// <summary>
+    /// One 5 x 5 cm page drawing the image with a degenerate <c>cm</c> (width 0); with <paramref name="alsoVisible"/>
+    /// it is also drawn over the whole page.
+    /// </summary>
+    public static string WithDegenerateUse(string dir, string name, string imagePath, bool alsoVisible) =>
+        Write(dir, name, "1.4", pdf =>
+        {
+            var image = WriteImage(pdf, Encode(imagePath));
+            var side = N(5 * PointsPerCm);
+            var visible = alsoVisible ? $" q {side} 0 0 {side} 0 0 cm /Im0 Do Q" : "";
+            return [new PageSpec(5 * PointsPerCm, 5 * PointsPerCm, $"q 0 0 0 {side} 0 0 cm /Im0 Do Q{visible}", $"/Im0 {image} 0 R")];
         });
 
     /// <summary>
@@ -176,7 +201,8 @@ internal static class TestPdfs
     /// stream, and a compressed cross-reference stream instead of a classic table and trailer. One page sized to the
     /// image drawn over it.
     /// </summary>
-    public static string WithXrefStream(string dir, string name, string imagePath, double widthCm, double heightCm)
+    public static string WithXrefStream(string dir, string name, string imagePath, double widthCm, double heightCm,
+        bool signed = false)
     {
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, name);
@@ -202,14 +228,22 @@ internal static class TestPdfs
         var contents = WriteStream("/Filter /FlateDecode", Deflate(Encoding.ASCII.GetBytes($"q {N(w)} 0 0 {N(h)} 0 0 cm /Im0 Do Q")));
 
         int catalog = next++, pages = next++, page = next++, info = next++;
-        (int Number, string Body)[] packed =
+        int signature = signed ? next++ : 0, field = signed ? next++ : 0;
+        var acroForm = signed ? $" /AcroForm << /Fields [{field} 0 R] >>" : "";
+        List<(int Number, string Body)> packed =
         [
-            (catalog, $"<< /Type /Catalog /Pages {pages} 0 R >>"),
+            (catalog, $"<< /Type /Catalog /Pages {pages} 0 R{acroForm} >>"),
             (pages, $"<< /Type /Pages /Kids [{page} 0 R] /Count 1 >>"),
             (page, $"<< /Type /Page /Parent {pages} 0 R /MediaBox [0 0 {N(w)} {N(h)}] " +
                    $"/Resources << /XObject << /Im0 {imageNumber} 0 R >> >> /Contents {contents} 0 R >>"),
             (info, "<< /Producer (TestPdfs) >>"),
         ];
+        if (signed)
+        {
+            // A signature inside the object stream: no /SigFlags, and not a plain object in the file.
+            packed.Add((signature, "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>"));
+            packed.Add((field, $"<< /FT /Sig /T (Signature1) /V {signature} 0 R >>"));
+        }
         var bodies = new StringBuilder();
         var header = new StringBuilder();
         foreach (var (number, body) in packed)
@@ -218,7 +252,7 @@ internal static class TestPdfs
             bodies.Append(body).Append('\n');
         }
         var objectStream = WriteStream(
-            $"/Type /ObjStm /N {packed.Length} /First {header.Length} /Filter /FlateDecode",
+            $"/Type /ObjStm /N {packed.Count} /First {header.Length} /Filter /FlateDecode",
             Deflate(Encoding.ASCII.GetBytes(header.ToString() + bodies)));
 
         // Cross-reference stream (ISO 32000-1, 7.5.8): /W [1 4 2]; type 1 = offset, type 2 = in object stream.
@@ -234,7 +268,7 @@ internal static class TestPdfs
         }
         Row(0, 0, 0, 65535);
         foreach (var (number, offset) in offsets) Row(number, 1, offset, 0);
-        for (var i = 0; i < packed.Length; i++) Row(packed[i].Number, 2, objectStream, i);
+        for (var i = 0; i < packed.Count; i++) Row(packed[i].Number, 2, objectStream, i);
         var xrefOffset = output.Position;
         Row(xref, 1, xrefOffset, 0);
         WriteStream($"/Type /XRef /Size {size} /W [1 4 2] /Root {catalog} 0 R /Info {info} 0 R /Filter /FlateDecode", Deflate(rows), xref);

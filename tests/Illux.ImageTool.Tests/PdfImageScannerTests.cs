@@ -171,4 +171,48 @@ public sealed class PdfImageScannerTests : IDisposable
             Assert.Equal("signed PDFs are not supported", ex.Message);
         }
     }
+
+    [Fact]
+    public void Scan_SignatureInObjectStream_Throws()
+    {
+        var pdf = TestPdfs.WithXrefStream(_dir, "signedxref.pdf", Jpeg(), 10, 7.5, signed: true);
+
+        var ex = Assert.Throws<UnsupportedImageException>(() => PdfImageScanner.Scan(pdf));
+
+        Assert.Equal("signed PDFs are not supported", ex.Message);
+    }
+
+    [Fact]
+    public void Scan_UnparseableUnreferencedObject_StillScans()
+    {
+        var scan = PdfImageScanner.Scan(TestPdfs.WithBrokenObject(_dir, "broken.pdf", Jpeg()));
+
+        Assert.Single(scan.Images);
+    }
+
+    [Fact]
+    public void Scan_Version20Header_StaysTwoPointZero()
+    {
+        var scan = PdfImageScanner.Scan(TestPdfs.OnePage(_dir, "v20.pdf", Jpeg(), 10, 7.5, version: "2.0"));
+
+        Assert.Equal("2.0", scan.Version);
+    }
+
+    [Fact]
+    public void Scan_OnlyDegenerateUse_NotListed()
+    {
+        var scan = PdfImageScanner.Scan(TestPdfs.WithDegenerateUse(_dir, "deg.pdf", Jpeg(), alsoVisible: false));
+
+        Assert.Empty(scan.Images);
+    }
+
+    [Fact]
+    public void Scan_DegenerateAndVisibleUse_VisibleSizeOnly()
+    {
+        var scan = PdfImageScanner.Scan(TestPdfs.WithDegenerateUse(_dir, "deg2.pdf", Jpeg(), alsoVisible: true));
+
+        var image = Assert.Single(scan.Images);
+        Assert.False(image.DifferentSizes);
+        Assert.Equal(5, image.WidthCm, 0.01);
+    }
 }

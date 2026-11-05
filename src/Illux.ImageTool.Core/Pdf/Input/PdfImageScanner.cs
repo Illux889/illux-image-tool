@@ -31,7 +31,7 @@ public static class PdfImageScanner
             using var stream = File.OpenRead(path);
             using var document = PdfDocument.Open(stream, new ParsingOptions { SkipMissingFonts = true });
             if (document.IsEncrypted) throw new UnsupportedImageException("encrypted PDFs are not supported");
-            return new Walker(document).Scan();
+            return new Walker(document).Scan(HeaderVersion(stream));
         }
         catch (UnsupportedImageException)
         {
@@ -43,8 +43,29 @@ public static class PdfImageScanner
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            throw new UnsupportedImageException($"the PDF could not be read ({ex.Message})", ex);
+            throw new UnsupportedImageException($"the PDF could not be read ({FirstLine(ex.Message)})", ex);
         }
+    }
+
+    private static string FirstLine(string message) =>
+        message.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "unknown error";
+
+    /// <summary>The version text of the <c>%PDF-x.y</c> header (within the first 1024 bytes), or null.</summary>
+    private static string? HeaderVersion(Stream stream)
+    {
+        var buffer = new byte[1024];
+        stream.Position = 0;
+        var read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        var text = System.Text.Encoding.Latin1.GetString(buffer, 0, read);
+        var match = System.Text.RegularExpressions.Regex.Match(text, @"%PDF-(\d+\.\d+)");
+        return match.Success ? match.Groups[1].Value : null;
+    }
+
+    /// <summary>The higher of the header version and the catalog's <c>/Version</c> (compared as major.minor).</summary>
+    private static string HigherVersion(string header, string? catalog)
+    {
+        static bool TryParse(string? v, out Version parsed) => Version.TryParse(v, out parsed!);
+        return TryParse(catalog, out var c) && TryParse(header, out var h) && c > h ? catalog! : header;
     }
 
     /// <summary>A PDF matrix (row vectors): <c>[a b 0; c d 0; e f 1]</c>.</summary>
@@ -78,11 +99,13 @@ public static class PdfImageScanner
         private readonly List<PdfImageUse> _uses = [];
         private int _inline;
 
-        public PdfScan Scan()
+        public PdfScan Scan(string? headerVersion)
         {
             CheckNotSigned();
             for (var number = 1; number <= document.NumberOfPages; number++) ScanPage(number);
-            return new PdfScan(document.Version.ToString(CultureInfo.InvariantCulture), document.NumberOfPages, Aggregate(), _inline);
+            var header = headerVersion ?? document.Version.ToString("0.0", CultureInfo.InvariantCulture);
+            var catalogVersion = (Resolve(Get(document.Structure.Catalog.CatalogDictionary, "Version")) as NameToken)?.Data;
+            return new PdfScan(HigherVersion(header, catalogVersion), document.NumberOfPages, Aggregate(), _inline);
         }
 
         private void ScanPage(int number)
@@ -97,6 +120,8 @@ public static class PdfImageScanner
             var order = new Dictionary<PdfObjectId, int>();
             foreach (var (id, width, height) in pageUses)
             {
+                // An image axis of length 0 (degenerate cm) is invisible and would give an infinite ppi.
+                if (width <= 0 || height <= 0) continue;
                 if (!order.TryGetValue(id, out var index)) order[id] = index = order.Count + 1;
                 _uses.Add(new PdfImageUse(number, index, id, width, height));
             }
@@ -200,9 +225,20 @@ public static class PdfImageScanner
 
             foreach (var reference in document.Structure.CrossReferenceTable.ObjectOffsets.Keys)
             {
-                if (document.Structure.GetObject(reference)?.Data is DictionaryToken dictionary
-                    && dictionary.Data.ContainsKey("ByteRange"))
-                    throw new UnsupportedImageException("signed PDFs are not supported");
+                // One object that will not parse (e.g. unreferenced garbage) must not make the whole PDF unreadable.
+                try
+                {
+                    if (document.Structure.GetObject(reference)?.Data is DictionaryToken dictionary
+                        && dictionary.Data.ContainsKey("ByteRange"))
+                        throw new UnsupportedImageException("signed PDFs are not supported");
+                }
+                catch (UnsupportedImageException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                }
             }
         }
 
