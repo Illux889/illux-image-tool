@@ -26,18 +26,25 @@ public static class PdfImageEncoder
     /// the mask is scaled by <paramref name="factors"/> (new size = old size × factor, rounded) with
     /// <paramref name="filter"/> and encoded as a Flate gray image for the mask's own object. With
     /// <paramref name="maskTo8Bit"/> (the 8-bit operation is on; ruling Q13) a mask deeper than 8 bits is also reduced to
-    /// 8 bits, as its image is. A mask that keeps its size and depth gives null, so its stream stays as it is. Throws <see cref="NotSupportedException"/> when the new
-    /// dictionary cannot be written exactly (<see cref="PdfSyntax"/>: e.g. a non-ASCII name kept from the old one).
+    /// 8 bits, as its image is. A mask that keeps its size and depth gives null, so its stream stays as it is.
+    /// <para>
+    /// The encoded data is written to a new file of its own in <paramref name="dataDirectory"/> (created if need be), not
+    /// kept in memory; each <see cref="PdfImageStream"/> names its file. The caller deletes the folder; files of a failed
+    /// call stay there too. Throws <see cref="NotSupportedException"/> when the new dictionary cannot be written exactly
+    /// (<see cref="PdfSyntax"/>: e.g. a non-ASCII name kept from the old one).
+    /// </para>
     /// </summary>
     public static (PdfImageStream Image, PdfImageStream? SoftMask) Encode(PdfDocument doc, PdfObjectId image,
         string processedPath, ExtractedImage extracted, (double X, double Y) factors, ResampleFilter filter,
-        bool maskTo8Bit = false)
+        string dataDirectory, bool maskTo8Bit = false)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrEmpty(processedPath);
         ArgumentNullException.ThrowIfNull(extracted);
+        ArgumentException.ThrowIfNullOrEmpty(dataDirectory);
         if (!IsPositive(factors.X) || !IsPositive(factors.Y))
             throw new ArgumentOutOfRangeException(nameof(factors), factors, "Scale factors must be positive.");
+        Directory.CreateDirectory(dataDirectory);
 
         var source = PdfImageObject.Read(doc, image);
         var colorSpace = source.ColorSpace();
@@ -45,16 +52,16 @@ public static class PdfImageEncoder
         var components = palette?.Base.Components ?? colorSpace.Components;
 
         DictionaryToken dictionary;
-        byte[] data;
+        var data = DataPath(dataDirectory, image);
         int bits;
         if (PdfImageWriter.IsJpeg(processedPath))
         {
             if (palette != null) throw new InvalidOperationException("An expanded Indexed image cannot be stored as JPEG.");
             var info = JpegInspector.Inspect(processedPath);
             CheckComponents(info.Components, components);
-            data = File.ReadAllBytes(processedPath);
+            File.Copy(processedPath, data);
             bits = 8;
-            dictionary = Replace(source.Dictionary, info.Width, info.Height, bits, PdfImageObject.Dct, data.Length);
+            dictionary = Replace(source.Dictionary, info.Width, info.Height, bits, PdfImageObject.Dct, new FileInfo(data).Length);
         }
         else
         {
@@ -62,8 +69,8 @@ public static class PdfImageEncoder
             var (mapping, actual) = PdfSamples.RequireLayout(processed);
             CheckComponents(actual, components);
             bits = source.IsImageMask ? 1 : processed.Depth > 8 ? 16 : 8;
-            data = PdfSamples.Flate(processed, mapping, bits);
-            dictionary = Replace(source.Dictionary, (int)processed.Width, (int)processed.Height, bits, "FlateDecode", data.Length);
+            var length = WriteFlate(data, processed, mapping, bits);
+            dictionary = Replace(source.Dictionary, (int)processed.Width, (int)processed.Height, bits, "FlateDecode", length);
             if (palette != null) dictionary = dictionary.With("ColorSpace", palette.BaseToken).Without("Decode");
             if (source.Codec == PdfImageObject.Jpx && !source.IsImageMask) dictionary = dictionary.Without("Decode");
         }
@@ -85,14 +92,15 @@ public static class PdfImageEncoder
                 if (reduce) maskImage.Depth = 8;
                 var mask = PdfImageObject.Read(doc, maskId);
                 var maskBits = maskImage.Depth > 8 ? 16 : 8;
-                var maskData = PdfSamples.Flate(maskImage, PdfSamples.RequireLayout(maskImage).Mapping, maskBits);
-                softMask = Stream(Replace(mask.Dictionary, (int)width, (int)height, maskBits, "FlateDecode", maskData.Length), maskData);
+                var maskData = DataPath(dataDirectory, maskId);
+                var maskLength = WriteFlate(maskData, maskImage, PdfSamples.RequireLayout(maskImage).Mapping, maskBits);
+                softMask = Stream(Replace(mask.Dictionary, (int)width, (int)height, maskBits, "FlateDecode", maskLength), maskData);
             }
         }
         return (result, softMask);
     }
 
-    private static DictionaryToken Replace(DictionaryToken dictionary, int width, int height, int bits, string filter, int length) =>
+    private static DictionaryToken Replace(DictionaryToken dictionary, int width, int height, int bits, string filter, long length) =>
         dictionary
             .With("Width", new NumericToken(width))
             .With("Height", new NumericToken(height))
@@ -120,7 +128,20 @@ public static class PdfImageEncoder
     }
 
     /// <summary>The dictionary in PDF syntax, written as the rewriter writes every object (<see cref="PdfSyntax"/>).</summary>
-    private static PdfImageStream Stream(DictionaryToken dictionary, byte[] data) => new(PdfSyntax.ToBytes(dictionary), data);
+    private static PdfImageStream Stream(DictionaryToken dictionary, string dataPath) => new(PdfSyntax.ToBytes(dictionary), dataPath);
+
+    /// <summary>A new file name for an object's data (a soft mask shared by several images may be encoded more than once).</summary>
+    private static string DataPath(string directory, PdfObjectId id) =>
+        Path.Combine(directory, $"{id.Number}-{id.Generation}-{Guid.NewGuid():N}.dat");
+
+    /// <summary>The image's samples, Flate-compressed straight into a new file; returns the file's length.</summary>
+    private static long WriteFlate(string path, MagickImage image, string mapping, int bits)
+    {
+        using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16);
+        PdfSamples.WriteFlate(file, image, mapping, bits);
+        file.Flush();
+        return file.Length;
+    }
 
     /// <summary>The processed file must still have the PDF colour space's component count (no colour conversion).</summary>
     private static void CheckComponents(int actual, int expected)

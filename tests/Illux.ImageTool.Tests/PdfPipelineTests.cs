@@ -543,19 +543,29 @@ public sealed class PdfPipelineTests : IDisposable
     }
 
     [Fact]
-    public async Task Pdf_TempFilesOfAnImageAreGoneBeforeTheNextStarts()
+    public async Task Pdf_TempFilesOfAnImageAreGoneBeforeTheNextStarts_OnlyItsDataStays()
     {
+        // Final review I2: an image's work files are gone before the next image starts; only its encoded data waits,
+        // in a file under data/, until the rewrite (which still finds every one there).
         var pdf = TestPdfs.Pages(In, "three.pdf",
             (Jpeg("1.jpg"), Cm(60, 100), Cm(40, 100)), (Jpeg("2.jpg"), Cm(60, 100), Cm(40, 100)), (Jpeg("3.jpg"), Cm(60, 100), Cm(40, 100)));
-        var leftOver = new List<int>();
+        var leftOver = new List<(string Stage, int Work, int Data)>();
+        string? tempRoot = null;
 
         await Hooked(() => Run(pdf, Output()), (stage, root) =>
         {
-            if (stage == "image") leftOver.Add(Directory.GetFileSystemEntries(root, "*", SearchOption.AllDirectories).Length);
+            if (stage is not ("image" or "rewrite")) return;
+            tempRoot = root;
+            var data = Path.Combine(root, "data");
+            var files = Directory.GetFiles(root, "*", SearchOption.AllDirectories);
+            leftOver.Add((stage, files.Count(f => !f.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.Ordinal)),
+                files.Count(f => f.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.Ordinal))));
         });
 
-        Assert.Equal([0, 0, 0], leftOver);
+        Assert.Equal([("image", 0, 0), ("image", 0, 1), ("image", 0, 2), ("rewrite", 0, 3)], leftOver);
+        Assert.False(Directory.Exists(tempRoot));
         Assert.Equal(["out.pdf"], OutNames());
+        Assert.Equal([(180, 120), (180, 120), (180, 120)], PdfImageScanner.Scan(Output()).Images.Select(i => Size(Output(), i.Image)));
     }
 
     [Fact]

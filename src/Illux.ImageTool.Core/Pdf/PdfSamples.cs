@@ -97,12 +97,4 @@ internal static class PdfSamples
             }
         }
     }
-
-    /// <summary><see cref="WriteFlate"/> into a new array.</summary>
-    public static byte[] Flate(MagickImage image, string mapping, int bits)
-    {
-        using var output = new MemoryStream();
-        WriteFlate(output, image, mapping, bits);
-        return output.ToArray();
-    }
 }

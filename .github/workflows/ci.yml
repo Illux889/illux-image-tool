@@ -17,7 +17,7 @@ jobs:
   build:
     name: Test and build installer
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     outputs:
       version: ${{ steps.versions.outputs.version }}
       upgrade_version: ${{ steps.versions.outputs.upgrade_version }}
@@ -49,6 +49,14 @@ jobs:
 
       - name: Check the test PDFs with qpdf
         run: ./build/check-pdfs-with-qpdf.ps1 -Folder "$env:RUNNER_TEMP\pdf-check"
+
+      - name: PDF memory check
+        # A one-page and a six-page PDF of the same large image, each through the CLI in a process of its own: the
+        # six-page peak may be at most 1.5 x the one-page peak (memory does not grow with the pages). The numbers are
+        # in the log and the job summary.
+        env:
+          ILLUX_PDF_MEMORY_CHECK: '1'
+        run: dotnet test -c Release --no-build --filter "FullyQualifiedName~PdfMemoryCheckTests" --logger "console;verbosity=detailed"
 
       - name: Versions
         id: versions
@@ -89,7 +97,7 @@ jobs:
   test-macos:
     name: Test on macOS (Apple silicon)
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -110,6 +118,12 @@ jobs:
 
       - name: Check the test PDFs with qpdf
         run: ./build/check-pdfs-with-qpdf.sh "$RUNNER_TEMP/pdf-check"
+
+      - name: PDF memory check
+        # As on Windows (peak from /usr/bin/time -l).
+        env:
+          ILLUX_PDF_MEMORY_CHECK: '1'
+        run: dotnet test -c Release --no-build --filter "FullyQualifiedName~PdfMemoryCheckTests" --logger "console;verbosity=detailed"
 
   macos-package:
     name: macOS package, install, upgrade and uninstall

@@ -35,6 +35,16 @@ public sealed class PdfRewriterTests : IDisposable
 
     private static readonly Dictionary<PdfObjectId, PdfImageStream> None = [];
 
+    private string DataDir => Directory.CreateDirectory(Path.Combine(_dir, "data")).FullName;
+
+    /// <summary>A new file in the data folder holding <paramref name="data"/>.</summary>
+    private string DataFile(byte[] data)
+    {
+        var path = Path.Combine(DataDir, Guid.NewGuid().ToString("N") + ".dat");
+        File.WriteAllBytes(path, data);
+        return path;
+    }
+
     private static Dictionary<PdfObjectId, PdfImageStream> Replace(PdfObjectId id, PdfImageStream stream) => new() { [id] = stream };
 
     // ---- the brief's tests ----
@@ -201,10 +211,12 @@ public sealed class PdfRewriterTests : IDisposable
         // Caller errors: an object the file does not have (number or generation), a dictionary that is not exactly one.
         Fails<ArgumentException>(pdf, Replace(new PdfObjectId(999, 0), good));
         Fails<ArgumentException>(pdf, Replace(id with { Generation = 1 }, good));
-        Fails<ArgumentException>(pdf, Replace(id, new("[1 2]"u8.ToArray(), jpeg)));
-        Fails<ArgumentException>(pdf, Replace(id, new("<< /A 1 >> << /B 2 >>"u8.ToArray(), jpeg)));
-        Fails<ArgumentException>(pdf, Replace(id, new("<< /A [1 2 >>"u8.ToArray(), jpeg)));
-        Fails<ArgumentException>(pdf, Replace(id, new("<< /N 3000000000 >>"u8.ToArray(), jpeg)));
+        Fails<ArgumentException>(pdf, Replace(id, new("[1 2]"u8.ToArray(), DataFile(jpeg))));
+        Fails<ArgumentException>(pdf, Replace(id, new("<< /A 1 >> << /B 2 >>"u8.ToArray(), DataFile(jpeg))));
+        Fails<ArgumentException>(pdf, Replace(id, new("<< /A [1 2 >>"u8.ToArray(), DataFile(jpeg))));
+        Fails<ArgumentException>(pdf, Replace(id, new("<< /N 3000000000 >>"u8.ToArray(), DataFile(jpeg))));
+        // A data file that is not there.
+        Fails<ArgumentException>(pdf, Replace(id, good with { DataPath = Path.Combine(DataDir, "missing.dat") }));
         // The input: missing, not a PDF, encrypted.
         Fails<FileNotFoundException>(Path.Combine(_dir, "missing.pdf"), None);
         File.WriteAllText(Path.Combine(_dir, "junk.pdf"), "not a PDF at all");
@@ -549,7 +561,7 @@ public sealed class PdfRewriterTests : IDisposable
                 image.Resize(new MagickGeometry(100, 75) { IgnoreAspectRatio = true });
                 image.Write(scaled, MagickFormat.Jpeg);
             }
-            replacement = PdfImageEncoder.Encode(doc, id, scaled, extracted, (0.5, 0.5), ResampleFilter.Bicubic).Image;
+            replacement = PdfImageEncoder.Encode(doc, id, scaled, extracted, (0.5, 0.5), ResampleFilter.Bicubic, DataDir).Image;
         }
 
         PdfRewriter.Write(pdf, Out(), Replace(id, replacement));
@@ -653,6 +665,59 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.Equal(a.Information.Producer, b.Information.Producer);
     }
 
+    // ---- /ID (ruling Q18) ----
+
+    [Fact]
+    public void Rewrite_WithReplacements_SecondIdDeterministic_FirstKept()
+    {
+        var pdf = WithId(TestPdfs.OnePage(_dir, "id.pdf", Jpeg(), 10, 7.5), "/ID [<00112233445566778899AABBCCDDEEFF> <00112233445566778899AABBCCDDEEFF>] ");
+        var id = ImageId(pdf);
+        var small = File.ReadAllBytes(Jpeg("s.jpg", 30, 20));
+        var other = File.ReadAllBytes(Jpeg("o.jpg", 32, 20));
+
+        PdfRewriter.Write(pdf, Out("a.pdf"), Replace(id, JpegStream(small, 30, 20)));
+        PdfRewriter.Write(pdf, Out("b.pdf"), Replace(id, JpegStream(small, 30, 20)));
+        PdfRewriter.Write(pdf, Out("c.pdf"), Replace(id, JpegStream(other, 32, 20)));
+
+        var a = Ids(Out("a.pdf"));
+        Assert.Equal(Convert.FromHexString("00112233445566778899AABBCCDDEEFF"), a[0]);
+        Assert.NotEqual(a[0], a[1]);
+        Assert.Equal(16, a[1].Length);
+        Assert.Equal(File.ReadAllBytes(Out("a.pdf")), File.ReadAllBytes(Out("b.pdf"))); // reproducible
+        Assert.NotEqual(a[1], Ids(Out("c.pdf"))[1]);
+        Assert.Equal(a[0], Ids(Out("c.pdf"))[0]);
+
+        // MD5 over the first element, then each replaced object's dictionary (as written) and data, in object order.
+        var dictionary = Encoding.ASCII.GetBytes(
+            $"<< /Type /XObject /Subtype /Image /Width 30 /Height 20 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {small.Length} >>");
+        Assert.Contains(Encoding.ASCII.GetString(dictionary), RawText(Out("a.pdf")));
+        Assert.Equal(System.Security.Cryptography.MD5.HashData([.. a[0], .. dictionary, .. small]), a[1]);
+    }
+
+    [Fact]
+    public void Rewrite_NoReplacements_IdUnchanged()
+    {
+        var pdf = WithId(TestPdfs.OnePage(_dir, "id0.pdf", Jpeg(), 10, 7.5), "/ID [<0123456789ABCDEF> <FEDCBA9876543210>] ");
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        var ids = Ids(Out());
+        Assert.Equal(Convert.FromHexString("0123456789ABCDEF"), ids[0]);
+        Assert.Equal(Convert.FromHexString("FEDCBA9876543210"), ids[1]);
+    }
+
+    private static string WithId(string pdf, string id)
+    {
+        var text = Encoding.Latin1.GetString(File.ReadAllBytes(pdf));
+        var at = text.LastIndexOf("trailer\n<< ", StringComparison.Ordinal) + "trailer\n<< ".Length;
+        File.WriteAllBytes(pdf, Encoding.Latin1.GetBytes(text.Insert(at, id)));
+        return pdf;
+    }
+
+    private static List<byte[]> Ids(string pdf) =>
+        Assert.IsType<ArrayToken>(Trailer(File.ReadAllBytes(pdf)).Data["ID"]).Data
+            .Select(t => Assert.IsType<HexToken>(t).Bytes.ToArray()).ToList();
+
     // ---- helpers ----
 
     private static PdfObjectId ImageId(string pdf) => Assert.Single(PdfImageScanner.Scan(pdf).Images).Image;
@@ -673,11 +738,11 @@ public sealed class PdfRewriterTests : IDisposable
         return pdf;
     }
 
-    /// <summary>A DCT image stream for the given JPEG bytes, with an optional <c>/Length</c> entry as given.</summary>
-    private static PdfImageStream JpegStream(byte[] jpeg, int width, int height, string length = "") =>
+    /// <summary>A DCT image stream for the given JPEG bytes (in a data file), with an optional <c>/Length</c> entry as given.</summary>
+    private PdfImageStream JpegStream(byte[] jpeg, int width, int height, string length = "") =>
         new(Encoding.ASCII.GetBytes(
             $"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB " +
-            $"/BitsPerComponent 8 /Filter /DCTDecode {length} >>"), jpeg);
+            $"/BitsPerComponent 8 /Filter /DCTDecode {length} >>"), DataFile(jpeg));
 
     private static (string Entries, byte[] Data) GrayImage() =>
         ("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8", [0, 80, 160, 255]);

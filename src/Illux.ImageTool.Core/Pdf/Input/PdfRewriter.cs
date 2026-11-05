@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Core;
@@ -22,8 +23,14 @@ namespace Illux.ImageTool.Pdf.Input;
 /// <item>object streams, cross-reference streams and a linearization dictionary are left out (their numbers become
 /// free entries for the next generation);</item>
 /// <item>the header is the input's own <c>%PDF-x.y</c> (never lowered); the trailer has <c>/Size</c>, <c>/Root</c>,
-/// <c>/Info</c> and <c>/ID</c> only.</item>
+/// <c>/Info</c> and <c>/ID</c> only. Ruling Q18: with replacements, the second <c>/ID</c> element becomes the MD5 of the
+/// first element and of each replaced object's dictionary and data in object order (the same input and replacements
+/// give the same file); the first element is kept. Without replacements <c>/ID</c> is kept as it is.</item>
 /// </list>
+/// A replacement's data is copied from its file (<see cref="PdfImageStream.DataPath"/>), so only one buffer of it is in
+/// memory at a time. PdfPig 0.1.16 does not cache stream objects it reads at their cross-reference offset, so each
+/// copied stream's data is held only while that object is copied (a file whose table PdfPig has to rebuild by reading
+/// the whole file is the exception, and such a file is refused here anyway: its objects are not where the table says).
 /// The output is written to a temporary file next to <c>outputPdf</c> and moved into place when complete.
 /// </summary>
 public static class PdfRewriter
@@ -31,11 +38,13 @@ public static class PdfRewriter
     /// <summary>
     /// Writes <paramref name="outputPdf"/>: <paramref name="inputPdf"/> with exactly the objects in
     /// <paramref name="replacements"/> given new dictionaries and data (each dictionary is PDF syntax, as
-    /// <see cref="PdfImageEncoder"/> writes it; its <c>/Length</c> is replaced by the data length). An existing file at
+    /// <see cref="PdfImageEncoder"/> writes it; its <c>/Length</c> is replaced by the data length; the data files must stay
+    /// in place until this returns). An existing file at
     /// <paramref name="outputPdf"/> is replaced only on success; on any exception nothing new is left there. Throws:
     /// <list type="bullet">
     /// <item><see cref="ArgumentException"/>: the caller's fault (output = input, an object the input does not have, a
-    /// replacement dictionary that is not exactly one dictionary or cannot be written exactly);</item>
+    /// replacement dictionary that is not exactly one dictionary or cannot be written exactly, a data file that is
+    /// missing);</item>
     /// <item><see cref="InvalidDataException"/>: the input cannot be parsed, an object cannot be read, or an object's
     /// bytes are not where its cross-reference entry and length say;</item>
     /// <item><see cref="NotSupportedException"/>: an encrypted input (<c>encrypted PDFs are not supported</c>), or an
@@ -75,14 +84,16 @@ public static class PdfRewriter
     /// <summary>The key in <see cref="Exception.Data"/> under which a temporary file left behind is named.</summary>
     public const string TemporaryFileNotDeletedKey = "Illux.PdfRewriter.TemporaryFileNotDeleted";
 
-    /// <summary>A replacement: its dictionary already written (with a direct <c>/Length</c>), and its data.</summary>
-    private sealed record Replacement(byte[] Dictionary, byte[] Data);
+    /// <summary>A replacement: its dictionary already written (with a direct <c>/Length</c>), and its data file and length.</summary>
+    private sealed record Replacement(byte[] Dictionary, string DataPath, long Length);
 
     private static Replacement Prepare(PdfObjectId id, PdfImageStream? replacement)
     {
         var name = $"the replacement for object {id.Number} {id.Generation} R";
-        if (replacement?.Dictionary is null || replacement.Data is null)
+        if (replacement?.Dictionary is null || string.IsNullOrEmpty(replacement.DataPath))
             throw new ArgumentException($"There is no dictionary or data for {name}.", "replacements");
+        var data = new FileInfo(replacement.DataPath);
+        if (!data.Exists) throw new ArgumentException($"The data file of {name} does not exist.", "replacements");
         DictionaryToken dictionary;
         try
         {
@@ -97,7 +108,7 @@ public static class PdfRewriter
         }
         try
         {
-            return new Replacement(PdfSyntax.ToBytes(dictionary.With("Length", new NumericToken(replacement.Data.Length))), replacement.Data);
+            return new Replacement(PdfSyntax.ToBytes(dictionary.With("Length", new NumericToken(data.Length))), data.FullName, data.Length);
         }
         catch (NotSupportedException ex)
         {
@@ -134,6 +145,10 @@ public static class PdfRewriter
         foreach (var reference in streams.Keys.Where(r => !references.Contains(r)))
             throw new ArgumentException($"The PDF has no object {reference.ObjectNumber} {reference.Generation} R to replace.");
 
+        // Ruling Q18: the new second /ID element, from the first and the replacements in the order they are written.
+        using var id = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        if (structure.Trailer.Identifier is { Count: > 0 } identifier) id.AppendData(Bytes(identifier[0]));
+
         new PdfObjectWriter(output).WriteHeader(version);
         var written = new SortedDictionary<long, (long Offset, int Generation)>();
         // Free entries: a freed object keeps its free entry's generation, a dropped one is free for its next generation.
@@ -143,7 +158,7 @@ public static class PdfRewriter
             var at = output.Position;
             if (streams.TryGetValue(reference, out var replacement))
             {
-                WriteStream(output, reference, replacement.Dictionary, replacement.Data);
+                WriteReplacement(output, reference, replacement, id);
             }
             else
             {
@@ -168,8 +183,36 @@ public static class PdfRewriter
             }
             written[reference.ObjectNumber] = (at, reference.Generation);
         }
-        WriteTrailer(output, written, free, structure.Trailer);
+        WriteTrailer(output, written, free, structure.Trailer, streams.Count > 0 ? id.GetHashAndReset() : null);
     }
+
+    /// <summary>A replaced object, its data copied from its file; dictionary and data also go into <paramref name="id"/>.</summary>
+    private static void WriteReplacement(Stream output, IndirectReference reference, Replacement replacement, IncrementalHash id)
+    {
+        using var data = new FileStream(replacement.DataPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+        if (data.Length != replacement.Length)
+            throw new IOException($"The data file of object {reference.ObjectNumber} {reference.Generation} R changed while the PDF was written.");
+        id.AppendData(replacement.Dictionary);
+        Header(output, reference);
+        output.Write(replacement.Dictionary);
+        Ascii(output, "\nstream\n");
+        var buffer = new byte[1 << 16];
+        int read;
+        while ((read = data.Read(buffer)) > 0)
+        {
+            id.AppendData(buffer.AsSpan(0, read));
+            output.Write(buffer.AsSpan(0, read));
+        }
+        Ascii(output, "\nendstream\nendobj\n");
+    }
+
+    /// <summary>The bytes of an <c>/ID</c> element.</summary>
+    private static byte[] Bytes(IDataToken<string> token) => token switch
+    {
+        StringToken text => text.GetBytes(),
+        HexToken hex => hex.Bytes.ToArray(),
+        _ => Encoding.Latin1.GetBytes(token.Data),
+    };
 
     private static PdfDocument Open(Stream input)
     {
@@ -271,18 +314,19 @@ public static class PdfRewriter
     /// One table from object 0 to the highest number written or free, 20-byte entries. Every number not written is free,
     /// for the generation <paramref name="free"/> gives (0 if none); entry 0 starts the list that links them in ascending
     /// order and ends in 0. <c>/ID</c> is written as hex strings: it needs no exact text, and a literal one may hold a
-    /// carriage return that <see cref="PdfSyntax"/> would refuse.
+    /// carriage return that <see cref="PdfSyntax"/> would refuse. A given <paramref name="secondId"/> replaces its second
+    /// element (ruling Q18).
     /// </summary>
     private static void WriteTrailer(Stream output, SortedDictionary<long, (long Offset, int Generation)> written,
-        Dictionary<long, int> free, TrailerDictionary trailer)
+        Dictionary<long, int> free, TrailerDictionary trailer, byte[]? secondId)
     {
         byte[] info, id;
         try
         {
             info = trailer.Info is { } i ? PdfSyntax.ToBytes(i) : [];
-            id = trailer.Identifier is { Count: > 0 } identifier
-                ? PdfSyntax.ToBytes(new ArrayToken(identifier.Select(AsHex).ToList()))
-                : [];
+            var elements = trailer.Identifier?.Select(AsHex).ToList() ?? [];
+            if (secondId != null && elements.Count >= 2) elements[1] = new HexToken(Convert.ToHexString(secondId).ToCharArray());
+            id = elements.Count > 0 ? PdfSyntax.ToBytes(new ArrayToken(elements)) : [];
         }
         catch (NotSupportedException ex)
         {

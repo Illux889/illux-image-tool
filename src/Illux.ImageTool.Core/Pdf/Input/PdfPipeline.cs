@@ -16,9 +16,13 @@ namespace Illux.ImageTool.Pdf.Input;
 /// nothing is decoded (a JPEG's headers are read for progressive detection).</item>
 /// <item>No image needs a change: the PDF is copied byte for byte (<c>no change needed</c>).</item>
 /// <item>Otherwise, one image at a time: extract it into a temporary folder, run the image pipeline on it with the
-/// drawn resolution, encode the result as the new image stream, and delete its temporary files before the next.</item>
-/// <item>Rewrite the PDF with the new streams (<see cref="PdfRewriter"/>).</item>
+/// drawn resolution, encode the result as the new image stream into a data file, and delete the image's other temporary
+/// files before the next.</item>
+/// <item>Rewrite the PDF with the new streams (<see cref="PdfRewriter"/>), copying their data from the data files; then
+/// delete the temporary folder.</item>
 /// </list>
+/// Memory therefore does not grow with the number of images: the new image data is on disk, not in memory, until the
+/// rewrite copies it (a CI step checks a six-page PDF against a one-page one, <c>PdfMemoryCheckTests</c>).
 /// Messages about an image start with <c>page N, image M: </c> (where it is first drawn). Any failure fails the whole
 /// PDF: the exception's message is the user's message (<c>page N, image M: …</c> for a rejected image,
 /// <c>the PDF could not be read (…)</c> for data that cannot be read or written back exactly).
@@ -90,24 +94,8 @@ public static class PdfPipeline
             jobs = scan.Images.Select(entry => PlanImage(pdf.Document, entry, options)).ToList();
         ct.ThrowIfCancellationRequested();
 
-        var changed = jobs.Any(j => j.NeedsChange);
-        if (changed)
-        {
-            var replacements = await ProcessAsync(inputPdf, outputPdf, jobs, options, ct).ConfigureAwait(false);
-            changed = replacements.Count > 0;
-            ct.ThrowIfCancellationRequested();
-            if (changed)
-            {
-                try
-                {
-                    PdfRewriter.Write(inputPdf, outputPdf, replacements);
-                }
-                catch (Exception ex) when (IsUnreadable(ex))
-                {
-                    throw Unreadable(ex);
-                }
-            }
-        }
+        var changed = jobs.Any(j => j.NeedsChange)
+                      && await ProcessAndRewriteAsync(inputPdf, outputPdf, jobs, options, ct).ConfigureAwait(false);
         if (!changed) File.Copy(inputPdf, outputPdf, overwrite: true);
 
         foreach (var job in jobs)
@@ -162,15 +150,18 @@ public static class PdfPipeline
     }
 
     /// <summary>
-    /// Extracts, processes and encodes each image that needs a change, one at a time; returns the new streams by
-    /// object (images, and soft masks whose size or depth changes).
+    /// Extracts, processes and encodes each image that needs a change, one at a time, into new streams by object
+    /// (images, and soft masks whose size or depth changes) whose data waits in files under the temporary folder; then
+    /// writes <paramref name="outputPdf"/> with them. False (nothing written) when no image changed after all.
     /// </summary>
-    private static async Task<Dictionary<PdfObjectId, PdfImageStream>> ProcessAsync(
+    private static async Task<bool> ProcessAndRewriteAsync(
         string inputPdf, string outputPdf, List<Job> jobs, ProcessingOptions options, CancellationToken ct)
     {
         var replacements = new Dictionary<PdfObjectId, PdfImageStream>();
         var images = jobs.Select(j => j.Entry.Image).ToHashSet();
         var tempRoot = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outputPdf))!, ".illux-pdf-" + Guid.NewGuid().ToString("N"));
+        // The encoded data of every replacement, kept until the rewrite has copied it.
+        var data = Path.Combine(tempRoot, "data");
         Directory.CreateDirectory(tempRoot);
         try
         {
@@ -208,25 +199,39 @@ public static class PdfPipeline
                     using (var pdf = OpenedPdf.Open(inputPdf))
                     {
                         (image, mask) = Guard(job.Prefix,
-                            () => PdfImageEncoder.Encode(pdf.Document, id, processed, extracted, factors, options.Filter, maskTo8Bit));
+                            () => PdfImageEncoder.Encode(pdf.Document, id, processed, extracted, factors, options.Filter, data, maskTo8Bit));
                     }
                     replacements[id] = image;
                     // A soft mask shared by several images is scaled once (the first); it is mapped onto each image's
                     // unit square whatever its pixel size. An image's own new stream wins over its use as a mask.
-                    if (mask is not null && extracted.SoftMaskId is { } maskId && !images.Contains(maskId))
-                        replacements.TryAdd(maskId, mask);
+                    if (mask is not null)
+                    {
+                        var used = extracted.SoftMaskId is { } maskId && !images.Contains(maskId) && replacements.TryAdd(maskId, mask);
+                        if (!used) TryDeleteFile(mask.DataPath);
+                    }
                 }
                 finally
                 {
                     TryDeleteFolder(dir);
                 }
             }
+            if (replacements.Count == 0) return false;
+            ct.ThrowIfCancellationRequested();
+            TestHook.Value?.Invoke("rewrite", tempRoot);
+            try
+            {
+                PdfRewriter.Write(inputPdf, outputPdf, replacements);
+            }
+            catch (Exception ex) when (IsUnreadable(ex))
+            {
+                throw Unreadable(ex);
+            }
+            return true;
         }
         finally
         {
             TryDeleteFolder(tempRoot);
         }
-        return replacements;
     }
 
     /// <summary>The image dictionary's <c>/Width</c> and <c>/Height</c> drive the plan; the extracted data must agree.</summary>
@@ -315,8 +320,9 @@ public static class PdfPipeline
         new($"the PDF could not be read ({PdfImageScanner.FirstLine(ex.Message)})", ex);
 
     /// <summary>
-    /// Test hook: <c>("image", temporary root folder)</c> before each image is extracted, and
-    /// <c>("resample", input PDF)</c> right before the image pipeline runs on it.
+    /// Test hook: <c>("image", temporary root folder)</c> before each image is extracted,
+    /// <c>("resample", input PDF)</c> right before the image pipeline runs on it, and
+    /// <c>("rewrite", temporary root folder)</c> right before the PDF is rewritten.
     /// </summary>
     internal static readonly AsyncLocal<Action<string, string>?> TestHook = new();
 
@@ -355,6 +361,16 @@ public static class PdfPipeline
     }
 
     private static string Cm(double value) => value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 
     private static void TryDeleteFolder(string path)
     {

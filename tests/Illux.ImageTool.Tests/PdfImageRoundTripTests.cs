@@ -13,6 +13,12 @@ using UglyToad.PdfPig.Tokens;
 
 namespace Illux.ImageTool.Tests;
 
+internal static class PdfImageStreamData
+{
+    /// <summary>The replacement's encoded data, read from its file.</summary>
+    public static byte[] Data(this PdfImageStream stream) => File.ReadAllBytes(stream.DataPath);
+}
+
 /// <summary>
 /// Image stream → temporary image file → (scaled with <see cref="MagickImage.Resize(IMagickGeometry)"/>) → replacement
 /// stream, checked through PdfPig: the new dictionary is parsed back from its PDF syntax and the data decoded.
@@ -50,8 +56,25 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal(8, Int(d, "BitsPerComponent"));
         Assert.False(d.Data.ContainsKey("DecodeParms"));
         Assert.Equal(r.OldImage.Data["ColorSpace"], d.Data["ColorSpace"]);
-        Assert.Equal(r.Image.Data.Length, Int(d, "Length"));
-        Assert.Equal(File.ReadAllBytes(r.ProcessedPath), r.Image.Data);
+        Assert.Equal(r.Image.Data().Length, Int(d, "Length"));
+        Assert.Equal(File.ReadAllBytes(r.ProcessedPath), r.Image.Data());
+    }
+
+    [Fact]
+    public void Encode_DataGoesToNewFilesInTheDataDirectory()
+    {
+        // Final review I2: the encoded data is not held in memory; each replacement names a file of its own.
+        var png = TestImages.Write(_dir, "a.png", 40, 30, ColorSpace.sRGB, 8, 72, alpha: true);
+        var pdf = TestPdfs.OnePage(_dir, "alpha.pdf", png, 8, 6);
+
+        var first = RoundTrip(pdf, 2, 2);
+        var second = RoundTrip(pdf, 2, 2);
+
+        string[] paths = [first.Image.DataPath, first.Mask!.DataPath, second.Image.DataPath, second.Mask!.DataPath];
+        Assert.All(paths, p => Assert.Equal(Path.GetFullPath(Work), Path.GetDirectoryName(Path.GetFullPath(p))));
+        Assert.Equal(4, paths.Distinct().Count());
+        Assert.Equal(first.Image.Data(), second.Image.Data());
+        Assert.Equal(new FileInfo(first.Mask.DataPath).Length, Int(Parse(first.Mask.Dictionary), "Length"));
     }
 
     [Fact]
@@ -72,14 +95,14 @@ public sealed class PdfImageRoundTripTests : IDisposable
 
         // The same patch (the middle quarter) before and after, as colours through the CMYK profile.
         using var before = new MagickImage(r.Extracted.Path);
-        using var after = new MagickImage(r.Image.Data);
+        using var after = new MagickImage(r.Image.Data());
         Assert.Equal(ColorSpace.CMYK, after.ColorSpace);
         var deltaE = DeltaE(PatchLab(before, 16, 12, 32, 24), PatchLab(after, 8, 6, 16, 12));
         Assert.True(deltaE < 2, $"ΔE {deltaE:0.00}");
 
         // The raw (libjpeg) samples, which /Decode maps: same polarity before and after, so the kept /Decode is right.
         var rawBefore = RawCmykMeans(File.ReadAllBytes(r.Extracted.Path), 16, 12, 32, 24);
-        var rawAfter = RawCmykMeans(r.Image.Data, 8, 6, 16, 12);
+        var rawAfter = RawCmykMeans(r.Image.Data(), 8, 6, 16, 12);
         for (var c = 0; c < 4; c++)
             Assert.True(Math.Abs(rawBefore[c] - rawAfter[c]) < 2, $"channel {c}: raw mean {rawBefore[c]:0.0} -> {rawAfter[c]:0.0}");
     }
@@ -108,7 +131,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal(45, Int(d, "Height"));
         Assert.Equal("DeviceRGB", Name(d, "ColorSpace"));
         using var processed = new MagickImage(r.ProcessedPath);
-        Assert.Equal(BigEndian(Samples16(processed, "RGB")), Decode(d, r.Image.Data));
+        Assert.Equal(BigEndian(Samples16(processed, "RGB")), Decode(d, r.Image.Data()));
     }
 
     [Fact]
@@ -127,7 +150,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
             Assert.Equal(original, pixels.ToByteArray("CMYK"));
         }
         Assert.Equal("DeviceCMYK", Name(r.NewImage, "ColorSpace"));
-        Assert.Equal(original, Decode(r.NewImage, r.Image.Data));
+        Assert.Equal(original, Decode(r.NewImage, r.Image.Data()));
     }
 
     [Fact]
@@ -161,7 +184,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal(20, Int(d, "Height"));
         using var processed = new MagickImage(r.ProcessedPath);
         using var processedPixels = processed.GetPixels();
-        Assert.Equal(processedPixels.ToByteArray("R"), Decode(d, r.Image.Data));
+        Assert.Equal(processedPixels.ToByteArray("R"), Decode(d, r.Image.Data()));
     }
 
     private static readonly byte[][] Palette = [[0xFF, 0, 0], [0, 0xC0, 0], [0x10, 0x20, 0xFF], [0x80, 0x80, 0x80]];
@@ -200,7 +223,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.False(d.Data.ContainsKey("Decode"));
         Assert.Equal(10, Int(d, "Width"));
         Assert.Equal(8, Int(d, "Height"));
-        var samples = Decode(d, r.Image.Data);
+        var samples = Decode(d, r.Image.Data());
         Assert.Equal(10 * 8 * 3, samples.Length);
         for (var y = 0; y < 8; y++)
             for (var x = 0; x < 10; x++)
@@ -250,8 +273,8 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal("FlateDecode", Name(m, "Filter"));
         Assert.Equal("DeviceGray", Name(m, "ColorSpace"));
         Assert.Equal(8, Int(m, "BitsPerComponent"));
-        Assert.Equal(r.Mask.Data.Length, Int(m, "Length"));
-        var alpha = Decode(m, r.Mask.Data);
+        Assert.Equal(r.Mask.Data().Length, Int(m, "Length"));
+        var alpha = Decode(m, r.Mask.Data());
         Assert.Equal(20 * 60, alpha.Length);
         // The alpha ramps from left to right in every row, as before.
         for (var y = 0; y < 60; y += 7) Assert.True(alpha[y * 20] < 30 && alpha[y * 20 + 19] > 225);
@@ -298,14 +321,14 @@ public sealed class PdfImageRoundTripTests : IDisposable
         using var doc = PdfDocument.Open(pdf);
 
         var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: false, Work);
-        var (image, mask) = PdfImageEncoder.Encode(doc, id, extracted.Path, extracted, (1, 1), ResampleFilter.Bicubic);
+        var (image, mask) = PdfImageEncoder.Encode(doc, id, extracted.Path, extracted, (1, 1), ResampleFilter.Bicubic, Work);
 
         Assert.Null(mask);
         var d = Parse(image.Dictionary);
         Assert.Equal(1, Int(d, "BitsPerComponent"));
         Assert.True(Assert.IsType<BooleanToken>(d.Data["ImageMask"]).Data);
         Assert.False(d.Data.ContainsKey("ColorSpace"));
-        Assert.Equal(bits, Decode(d, image.Data));
+        Assert.Equal(bits, Decode(d, image.Data()));
     }
 
     [Fact]
@@ -356,7 +379,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.False(d.Data.ContainsKey("Decode"));
         using var decoded = new MagickImage(jp2);
         using var pixels = decoded.GetPixels();
-        Assert.Equal(pixels.ToByteArray("RGB"), Decode(d, r.Image.Data));
+        Assert.Equal(pixels.ToByteArray("RGB"), Decode(d, r.Image.Data()));
     }
 
     [Fact]
@@ -388,7 +411,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal(r.OldImage.Data.Keys.Where(k => k != "DecodeParms").Order(), r.NewImage.Data.Keys.Order());
         Assert.Equal((8, 6), (Int(r.NewImage, "Width"), Int(r.NewImage, "Height")));
         Assert.Equal("FlateDecode", Name(r.NewImage, "Filter"));
-        Assert.Equal(r.Image.Data.Length, Int(r.NewImage, "Length"));
+        Assert.Equal(r.Image.Data().Length, Int(r.NewImage, "Length"));
     }
 
     [Fact]
@@ -420,7 +443,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
             image.Write(processed, MagickFormat.Tiff);
         }
 
-        var (encoded, _) = PdfImageEncoder.Encode(doc, id, processed, extracted, (1, 1), ResampleFilter.Bicubic);
+        var (encoded, _) = PdfImageEncoder.Encode(doc, id, processed, extracted, (1, 1), ResampleFilter.Bicubic, Work);
 
         var d = Parse(encoded.Dictionary);
         Assert.Equal(8, Int(d, "BitsPerComponent"));
@@ -526,7 +549,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
             image.Write(lab, MagickFormat.Tiff);
         }
 
-        Assert.Throws<NotSupportedException>(() => PdfImageEncoder.Encode(doc, id, lab, extracted, (1, 1), ResampleFilter.Bicubic));
+        Assert.Throws<NotSupportedException>(() => PdfImageEncoder.Encode(doc, id, lab, extracted, (1, 1), ResampleFilter.Bicubic, Work));
     }
 
     [Fact]
@@ -538,7 +561,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: false, Work);
         var jpeg = TestImages.Write(_dir, "as.jpg", 5, 4, ColorSpace.sRGB, 8, 72);
 
-        Assert.Throws<InvalidOperationException>(() => PdfImageEncoder.Encode(doc, id, jpeg, extracted, (1, 1), ResampleFilter.Bicubic));
+        Assert.Throws<InvalidOperationException>(() => PdfImageEncoder.Encode(doc, id, jpeg, extracted, (1, 1), ResampleFilter.Bicubic, Work));
     }
 
     // ---- helpers ----
@@ -566,7 +589,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         var old = Assert.IsType<StreamToken>(doc.Structure.GetObject(new IndirectReference(id.Number, id.Generation)).Data);
         var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: true, Work);
         var processed = Scale(extracted.Path, fx, fy, filter);
-        var (image, mask) = PdfImageEncoder.Encode(doc, id, processed, extracted, (fx, fy), ResampleFilter.Bicubic);
+        var (image, mask) = PdfImageEncoder.Encode(doc, id, processed, extracted, (fx, fy), ResampleFilter.Bicubic, Work);
         return new Result(extracted, processed, image, mask, old.StreamDictionary, old.Data.ToArray());
     }
 
