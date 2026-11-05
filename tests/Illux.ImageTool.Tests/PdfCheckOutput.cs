@@ -16,11 +16,16 @@ internal static class PdfCheckOutput
             var outDir = Path.Combine(testDir, "out");
             if (!Directory.Exists(outDir)) return;
             Directory.CreateDirectory(target);
-            foreach (var file in Directory.EnumerateFiles(outDir, "*.pdf", SearchOption.AllDirectories))
+            // Any case of the extension (Card.PDF): Directory.EnumerateFiles' pattern is case sensitive on macOS.
+            var files = Directory.EnumerateFiles(outDir, "*", SearchOption.AllDirectories)
+                .Where(f => f.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)).Order(StringComparer.Ordinal);
+            var number = 0;
+            foreach (var file in files)
             {
-                // The path below out/ goes into the name, so equal names in different subfolders stay apart.
-                var relative = Path.GetRelativePath(outDir, file).Replace(Path.DirectorySeparatorChar, '_').Replace(Path.AltDirectorySeparatorChar, '_');
-                File.Copy(file, Path.Combine(target, $"{prefix}-{Path.GetFileName(testDir)}-{relative}"), overwrite: true);
+                // A short counter, not the folder path: it keeps equal names from different subfolders (or a test's
+                // very long output path) from colliding or exceeding the file name limit.
+                number++;
+                File.Copy(file, Path.Combine(target, $"{prefix}-{Path.GetFileName(testDir)}-{number}-{Path.GetFileName(file)}"), overwrite: true);
             }
         }
         catch (IOException) { }

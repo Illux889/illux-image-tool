@@ -13,7 +13,7 @@ while IFS= read -r -d '' file; do
     qpdf --check "$file"; code=$?
     # Any exit code other than 0 fails: 3 means qpdf repaired or recovered something (e.g. a rebuilt cross-reference table).
     if [[ $code -ne 0 ]]; then echo "::error::qpdf --check exited with $code (2 = errors, 3 = warnings) for $(basename "$file")"; errors=$((errors + 1)); fi
-done < <(find "$folder" -type f -name '*.pdf' -print0)
+done < <(find "$folder" -type f -iname '*.pdf' -print0)
 if [[ $count -eq 0 ]]; then echo "::error::No PDF files in $folder to check"; exit 1; fi
 echo "qpdf checked $count PDF(s): $errors failed."
 [[ $errors -eq 0 ]]
