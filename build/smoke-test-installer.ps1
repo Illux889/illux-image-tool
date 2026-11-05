@@ -463,7 +463,8 @@ Check ($cliVersion -eq $Version) "CLI --version is $Version (got '$cliVersion')"
 
 foreach ($rel in 'IlluxImageTool.exe', 'IlluxImageToolWatcher.exe', 'IlluxImageToolSettings.exe', 'tools\jpegtran\jpegtran.exe',
                  'tools\jpegtran\jpeg62.dll', 'scripts\ae\IlluxImageTool.bat', 'scripts\ae\IlluxImageTool.ps1', 'docs\ae-setup.md',
-                 'LICENSE.txt', 'System.Diagnostics.EventLog.Messages.dll', 'unins000.exe') {
+                 'LICENSE.txt', 'THIRD-PARTY-NOTICES.md', 'tools\jpegtran\LICENSE.md', 'System.Diagnostics.EventLog.Messages.dll',
+                 'unins000.exe') {
     Check (Test-Path -LiteralPath (Join-Path $App $rel)) "installed $rel"
 }
 if ($PreviousReleaseVersion) {

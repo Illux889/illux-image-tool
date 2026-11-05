@@ -126,6 +126,11 @@ function Publish-Apps {
     Write-Host "Published $($chosen.Count) files into $publish"
 }
 
+# Files the installer takes straight from the repository (besides the published apps and the AE scripts).
+foreach ($rel in 'LICENSE', 'THIRD-PARTY-NOTICES.md', 'docs\ae-setup.md') {
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot $rel))) { throw "The repository lacks $rel." }
+}
+
 & (Join-Path $PSScriptRoot 'fetch-jpegtran.ps1')
 $compiler = Find-Iscc
 Get-VcRedist

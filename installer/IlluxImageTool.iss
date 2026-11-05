@@ -62,6 +62,7 @@ Source: "{#RepoRoot}scripts\ae\IlluxImageTool.bat"; DestDir: "{#EskoScripts}\Bat
 Source: "{#RepoRoot}scripts\ae\IlluxImageTool.ps1"; DestDir: "{#EskoScripts}\PowerShell"; Tasks: eskoscripts; Check: EskoFolderExists('PowerShell'); Flags: ignoreversion
 Source: "{#RepoRoot}docs\ae-setup.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 Source: "{#RepoRoot}LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+Source: "{#RepoRoot}THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoRoot}artifacts\redist\vc_redist.x64.exe"; Flags: dontcopy
 
 [InstallDelete]

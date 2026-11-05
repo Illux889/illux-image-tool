@@ -87,7 +87,15 @@ An image inside a PDF has no ppi of its own. Its print size is the size it is dr
 - If any image fails, the whole PDF fails and nothing is written for it.
 - Encrypted or signed PDFs, and Illustrator files (`.ai`), are not supported (Error).
 - A PDF without images is copied with the Warning `no images found`. Small images written straight into the page (inline images) are not processed: Warning `N inline image(s) not processed`.
-- An image used at different sizes is processed once, for its largest size, with a Warning.
+- Images that are not drawn on a page (for example only in a comment or stamp, or in a fill pattern) are not processed: Warning `N image(s) not drawn on a page were not processed`.
+- An image used at different sizes is processed once, for its largest width and its largest height, with a Warning.
+
+### Known limits
+
+- Images that are not drawn on a page are not processed. They get the Warning above.
+- Encrypted PDFs, signed PDFs (a signature, not an empty signature field) and Illustrator files (`.ai`, or a PDF saved with Illustrator editing data) are refused.
+- A few unusual PDF constructs are refused with `the PDF could not be read (…)` rather than risk changing them: non-ASCII names, or strings with carriage returns, inside compressed object streams, and slightly broken cross-reference tables.
+- Such a file can be saved again from Acrobat and dropped in again.
 
 ## Task status
 
