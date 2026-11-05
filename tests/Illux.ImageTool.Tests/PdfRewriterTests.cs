@@ -401,6 +401,98 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.Empty(Directory.GetFiles(OutDir));
     }
 
+    // ---- the raw-slice scanner (fix round 2) ----
+
+    [Theory]
+    [InlineData("4 0 obj\n<< /T (a>b endobj) /U 1 >>\nendobj", null)]                  // ">" in a string after "<<"
+    [InlineData("4 0 obj << /T (50% > 20%) >> endobj", "5 0 obj << /V 5 >> endobj")] // "%" in a string, one line
+    [InlineData("4 0 obj\n<< /T (a>b stream) /Length 3 >>\nstream\nabc\nendstream\nendobj", null)]
+    [InlineData("4 0 obj\n[/Xendobj 1 /U 2]\nendobj", null)]                           // a name ending in "endobj"
+    [InlineData("4 0 obj\n<< /A << /B 1 >> /Xendobj 1 >>\nendobj", null)]
+    [InlineData("4 0 obj\n<< /Length 5 0 R >>\nstream\r\nabc\r\nendstream\nendobj", "5 0 obj\n3\nendobj")] // CR LF, indirect /Length
+    [InlineData("4 0 obj<</A(x)/B<0a>/C[1 2]>>endobj", "5 0 obj%comment\n(endobj)\nendobj")]
+    public void Rewrite_RawSyntax_ObjectsCopiedExactly(string object4, string? object5)
+    {
+        var pdf = object5 is null
+            ? TestPdfs.Classic(_dir, "raw.pdf", (4, object4))
+            : TestPdfs.Classic(_dir, "raw.pdf", (4, object4), (5, object5));
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        var raw = RawText(Out());
+        Assert.Contains("\n" + object4 + "\n", raw);
+        Assert.Single(Regex.Matches(raw, @"(?<!\d)4 0 obj"));
+        if (object5 != null)
+        {
+            Assert.Contains("\n" + object5 + "\n", raw);
+            Assert.Single(Regex.Matches(raw, @"(?<!\d)5 0 obj"));
+        }
+        Assert.Equal(Objects(pdf).Count, AssertRawSame(pdf, Out()));
+        AssertValidStructure(Out());
+    }
+
+    [Fact]
+    public void Rewrite_ObjectRunningIntoAnother_Throws()
+    {
+        // Object 5's cross-reference entry points into object 4's string: object 4 would run past a known offset.
+        var pdf = TestPdfs.Classic(_dir, "runon.pdf", (4, "4 0 obj\n(x 5 0 obj << /V 5 >> endobj y)\nendobj"), (5, null));
+
+        var ex = Assert.Throws<InvalidDataException>(() => PdfRewriter.Write(pdf, Out(), None));
+
+        Assert.StartsWith("object 4 0 R: it runs past offset", ex.Message);
+        Assert.Empty(Directory.GetFiles(OutDir));
+    }
+
+    [Fact]
+    public void Rewrite_SomethingAfterEndobj_Throws()
+    {
+        var pdf = TestPdfs.Classic(_dir, "cut.pdf", (4, "4 0 obj\n<< /A 1 >>\nendobj garbage) >>"));
+
+        var ex = Assert.Throws<InvalidDataException>(() => PdfRewriter.Write(pdf, Out(), None));
+
+        Assert.StartsWith("object 4 0 R: something other than whitespace or a comment follows its endobj", ex.Message);
+    }
+
+    [Fact]
+    public void Rewrite_OffsetInsideAnotherHeader_Throws()
+    {
+        // Object 4's offset points at the "4" of "14 0 obj": "4 0 obj" is there, but not as a whole token.
+        var pdf = TestPdfs.Classic(_dir, "mid.pdf", (4, "14 0 obj << /M 1 >> endobj"));
+
+        var ex = Assert.Throws<InvalidDataException>(() => PdfRewriter.Write(pdf, Out(), None));
+
+        Assert.StartsWith("object 4 0 R: its \"n g obj\" is not at its cross-reference offset", ex.Message);
+    }
+
+    [Fact]
+    public void Rewrite_IncrementalUpdate_NewestRevisionOnly()
+    {
+        var extra = 0;
+        var pdf = TestPdfs.CustomImage(_dir, "inc.pdf", w =>
+        {
+            extra = w.Reserve();
+            w.WriteObject(extra, "<< /Old true >>");
+            return GrayImage();
+        });
+        int info;
+        using (var document = PdfDocument.Open(pdf))
+            info = (int)Assert.IsType<IndirectReferenceToken>(document.Structure.Trailer.Info).Data.ObjectNumber;
+        TestPdfs.AppendUpdate(pdf, redefined: info, body: "<< /Producer (Updated) >>", freed: extra);
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        var raw = RawText(Out());
+        Assert.Contains($"\n{info} 0 obj\n<< /Producer (Updated) >>\nendobj\n", raw);
+        Assert.DoesNotContain("(TestPdfs)", raw);  // the older revision of the info object
+        Assert.DoesNotContain("/Old true", raw);   // freed by the update
+        AssertValidStructure(Out());
+        var entries = XrefEntries(File.ReadAllBytes(Out()));
+        Assert.Equal(('f', 1), (entries[extra].Type, entries[extra].Generation));
+        using var output = PdfDocument.Open(Out());
+        Assert.Equal("Updated", output.Information.Producer);
+        Assert.Single(output.GetPage(1).GetImages());
+    }
+
     // ---- objects from object streams (written again, only when exact) ----
 
     [Fact]
@@ -524,6 +616,20 @@ public sealed class PdfRewriterTests : IDisposable
     }
 
     [Fact]
+    public void Rewrite_LiteralIdWithCarriageReturn_WrittenAsHex()
+    {
+        // About 6% of random 16-byte literal IDs hold a 0x0D; /ID needs no exact text, so it is not refused.
+        var pdf = TestPdfs.OnePage(_dir, "idcr.pdf", Jpeg(), 10, 7.5);
+        var text = Encoding.Latin1.GetString(File.ReadAllBytes(pdf));
+        var at = text.LastIndexOf("trailer\n<< ", StringComparison.Ordinal) + "trailer\n<< ".Length;
+        File.WriteAllBytes(pdf, Encoding.Latin1.GetBytes(text.Insert(at, "/ID [(a\rb) (c\\rd)] ")));
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        Assert.Contains(" /ID [<610D62> <630D64>] >>", RawText(Out()));
+    }
+
+    [Fact]
     public void Rewrite_Trailer_KeepsRootInfoAndId_DropsTheRest()
     {
         var pdf = TestPdfs.OnePage(_dir, "id.pdf", Jpeg(), 10, 7.5);
@@ -537,7 +643,8 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.Equal(["ID", "Info", "Root", "Size"], trailer.Data.Keys.Order(StringComparer.Ordinal));
         var id = Assert.IsType<ArrayToken>(trailer.Data["ID"]);
         Assert.Equal(Convert.FromHexString("0123456789ABCDEF"), Assert.IsType<HexToken>(id.Data[0]).Bytes.ToArray());
-        Assert.Equal([0x80, (byte)'r', (byte)'a', (byte)'w'], Assert.IsType<StringToken>(id.Data[1]).GetBytes());
+        Assert.Equal([0x80, (byte)'r', (byte)'a', (byte)'w'], Assert.IsType<HexToken>(id.Data[1]).Bytes.ToArray());
+        Assert.Contains(" /ID [<0123456789ABCDEF> <80726177>] >>", RawText(Out()));
         using var a = PdfDocument.Open(pdf);
         using var b = PdfDocument.Open(Out());
         Assert.Equal(a.Structure.Trailer.Root, b.Structure.Trailer.Root);

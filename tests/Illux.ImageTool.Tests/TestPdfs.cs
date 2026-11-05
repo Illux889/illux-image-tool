@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 using ImageMagick;
 using Illux.ImageTool.Jpeg;
 using Illux.ImageTool.Pdf;
@@ -181,6 +182,76 @@ internal static class TestPdfs
             var (entries, data) = image(pdf);
             return [FullPage(WriteStream(pdf, entries, data), 5, 5)];
         });
+
+    /// <summary>
+    /// Appends an incremental update to a classic-table <paramref name="pdf"/> (one written by this class): object
+    /// <paramref name="redefined"/> gets the new body <paramref name="body"/> (same generation), object
+    /// <paramref name="freed"/> is freed (an <c>f</c> entry for generation 1), and the new trailer has <c>/Prev</c>.
+    /// Returns <paramref name="pdf"/>.
+    /// </summary>
+    public static string AppendUpdate(string pdf, int redefined, string body, int freed)
+    {
+        var text = Encoding.Latin1.GetString(File.ReadAllBytes(pdf));
+        var trailer = Regex.Match(text, @"trailer\n<< /Size (\d+) /Root (\d+) 0 R /Info (\d+) 0 R >>\nstartxref\n(\d+)\n%%EOF\n$");
+        if (!trailer.Success) throw new InvalidOperationException("Not a classic-table test PDF.");
+        using var output = new FileStream(pdf, FileMode.Append, FileAccess.Write);
+        var offset = output.Position;
+        output.Write(Encoding.Latin1.GetBytes($"{redefined} 0 obj\n{body}\nendobj\n"));
+        var xref = output.Position;
+        var sections = new SortedDictionary<int, string>
+        {
+            [0] = $"{freed:D10} 65535 f\r\n",
+            [redefined] = $"{offset:D10} 00000 n\r\n",
+            [freed] = "0000000000 00001 f\r\n",
+        };
+        var table = new StringBuilder("xref\n");
+        foreach (var (number, entry) in sections) table.Append(CultureInfo.InvariantCulture, $"{number} 1\n{entry}");
+        table.Append(CultureInfo.InvariantCulture,
+            $"trailer\n<< /Size {trailer.Groups[1].Value} /Root {trailer.Groups[2].Value} 0 R /Info {trailer.Groups[3].Value} 0 R " +
+            $"/Prev {trailer.Groups[4].Value} >>\nstartxref\n{xref}\n%%EOF\n");
+        output.Write(Encoding.Latin1.GetBytes(table.ToString()));
+        return pdf;
+    }
+
+    /// <summary>
+    /// A hand-built PDF 1.4 with a classic table, for raw syntax: objects 1-3 are the catalog, the page tree and one
+    /// empty 100 × 100 pt page; <paramref name="objects"/> follow as given (Latin-1 text, each followed by LF). An
+    /// object's cross-reference offset is where <c>n 0 obj</c> first appears in its own text (so text "14 0 obj …"
+    /// for object 4 points one byte into the header), or, with null text, where it first appears in the file (inside
+    /// another object).
+    /// </summary>
+    public static string Classic(string dir, string name, params (int Number, string? Text)[] objects)
+    {
+        List<(int Number, string? Text)> all =
+        [
+            (1, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj"),
+            (2, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj"),
+            (3, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj"),
+            .. objects,
+        ];
+        var file = new StringBuilder("%PDF-1.4\n%âãÏÓ\n");
+        var offsets = new Dictionary<int, int>();
+        foreach (var (number, text) in all.Where(o => o.Text != null))
+        {
+            var at = text!.IndexOf($"{number} 0 obj", StringComparison.Ordinal);
+            if (at < 0) throw new ArgumentException($"Object {number}'s text has no \"{number} 0 obj\".");
+            offsets[number] = file.Length + at;
+            file.Append(text).Append('\n');
+        }
+        foreach (var (number, _) in all.Where(o => o.Text == null))
+            offsets[number] = file.ToString().IndexOf($"{number} 0 obj", StringComparison.Ordinal);
+
+        var xref = file.Length;
+        var size = offsets.Keys.Max() + 1;
+        file.Append(CultureInfo.InvariantCulture, $"xref\n0 {size}\n0000000000 65535 f\r\n");
+        for (var number = 1; number < size; number++)
+            file.Append(offsets.TryGetValue(number, out var offset) ? $"{offset:D10} 00000 n\r\n" : "0000000000 00000 f\r\n");
+        file.Append(CultureInfo.InvariantCulture, $"trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, name);
+        File.WriteAllBytes(path, Encoding.Latin1.GetBytes(file.ToString()));
+        return path;
+    }
 
     /// <summary>Writes one stream object and returns its number.</summary>
     public static int WriteStream(PdfObjectWriter pdf, string entries, byte[] data)

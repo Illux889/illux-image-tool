@@ -115,9 +115,18 @@ public static class PdfRewriter
         var structure = document.Structure;
         var locations = structure.CrossReferenceTable.ObjectOffsets;
 
+        // Every offset a cross-reference section names (objects of all revisions, the sections themselves) bounds the
+        // raw objects; objects freed by a later revision are not copied.
+        using var file = new FileStream(inputPdf, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
+        var parts = structure.CrossReferenceTable.Parts;
+        var raw = new PdfRawObjects(file, parts
+            .SelectMany(p => p.ObjectOffsets.Values.Where(l => l.Type == XrefEntryType.File).Select(l => l.Value1))
+            .Concat(parts.Select(p => p.Offset)));
+        var freed = PdfRevisions.Freed(structure, raw);
+
         // One generation per number: the newest, if a damaged table lists several.
         var references = locations
-            .Where(l => l.Value.Type != XrefEntryType.Free && l.Key.ObjectNumber > 0)
+            .Where(l => l.Value.Type != XrefEntryType.Free && l.Key.ObjectNumber > 0 && !freed.ContainsKey(l.Key.ObjectNumber))
             .GroupBy(l => l.Key.ObjectNumber)
             .Select(g => g.MaxBy(l => l.Key.Generation).Key)
             .OrderBy(r => r.ObjectNumber)
@@ -125,11 +134,10 @@ public static class PdfRewriter
         foreach (var reference in streams.Keys.Where(r => !references.Contains(r)))
             throw new ArgumentException($"The PDF has no object {reference.ObjectNumber} {reference.Generation} R to replace.");
 
-        using var file = new FileStream(inputPdf, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
-        var raw = new PdfRawObjects(file);
         new PdfObjectWriter(output).WriteHeader(version);
         var written = new SortedDictionary<long, (long Offset, int Generation)>();
-        var dropped = new Dictionary<long, int>();
+        // Free entries: a freed object keeps its free entry's generation, a dropped one is free for its next generation.
+        var free = freed.ToDictionary(f => f.Key, f => f.Value);
         foreach (var reference in references)
         {
             var at = output.Position;
@@ -142,7 +150,7 @@ public static class PdfRewriter
                 var token = Read(structure, reference);
                 if (IsLeftOut(token))
                 {
-                    dropped[reference.ObjectNumber] = reference.Generation;
+                    free[reference.ObjectNumber] = Math.Min(reference.Generation + 1, 65535);
                     continue;
                 }
                 var location = locations[reference];
@@ -160,7 +168,7 @@ public static class PdfRewriter
             }
             written[reference.ObjectNumber] = (at, reference.Generation);
         }
-        WriteTrailer(output, written, dropped, structure.Trailer);
+        WriteTrailer(output, written, free, structure.Trailer);
     }
 
     private static PdfDocument Open(Stream input)
@@ -260,30 +268,33 @@ public static class PdfRewriter
         Ascii(output, string.Create(CultureInfo.InvariantCulture, $"{reference.ObjectNumber} {reference.Generation} obj\n"));
 
     /// <summary>
-    /// One table from object 0 to the highest number written or dropped, 20-byte entries. Every number not written is free: a
-    /// dropped object's number for its next generation, any other for generation 0; entry 0 starts the list that links
-    /// them in ascending order and ends in 0.
+    /// One table from object 0 to the highest number written or free, 20-byte entries. Every number not written is free,
+    /// for the generation <paramref name="free"/> gives (0 if none); entry 0 starts the list that links them in ascending
+    /// order and ends in 0. <c>/ID</c> is written as hex strings: it needs no exact text, and a literal one may hold a
+    /// carriage return that <see cref="PdfSyntax"/> would refuse.
     /// </summary>
     private static void WriteTrailer(Stream output, SortedDictionary<long, (long Offset, int Generation)> written,
-        Dictionary<long, int> dropped, TrailerDictionary trailer)
+        Dictionary<long, int> free, TrailerDictionary trailer)
     {
         byte[] info, id;
         try
         {
             info = trailer.Info is { } i ? PdfSyntax.ToBytes(i) : [];
-            id = trailer.Identifier is { Count: > 0 } identifier ? PdfSyntax.ToBytes(new ArrayToken(identifier.Cast<IToken>().ToList())) : [];
+            id = trailer.Identifier is { Count: > 0 } identifier
+                ? PdfSyntax.ToBytes(new ArrayToken(identifier.Select(AsHex).ToList()))
+                : [];
         }
         catch (NotSupportedException ex)
         {
             throw new NotSupportedException($"the trailer cannot be written back exactly ({ex.Message})", ex);
         }
 
-        var size = checked((int)written.Keys.Concat(dropped.Keys).DefaultIfEmpty(0).Max() + 1);
-        var free = Enumerable.Range(1, size - 1).Where(n => !written.ContainsKey(n)).ToList();
+        var size = checked((int)written.Keys.Concat(free.Keys).DefaultIfEmpty(0).Max() + 1);
+        var unused = Enumerable.Range(1, size - 1).Where(n => !written.ContainsKey(n)).ToList();
         var xref = output.Position;
         var table = new StringBuilder();
         table.Append(CultureInfo.InvariantCulture, $"xref\n0 {size}\n");
-        table.Append(CultureInfo.InvariantCulture, $"{(free.Count > 0 ? free[0] : 0):D10} 65535 f\r\n");
+        table.Append(CultureInfo.InvariantCulture, $"{(unused.Count > 0 ? unused[0] : 0):D10} 65535 f\r\n");
         var freeIndex = 0;
         for (var number = 1; number < size; number++)
         {
@@ -292,8 +303,8 @@ public static class PdfRewriter
                 table.Append(CultureInfo.InvariantCulture, $"{entry.Offset:D10} {entry.Generation:D5} n\r\n");
                 continue;
             }
-            var next = ++freeIndex < free.Count ? free[freeIndex] : 0;
-            var generation = dropped.TryGetValue(number, out var old) ? Math.Min(old + 1, 65535) : 0;
+            var next = ++freeIndex < unused.Count ? unused[freeIndex] : 0;
+            var generation = free.GetValueOrDefault(number);
             table.Append(CultureInfo.InvariantCulture, $"{next:D10} {generation:D5} f\r\n");
         }
         table.Append(CultureInfo.InvariantCulture,
@@ -311,6 +322,12 @@ public static class PdfRewriter
         }
         Ascii(output, string.Create(CultureInfo.InvariantCulture, $" >>\nstartxref\n{xref}\n%%EOF\n"));
     }
+
+    private static IToken AsHex(IDataToken<string> token) => token switch
+    {
+        StringToken text => new HexToken(Convert.ToHexString(text.GetBytes()).ToCharArray()),
+        _ => (IToken)token,
+    };
 
     private static void Ascii(Stream output, string text) => output.Write(Encoding.ASCII.GetBytes(text));
 
