@@ -364,18 +364,21 @@ mkdir -p "$WORK/drop"; cp "$PDF_IN" "$WORK/drop/chili-like.pdf"
 mv "$WORK/drop/chili-like.pdf" "$WATCH/In/chili-like.pdf"
 check 'the folders job processed the PDF dropped into the watched In folder' wait_until 120 test -f "$WATCH/Out/chili-like.pdf"
 check 'the input PDF was moved to Originals' wait_until 30 test -f "$WATCH/Originals/chili-like.pdf"
+check 'the folders job log says the PDF is done' wait_until 30 folder_log_has "'chili-like\.pdf' done\."
+check 'the folders job log has no warning or error line for the PDF' not grep -Eq "'chili-like\.pdf' (done with warnings|failed)" <<< "$(folder_log)"
+check_eq 'the PDF in Originals is the input, byte for byte' "$(sha "$PDF_IN")" "$(sha "$WATCH/Originals/chili-like.pdf" 2>/dev/null)"
 if [[ -f "$WATCH/Out/chili-like.pdf" ]]; then
     sleep 1
     check_eq 'Out holds a PDF' '%PDF-' "$(head -c 5 "$WATCH/Out/chili-like.pdf")"
     check_eq 'the output PDF has the page size of the input' "$BOX_IN" "$(media_box "$WATCH/Out/chili-like.pdf")"
     check 'the output PDF is larger (the image went up to 200 ppi)' test "$(stat -f %z "$WATCH/Out/chili-like.pdf")" -gt "$(stat -f %z "$PDF_IN")"
     check_eq 'the output PDF belongs to the folder account' "$ME" "$(stat -f %Su "$WATCH/Out/chili-like.pdf")"
+    check 'the output PDF image is 4803 px wide' grep -aq '/Width 4803' "$WATCH/Out/chili-like.pdf"
+    check 'the output PDF image is 3598 px high (200 ppi at 61 x 45.7 cm)' grep -aq '/Height 3598' "$WATCH/Out/chili-like.pdf"
     cp "$WATCH/Out/chili-like.pdf" "$WORK/pdf-check/watched-macos.pdf"
 fi
 check_eq 'Out holds exactly one PDF' 1 "$(find "$WATCH/Out" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')"
-check 'the folders job log says the PDF is done, without warnings or errors' wait_until 30 folder_log_has "'chili-like.pdf' done."
-check 'the output PDF image is 4803 px wide' grep -aq '/Width 4803' "$WATCH/Out/chili-like.pdf"
-check 'the output PDF image is 3598 px high (200 ppi at 61 x 45.7 cm)' grep -aq '/Height 3598' "$WATCH/Out/chili-like.pdf"
+check_eq 'Out holds no image file for the PDF' 0 "$(find "$WATCH/Out" -maxdepth 1 -name 'chili-like.*' ! -name '*.pdf' | wc -l | tr -d ' ')"
 check 'the root job did no watched-folder work' not log_has 'Watched folder'
 check 'the root job runs no watcher loop' not log_has 'Watcher started'
 check "the squatted $SQUAT changed nothing (still the planted file)" test -f "$SQUAT" -a ! -L "$SQUAT"

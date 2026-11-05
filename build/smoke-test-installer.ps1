@@ -614,18 +614,24 @@ else { Check $false 'the CLI wrote chili-like.pdf' }
 Copy-Item -LiteralPath $pdfIn -Destination (Join-Path $watch 'In\chili-like.pdf')
 $pdfOut = Join-Path $watch 'Out\chili-like.pdf'
 Check (Wait-Until { Test-Path -LiteralPath $pdfOut } 120) 'the service processed the PDF dropped into the watched In folder'
-Check (Wait-Until { Test-Path -LiteralPath (Join-Path $watch 'Originals\chili-like.pdf') } 30) 'the input PDF was moved to Originals'
+$pdfOriginal = Join-Path $watch 'Originals\chili-like.pdf'
+Check (Wait-Until { Test-Path -LiteralPath $pdfOriginal } 30) 'the input PDF was moved to Originals'
+Check (Wait-Until { (Get-ServiceLogText) -match "'chili-like\.pdf' done\." } 30) "the service log says the PDF is done"
+Check ((Get-ServiceLogText) -notmatch "'chili-like\.pdf' (done with warnings|failed)") 'the service log has no warning or error line for the PDF'
+if (Test-Path -LiteralPath $pdfOriginal) {
+    Check ((Get-FileHash -LiteralPath $pdfOriginal).Hash -eq (Get-FileHash -LiteralPath $pdfIn).Hash) 'the PDF in Originals is the input, byte for byte'
+}
 if (Test-Path -LiteralPath $pdfOut) {
     Start-Sleep -Seconds 1
     Check ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($pdfOut), 0, 5) -eq "%PDF-") 'Out holds a PDF'
     Check ((Get-MediaBox $pdfOut) -eq $boxIn) "the output PDF has the page size of the input ($boxIn; got $(Get-MediaBox $pdfOut))"
     Check ((Get-Item -LiteralPath $pdfOut).Length -gt (Get-Item -LiteralPath $pdfIn).Length) 'the output PDF is larger (the image went up to 200 ppi)'
+    $pdfText = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($pdfOut))
+    Check ($pdfText -match '/Width 4803' -and $pdfText -match '/Height 3598') 'the output PDF image is 4803 x 3598 px (200 ppi at 61 x 45.7 cm)'
     Copy-Item -LiteralPath $pdfOut -Destination (Join-Path $pdfCheck 'watched-windows.pdf')
 }
 Check (@(Get-ChildItem -LiteralPath (Join-Path $watch 'Out') -Filter '*.pdf').Count -eq 1) 'Out holds exactly one PDF'
-Check (Wait-Until { (Get-ServiceLogText) -match "'chili-like.pdf' done." } 30) 'the service log says the PDF is done, without warnings or errors'
-$pdfText = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($pdfOut))
-Check ($pdfText -match '/Width 4803' -and $pdfText -match '/Height 3598') 'the output PDF image is 4803 x 3598 px (200 ppi at 61 x 45.7 cm)'
+Check (@(Get-ChildItem -LiteralPath (Join-Path $watch 'Out') -Filter 'chili-like.*' | Where-Object { $_.Extension -ne '.pdf' }).Count -eq 0) 'Out holds no image file for the PDF'
 Show-Log (Get-ChildItem -LiteralPath $ServiceLogs -Filter 'watcher*.log' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 
 # =====================================================================================================

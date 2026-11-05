@@ -18,7 +18,9 @@ internal static class PdfCheckOutput
             Directory.CreateDirectory(target);
             foreach (var file in Directory.EnumerateFiles(outDir, "*.pdf", SearchOption.AllDirectories))
             {
-                File.Copy(file, Path.Combine(target, $"{prefix}-{Path.GetFileName(testDir)}-{Path.GetFileName(file)}"), overwrite: true);
+                // The path below out/ goes into the name, so equal names in different subfolders stay apart.
+                var relative = Path.GetRelativePath(outDir, file).Replace(Path.DirectorySeparatorChar, '_').Replace(Path.AltDirectorySeparatorChar, '_');
+                File.Copy(file, Path.Combine(target, $"{prefix}-{Path.GetFileName(testDir)}-{relative}"), overwrite: true);
             }
         }
         catch (IOException) { }

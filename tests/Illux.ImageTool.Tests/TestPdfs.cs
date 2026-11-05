@@ -240,7 +240,7 @@ internal static class TestPdfs
         [
             (1, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj"),
             (2, "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj"),
-            (3, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>\nendobj"),
+            (3, "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> >>\nendobj"),
             .. objects,
         ];
         var file = new StringBuilder("%PDF-1.4\n%âãÏÓ\n");
