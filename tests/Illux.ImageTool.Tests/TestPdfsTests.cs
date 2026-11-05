@@ -174,6 +174,27 @@ public sealed class TestPdfsTests : IDisposable
     }
 
     [Fact]
+    public void ChiliLike_CrLineEndings_AsChiliWritesThem()
+    {
+        var pdf = TestPdfs.ChiliLike(_dir, "chili-cr.pdf", Jpeg(), 10, 7.5, crLineEndings: true);
+
+        AssertPages(pdf, (10, 7.5, 1));
+        var raw = RawText(pdf);
+        Assert.StartsWith("%PDF-1.6\r%", raw);
+        Assert.Contains(" 0 obj\r<<", raw);
+        Assert.Contains(">>\rstream\n", raw); // "stream" itself must end in LF or CRLF (ISO 32000-1, 7.3.8.1)
+        Assert.Contains("\rendstream\rendobj\r", raw);
+        Assert.Contains("\rxref\r0 ", raw);
+        Assert.Contains("0000000000 65535 f\r\n", raw); // table entries stay 20 bytes
+        Assert.Contains(">>\rstartxref\r", raw);
+        Assert.EndsWith("%%EOF\r", raw);
+        // Outside stream data and the table entries no LF is left.
+        var outsideData = string.Join("", raw.Split("stream\n").Select(part => part.Contains("endstream")
+            ? part[part.IndexOf("endstream", StringComparison.Ordinal)..] : part));
+        Assert.DoesNotContain("\n", outsideData.Replace(" f\r\n", "").Replace(" n\r\n", ""));
+    }
+
+    [Fact]
     public void WithXrefStream_Pdf15ObjectStreamAndXrefStream()
     {
         var pdf = TestPdfs.WithXrefStream(_dir, "xref.pdf", Jpeg(), 10, 7.5);

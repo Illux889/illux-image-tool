@@ -53,7 +53,7 @@ public static class PdfImageScanner
         message.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "unknown error";
 
     /// <summary>The version text of the <c>%PDF-x.y</c> header (within the first 1024 bytes from the stream's position), or null.</summary>
-    private static string? HeaderVersion(Stream stream)
+    internal static string? HeaderVersion(Stream stream)
     {
         var buffer = new byte[1024];
         var read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);

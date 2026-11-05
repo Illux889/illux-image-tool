@@ -197,9 +197,12 @@ internal static class TestPdfs
     /// negative-height <c>cm</c>. The JPEG (RGB or CMYK) is embedded as DCTDecode with an ICCBased colour space and an
     /// empty <c>/DecodeParms</c>. Together the transformations draw the image at <paramref name="widthCm"/> ×
     /// <paramref name="heightCm"/>, which is also the page (MediaBox = TrimBox = BleedBox, <c>/UserUnit 1</c>).
+    /// With <paramref name="crLineEndings"/> the file's own lines end in CR, as real Chili exports do (stream data, the
+    /// LF after <c>stream</c> and the CR LF of the table entries stay).
     /// </summary>
-    public static string ChiliLike(string dir, string name, string imagePath, double widthCm, double heightCm) =>
-        Write(dir, name, "1.6", pdf =>
+    public static string ChiliLike(string dir, string name, string imagePath, double widthCm, double heightCm,
+        bool crLineEndings = false) =>
+        Write(dir, name, "1.6", newline: crLineEndings ? "\r" : "\n", body: pdf =>
         {
             const double sx = 1.0014, sy = 1.002;
             var info = JpegInspector.Inspect(imagePath);
@@ -334,12 +337,12 @@ internal static class TestPdfs
 
     /// <summary>Writes the header, the objects from <paramref name="body"/>, then the page tree, catalog, info and trailer.</summary>
     private static string Write(string dir, string name, string version, Func<PdfObjectWriter, IReadOnlyList<PageSpec>> body,
-        Func<PdfObjectWriter, string>? catalogExtra = null)
+        Func<PdfObjectWriter, string>? catalogExtra = null, string newline = "\n")
     {
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, name);
         using var output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-        var pdf = new PdfObjectWriter(output);
+        var pdf = new PdfObjectWriter(output, newline);
         pdf.WriteHeader(version);
         var specs = body(pdf);
         var extra = catalogExtra?.Invoke(pdf) ?? "";

@@ -4,7 +4,6 @@ using Illux.ImageTool.Jpeg;
 using Illux.ImageTool.Options;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Tokens;
-using UglyToad.PdfPig.Writer;
 
 namespace Illux.ImageTool.Pdf.Input;
 
@@ -113,13 +112,8 @@ public static class PdfImageEncoder
         return dictionary.With("Mask", new ArrayToken(values));
     }
 
-    /// <summary>The dictionary in PDF syntax (PdfPig's token writer, as the rewriter uses, decision P1).</summary>
-    private static PdfImageStream Stream(DictionaryToken dictionary, byte[] data)
-    {
-        using var bytes = new MemoryStream();
-        TokenWriter.Instance.WriteToken(dictionary, bytes);
-        return new PdfImageStream(bytes.ToArray(), data);
-    }
+    /// <summary>The dictionary in PDF syntax, written as the rewriter writes every object (<see cref="PdfSyntax"/>).</summary>
+    private static PdfImageStream Stream(DictionaryToken dictionary, byte[] data) => new(PdfSyntax.ToBytes(dictionary), data);
 
     /// <summary>The processed file must still have the PDF colour space's component count (no colour conversion).</summary>
     private static void CheckComponents(int actual, int expected)

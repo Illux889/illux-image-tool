@@ -5,10 +5,17 @@ namespace Illux.ImageTool.Pdf;
 
 /// <summary>
 /// Low-level PDF file syntax: header, numbered objects, streams, classic cross-reference table and trailer.
-/// Object bodies are passed in as PDF source text; this class only tracks byte offsets.
+/// Object bodies are passed in as PDF source text; this class only tracks byte offsets. Every <c>\n</c> in that text
+/// becomes <paramref name="newline"/> (<c>\n</c>, <c>\r</c> or <c>\r\n</c>), except after the <c>stream</c> keyword
+/// (always LF, as ISO 32000-1 7.3.8.1 requires) and in the 20-byte table entries (always CR LF). Stream data is written
+/// as given.
 /// </summary>
-internal sealed class PdfObjectWriter(Stream output)
+internal sealed class PdfObjectWriter(Stream output, string newline = "\n")
 {
+    private readonly string _newline = newline is "\n" or "\r" or "\r\n"
+        ? newline
+        : throw new ArgumentException("A PDF line ending is LF, CR or CR LF.", nameof(newline));
+
     // Index = object number; entry 0 is the head of the free list. -1 = reserved but not written yet.
     private readonly List<long> _offsets = [0];
 
@@ -16,7 +23,8 @@ internal sealed class PdfObjectWriter(Stream output)
     public void WriteHeader(string version)
     {
         WriteText($"%PDF-{version}\n");
-        output.Write([(byte)'%', 0xE2, 0xE3, 0xCF, 0xD3, (byte)'\n']);
+        output.Write([(byte)'%', 0xE2, 0xE3, 0xCF, 0xD3]);
+        WriteText("\n");
     }
 
     /// <summary>Reserves the next object number, so objects can refer to each other before they are written.</summary>
@@ -42,7 +50,8 @@ internal sealed class PdfObjectWriter(Stream output)
         var lengthNumber = Reserve();
         BeginObject(number);
         var entries = dictionaryEntries.Length > 0 ? dictionaryEntries + " " : "";
-        WriteText($"<< {entries}/Length {lengthNumber} 0 R >>\nstream\n");
+        WriteText($"<< {entries}/Length {lengthNumber} 0 R >>\nstream");
+        output.Write("\n"u8);
         var start = output.Position;
         writeData(output);
         var length = output.Position - start;
@@ -56,14 +65,14 @@ internal sealed class PdfObjectWriter(Stream output)
         if (_offsets.Contains(-1)) throw new InvalidOperationException("A reserved PDF object was never written.");
 
         var xref = output.Position;
+        WriteText(string.Create(CultureInfo.InvariantCulture, $"xref\n0 {_offsets.Count}\n"));
         var table = new StringBuilder();
-        table.Append(CultureInfo.InvariantCulture, $"xref\n0 {_offsets.Count}\n");
         table.Append("0000000000 65535 f\r\n"); // each entry is exactly 20 bytes
         foreach (var offset in _offsets.Skip(1))
             table.Append(CultureInfo.InvariantCulture, $"{offset:D10} 00000 n\r\n");
-        table.Append(CultureInfo.InvariantCulture,
-            $"trailer\n<< /Size {_offsets.Count} /Root {root} 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n");
-        WriteText(table.ToString());
+        output.Write(Encoding.ASCII.GetBytes(table.ToString()));
+        WriteText(string.Create(CultureInfo.InvariantCulture,
+            $"trailer\n<< /Size {_offsets.Count} /Root {root} 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n"));
     }
 
     /// <summary>Formats a number for PDF: invariant culture, no exponent, at most four decimals.</summary>
@@ -81,5 +90,6 @@ internal sealed class PdfObjectWriter(Stream output)
         WriteText($"{number} 0 obj\n");
     }
 
-    private void WriteText(string text) => output.Write(Encoding.Latin1.GetBytes(text));
+    private void WriteText(string text) =>
+        output.Write(Encoding.Latin1.GetBytes(_newline == "\n" ? text : text.Replace("\n", _newline, StringComparison.Ordinal)));
 }
