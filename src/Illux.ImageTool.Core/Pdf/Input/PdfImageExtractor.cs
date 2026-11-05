@@ -1,5 +1,6 @@
 using ImageMagick;
 using Illux.ImageTool.Imaging;
+using Illux.ImageTool.Jpeg;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Tokens;
 
@@ -37,6 +38,9 @@ public static class PdfImageExtractor
             throw new UnsupportedImageException("a colour-key mask on an image that needs scaling is not supported");
         if (needsScaling && source.IsImageMask)
             throw new UnsupportedImageException("a stencil mask that needs scaling is not supported");
+        // Expansion turns indices into colours, which a colour key (index ranges) cannot describe (ruling Q10).
+        if (source.Get("Mask") is ArrayToken && source.ColorSpace().Palette != null)
+            throw new UnsupportedImageException("an indexed image with a colour-key mask is not supported");
 
         PdfImageObject? mask = null;
         PdfObjectId? maskId = null;
@@ -57,8 +61,9 @@ public static class PdfImageExtractor
         if (isJpeg)
         {
             var data = source.Decode(); // the stream's own bytes for plain DCTDecode: no copy
-            using var output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-            output.Write(data.Span);
+            using (var output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
+                output.Write(data.Span);
+            CheckColorTransform(source, path);
         }
         else
         {
@@ -91,6 +96,28 @@ public static class PdfImageExtractor
         tiff.Settings.Compression = CompressionMethod.Zip;
         using var output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         tiff.Write(output, MagickFormat.Tiff);
+    }
+
+    /// <summary>
+    /// A DCT <c>/DecodeParms /ColorTransform</c> only counts when the JPEG has no Adobe marker (the marker's transform
+    /// overrides it, ISO 32000-1 table 13). Without one, ImageMagick (libjpeg) decodes 3 components as YCbCr and 4 as
+    /// CMYK; a <c>/ColorTransform</c> saying otherwise would be lost in the new JPEG, so such data is refused.
+    /// </summary>
+    private static void CheckColorTransform(PdfImageObject image, string jpegPath)
+    {
+        var parms = image.Get("DecodeParms") switch
+        {
+            ArrayToken array => image.Resolve(array.Data.ElementAtOrDefault(image.Filters.Count - 1)),
+            var single => single,
+        };
+        if (parms is not DictionaryToken dictionary || image.Resolve(dictionary.Data.GetValueOrDefault("ColorTransform")) is not NumericToken transform)
+            return;
+
+        var info = JpegInspector.Inspect(jpegPath);
+        // The transform only exists for 3 and 4 components.
+        if (info.HasAdobeMarker || info.Components is not (3 or 4)) return;
+        var assumed = info.Components == 3 ? 1 : 0;
+        if (transform.Int != assumed) throw PdfImageObject.Unsupported(PdfImageObject.Dct);
     }
 
     /// <summary>Raw samples (after the filters) as an image; Indexed is expanded, 2 and 4 bit become 8 bit.</summary>
@@ -238,13 +265,10 @@ public static class PdfImageExtractor
             {
                 throw new UnsupportedImageException($"{image.Codec} image data is not supported", ex);
             }
-            var components = result.ColorSpace switch
-            {
-                ImageMagick.ColorSpace.Gray or ImageMagick.ColorSpace.LinearGray => 1,
-                ImageMagick.ColorSpace.CMYK => 4,
-                _ => 3,
-            };
-            if (components != colorSpace.Components) throw PdfImageObject.Unsupported(image.Codec!);
+            // Only data that is already gray, RGB or CMYK: anything else (Lab, YCbCr, …) would need a conversion.
+            if (PdfSamples.Layout(result.ColorSpace) is not { } layout || layout.Components != colorSpace.Components)
+                throw PdfImageObject.Unsupported(image.Codec!);
+            var components = layout.Components;
 
             result.RemoveProfile("icc");
             if (colorSpace.Icc != null) result.SetProfile(new ImageProfile("icc", colorSpace.Icc));

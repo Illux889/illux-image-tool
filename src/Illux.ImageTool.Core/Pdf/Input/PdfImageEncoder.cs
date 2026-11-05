@@ -11,20 +11,25 @@ namespace Illux.ImageTool.Pdf.Input;
 /// <summary>
 /// Turns a processed temporary image file back into a replacement image stream. The new dictionary is the old one
 /// with only <c>/Width</c>, <c>/Height</c>, <c>/BitsPerComponent</c>, <c>/Filter</c>, <c>/DecodeParms</c> (removed) and
-/// <c>/Length</c> changed, plus <c>/ColorSpace</c> (the base) and <c>/Decode</c> (removed: it mapped the indices) for
-/// an expanded Indexed image. Colour space, ICC profile and decode array are otherwise kept: the samples are the same
-/// raw values the extractor wrote.
+/// <c>/Length</c> changed, and where the old entries would now mean something else:
+/// <list type="bullet">
+/// <item>an expanded Indexed image gets its base as <c>/ColorSpace</c> and loses <c>/Decode</c> (it mapped the indices);</item>
+/// <item>JPX data that becomes Flate loses <c>/Decode</c> (ignored for JPX, ISO 32000-1 7.4.9, unless an image mask);</item>
+/// <item>a colour-key <c>/Mask</c> array is rescaled when the bit depth changes (ruling Q10).</item>
+/// </list>
+/// Colour space, ICC profile and decode array are otherwise kept: the samples are the same raw values the extractor wrote.
 /// </summary>
 public static class PdfImageEncoder
 {
     /// <summary>
     /// Encodes <paramref name="processedPath"/> as the new data of image <paramref name="image"/>: a JPEG as DCT data byte
-    /// for byte, anything else as Flate samples. When <paramref name="extracted"/> has a soft mask, the mask is scaled by
-    /// <paramref name="factors"/> (new size = old size × factor, rounded) with <paramref name="filter"/> and encoded as a
-    /// Flate gray image for the mask's own object.
+    /// for byte, anything else as Flate samples. When <paramref name="extracted"/> has a soft mask whose size changes,
+    /// the mask is scaled by <paramref name="factors"/> (new size = old size × factor, rounded) with
+    /// <paramref name="filter"/> and encoded as a Flate gray image for the mask's own object; a mask whose size does
+    /// not change gives null, so its stream stays as it is.
     /// </summary>
     public static (PdfImageStream Image, PdfImageStream? SoftMask) Encode(PdfDocument doc, PdfObjectId image,
-        string processedPath, ExtractedImage extracted, (double X, double Y) factors, ResampleFilter filter = ResampleFilter.Bicubic)
+        string processedPath, ExtractedImage extracted, (double X, double Y) factors, ResampleFilter filter)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrEmpty(processedPath);
@@ -32,43 +37,51 @@ public static class PdfImageEncoder
         if (!IsPositive(factors.X) || !IsPositive(factors.Y))
             throw new ArgumentOutOfRangeException(nameof(factors), factors, "Scale factors must be positive.");
 
-        MagickSetup.Configure();
         var source = PdfImageObject.Read(doc, image);
         var colorSpace = source.ColorSpace();
         var palette = colorSpace.Palette;
         var components = palette?.Base.Components ?? colorSpace.Components;
 
-        PdfImageStream result;
+        DictionaryToken dictionary;
+        byte[] data;
+        int bits;
         if (PdfImageWriter.IsJpeg(processedPath))
         {
+            if (palette != null) throw new InvalidOperationException("An expanded Indexed image cannot be stored as JPEG.");
             var info = JpegInspector.Inspect(processedPath);
             CheckComponents(info.Components, components);
-            var data = File.ReadAllBytes(processedPath);
-            result = Stream(Replace(source.Dictionary, info.Width, info.Height, 8, PdfImageObject.Dct, data.Length), data);
+            data = File.ReadAllBytes(processedPath);
+            bits = 8;
+            dictionary = Replace(source.Dictionary, info.Width, info.Height, bits, PdfImageObject.Dct, data.Length);
         }
         else
         {
-            using var processed = ReadImage(processedPath);
-            CheckComponents(Components(processed), components);
-            var bits = source.IsImageMask ? 1 : processed.Depth > 8 ? 16 : 8;
-            var data = bits == 1 ? PackedFlate(processed) : PdfSamples.Flate(processed, PdfSamples.Mapping(components), bits);
-            var dictionary = Replace(source.Dictionary, (int)processed.Width, (int)processed.Height, bits, "FlateDecode", data.Length);
+            using var processed = PdfSamples.Read(processedPath);
+            var (mapping, actual) = PdfSamples.RequireLayout(processed);
+            CheckComponents(actual, components);
+            bits = source.IsImageMask ? 1 : processed.Depth > 8 ? 16 : 8;
+            data = PdfSamples.Flate(processed, mapping, bits);
+            dictionary = Replace(source.Dictionary, (int)processed.Width, (int)processed.Height, bits, "FlateDecode", data.Length);
             if (palette != null) dictionary = dictionary.With("ColorSpace", palette.BaseToken).Without("Decode");
-            result = Stream(dictionary, data);
+            if (source.Codec == PdfImageObject.Jpx && !source.IsImageMask) dictionary = dictionary.Without("Decode");
         }
+        if (palette == null) dictionary = RescaleColourKey(source, dictionary, bits);
+        var result = Stream(dictionary, data);
 
         PdfImageStream? softMask = null;
         if (extracted.SoftMaskPath is { } maskPath && extracted.SoftMaskId is { } maskId)
         {
-            var mask = PdfImageObject.Read(doc, maskId);
-            using var maskImage = ReadImage(maskPath);
+            using var maskImage = PdfSamples.Read(maskPath);
             var width = Math.Max(1, (uint)Math.Round(maskImage.Width * factors.X, MidpointRounding.AwayFromZero));
             var height = Math.Max(1, (uint)Math.Round(maskImage.Height * factors.Y, MidpointRounding.AwayFromZero));
             if (width != maskImage.Width || height != maskImage.Height)
+            {
                 maskImage.Resize(new MagickGeometry(width, height) { IgnoreAspectRatio = true }, MagickRewriter.ToFilterType(filter));
-            var bits = maskImage.Depth > 8 ? 16 : 8;
-            var data = PdfSamples.Flate(maskImage, PdfSamples.Mapping(1), bits);
-            softMask = Stream(Replace(mask.Dictionary, (int)width, (int)height, bits, "FlateDecode", data.Length), data);
+                var mask = PdfImageObject.Read(doc, maskId);
+                var maskBits = maskImage.Depth > 8 ? 16 : 8;
+                var maskData = PdfSamples.Flate(maskImage, PdfSamples.RequireLayout(maskImage).Mapping, maskBits);
+                softMask = Stream(Replace(mask.Dictionary, (int)width, (int)height, maskBits, "FlateDecode", maskData.Length), maskData);
+            }
         }
         return (result, softMask);
     }
@@ -82,6 +95,24 @@ public static class PdfImageEncoder
             .With("Length", new NumericToken(length))
             .Without("DecodeParms");
 
+    /// <summary>
+    /// A colour-key <c>/Mask</c> array holds sample values at the old bit depth; with a new depth each value v becomes
+    /// round(v × (2^new − 1) / (2^old − 1)). That is exact for 1, 2 and 4 → 8 bit (× 255, 85, 17). For 16 → 8 bit it is
+    /// round(v / 257), the rounding ImageMagick uses for the 8-bit conversion, and approximate at the range edges: an
+    /// edge moves to its nearest 8-bit level, so pixels just outside a range that round onto that level become keyed
+    /// too, and pixels just inside can drop out.
+    /// </summary>
+    private static DictionaryToken RescaleColourKey(PdfImageObject source, DictionaryToken dictionary, int bits)
+    {
+        if (source.Bits is 0 || source.Bits == bits || source.Get("Mask") is not ArrayToken key) return dictionary;
+        double from = (1 << source.Bits) - 1, to = (1 << bits) - 1;
+        var values = key.Data.Select(t => source.Resolve(t) is NumericToken n
+                ? (IToken)new NumericToken((int)Math.Clamp(Math.Round(n.Double * to / from, MidpointRounding.AwayFromZero), 0, to))
+                : throw new InvalidDataException("A colour-key /Mask holds a value that is not a number."))
+            .ToList();
+        return dictionary.With("Mask", new ArrayToken(values));
+    }
+
     /// <summary>The dictionary in PDF syntax (PdfPig's token writer, as the rewriter uses, decision P1).</summary>
     private static PdfImageStream Stream(DictionaryToken dictionary, byte[] data)
     {
@@ -89,46 +120,6 @@ public static class PdfImageEncoder
         TokenWriter.Instance.WriteToken(dictionary, bytes);
         return new PdfImageStream(bytes.ToArray(), data);
     }
-
-    /// <summary>A stencil mask's samples: 1 bit per pixel, rows padded to whole bytes, set where the gray is at least half.</summary>
-    private static byte[] PackedFlate(MagickImage image)
-    {
-        int width = (int)image.Width, height = (int)image.Height, rowBytes = (width + 7) / 8;
-        using var pixels = image.GetPixels();
-        var gray = pixels.ToByteArray(PdfSamples.Mapping(1)) ?? throw new InvalidOperationException("Pixel export failed.");
-        var packed = new byte[rowBytes * height];
-        for (var y = 0; y < height; y++)
-            for (var x = 0; x < width; x++)
-                if (gray[y * width + x] >= 128) packed[y * rowBytes + x / 8] |= (byte)(0x80 >> (x % 8));
-
-        using var output = new MemoryStream();
-        using (var zlib = new System.IO.Compression.ZLibStream(output, System.IO.Compression.CompressionLevel.Optimal, leaveOpen: true))
-            zlib.Write(packed);
-        return output.ToArray();
-    }
-
-    private static MagickImage ReadImage(string path)
-    {
-        var image = new MagickImage();
-        try
-        {
-            using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read); // .NET IO: long/UNC paths
-            image.Read(input);
-            return image;
-        }
-        catch
-        {
-            image.Dispose();
-            throw;
-        }
-    }
-
-    private static int Components(MagickImage image) => image.ColorSpace switch
-    {
-        ImageMagick.ColorSpace.Gray or ImageMagick.ColorSpace.LinearGray => 1,
-        ImageMagick.ColorSpace.CMYK => 4,
-        _ => 3,
-    };
 
     /// <summary>The processed file must still have the PDF colour space's component count (no colour conversion).</summary>
     private static void CheckComponents(int actual, int expected)

@@ -76,23 +76,10 @@ public static class PdfImageWriter
 
     private static ImageObject WriteRasterImage(PdfObjectWriter pdf, string path)
     {
-        MagickSetup.Configure();
-        var settings = new MagickReadSettings();
-        // Keep a Photoshop-layered TIFF a single image (the layers are not part of the flattened picture).
-        settings.SetDefine(MagickFormat.Tiff, "ignore-layers", true);
-
-        using var image = new MagickImage();
-        using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) // .NET IO: long/UNC paths
-            image.Read(input, settings);
+        using var image = PdfSamples.Read(path);
 
         // Palette images are expanded to their RGB values by the "RGB" export (lossless), not written as /Indexed.
-        var (mapping, components) = image.ColorSpace switch
-        {
-            ImageMagick.ColorSpace.CMYK => ("CMYK", 4),
-            ImageMagick.ColorSpace.Gray or ImageMagick.ColorSpace.LinearGray => ("I", 1),
-            ImageMagick.ColorSpace.sRGB or ImageMagick.ColorSpace.RGB => ("RGB", 3),
-            var other => throw new NotSupportedException($"Images in the {other} colour space cannot be written to PDF."),
-        };
+        var (mapping, components) = PdfSamples.RequireLayout(image);
         var bits = image.Depth > 8 ? 16 : 8;
         var width = checked((int)image.Width);
         var height = checked((int)image.Height);

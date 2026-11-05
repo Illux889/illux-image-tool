@@ -250,4 +250,15 @@ public sealed class PdfImageScannerTests : IDisposable
 
         Assert.Empty(scan.Images);
     }
+
+    [Fact]
+    public void Scan_InfiniteAxis_NotListed()
+    {
+        // 1e200 squared overflows to infinity: both axes are infinitely long.
+        var big = "1" + new string('0', 200);
+
+        var scan = PdfImageScanner.Scan(TestPdfs.WithMatrices(_dir, "inf.pdf", Jpeg(), $"{big} 0 0 {big} 0 0 cm {big} 0 0 {big} 0 0 cm"));
+
+        Assert.Empty(scan.Images);
+    }
 }

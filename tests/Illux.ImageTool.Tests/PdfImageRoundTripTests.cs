@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using ImageMagick;
 using Illux.ImageTool.Imaging;
 using Illux.ImageTool.Jpeg;
+using Illux.ImageTool.Options;
 using Illux.ImageTool.Pdf;
 using Illux.ImageTool.Pdf.Input;
 using UglyToad.PdfPig;
@@ -75,6 +76,12 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal(ColorSpace.CMYK, after.ColorSpace);
         var deltaE = DeltaE(PatchLab(before, 16, 12, 32, 24), PatchLab(after, 8, 6, 16, 12));
         Assert.True(deltaE < 2, $"ΔE {deltaE:0.00}");
+
+        // The raw (libjpeg) samples, which /Decode maps: same polarity before and after, so the kept /Decode is right.
+        var rawBefore = RawCmykMeans(File.ReadAllBytes(r.Extracted.Path), 16, 12, 32, 24);
+        var rawAfter = RawCmykMeans(r.Image.Data, 8, 6, 16, 12);
+        for (var c = 0; c < 4; c++)
+            Assert.True(Math.Abs(rawBefore[c] - rawAfter[c]) < 2, $"channel {c}: raw mean {rawBefore[c]:0.0} -> {rawAfter[c]:0.0}");
     }
 
     [Fact]
@@ -291,7 +298,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         using var doc = PdfDocument.Open(pdf);
 
         var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: false, Work);
-        var (image, mask) = PdfImageEncoder.Encode(doc, id, extracted.Path, extracted, (1, 1));
+        var (image, mask) = PdfImageEncoder.Encode(doc, id, extracted.Path, extracted, (1, 1), ResampleFilter.Bicubic);
 
         Assert.Null(mask);
         var d = Parse(image.Dictionary);
@@ -326,7 +333,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
     }
 
     [Fact]
-    public void RoundTrip_Jpx_BecomesLosslessFlate()
+    public void RoundTrip_Jpx_BecomesFlateWithoutDecode()
     {
         var png = TestImages.Write(_dir, "jpx.png", 24, 16, ColorSpace.sRGB, 8, 72);
         byte[] jp2;
@@ -336,7 +343,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
             jp2 = source.ToByteArray(MagickFormat.Jp2);
         }
         var pdf = TestPdfs.CustomImage(_dir, "jpx.pdf", _ =>
-            ("/Type /XObject /Subtype /Image /Width 24 /Height 16 /ColorSpace /DeviceRGB /Filter /JPXDecode", jp2));
+            ("/Type /XObject /Subtype /Image /Width 24 /Height 16 /ColorSpace /DeviceRGB /Decode [1 0 1 0 1 0] /Filter /JPXDecode", jp2));
 
         var r = RoundTrip(pdf, 1, 1);
 
@@ -345,6 +352,8 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal("FlateDecode", Name(d, "Filter"));
         Assert.Equal("DeviceRGB", Name(d, "ColorSpace"));
         Assert.Equal(8, Int(d, "BitsPerComponent"));
+        // Ignored for JPX (ISO 32000-1 7.4.9), it would invert the Flate samples.
+        Assert.False(d.Data.ContainsKey("Decode"));
         using var decoded = new MagickImage(jp2);
         using var pixels = decoded.GetPixels();
         Assert.Equal(pixels.ToByteArray("RGB"), Decode(d, r.Image.Data));
@@ -382,6 +391,127 @@ public sealed class PdfImageRoundTripTests : IDisposable
         Assert.Equal(r.Image.Data.Length, Int(r.NewImage, "Length"));
     }
 
+    [Fact]
+    public void Encode_BitDepthChange_RescalesColourKey()
+    {
+        var gray16 = new byte[2 * 2 * 2];
+        var pdf16 = TestPdfs.CustomImage(_dir, "key16.pdf", _ =>
+            ("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 16 /Mask [1000 65535]",
+                gray16));
+        Assert.Equal([4, 255], ColourKeyAfter8Bit(pdf16)); // round(1000 / 257) = 4
+
+        var pdf4 = TestPdfs.CustomImage(_dir, "key4.pdf", _ =>
+            ("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 4 /Mask [3 15]",
+                [0x12, 0x34]));
+        Assert.Equal([51, 255], ColourKeyAfter8Bit(pdf4)); // x 17, exact
+    }
+
+    /// <summary>Extracts without scaling, converts to 8 bit (as the pipeline's 8-bit operation) and returns the new /Mask.</summary>
+    private int[] ColourKeyAfter8Bit(string pdf)
+    {
+        var id = ImageId(pdf);
+        using var doc = PdfDocument.Open(pdf);
+        var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: false, Work);
+        var processed = Path.Combine(Work, "8bit-" + Path.GetFileName(pdf) + ".tif");
+        using (var image = new MagickImage(extracted.Path))
+        {
+            image.Depth = 8;
+            image.Settings.ColorType = ColorType.Grayscale;
+            image.Write(processed, MagickFormat.Tiff);
+        }
+
+        var (encoded, _) = PdfImageEncoder.Encode(doc, id, processed, extracted, (1, 1), ResampleFilter.Bicubic);
+
+        var d = Parse(encoded.Dictionary);
+        Assert.Equal(8, Int(d, "BitsPerComponent"));
+        return Assert.IsType<ArrayToken>(d.Data["Mask"]).Data.Select(t => Assert.IsType<NumericToken>(t).Int).ToArray();
+    }
+
+    [Fact]
+    public void Extract_IndexedWithColourKey_Throws()
+    {
+        var pdf = TestPdfs.CustomImage(_dir, "indexed-key.pdf", _ =>
+            ("/Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace [/Indexed /DeviceRGB 1 <FF0000 00FF00>] " +
+             "/BitsPerComponent 8 /Mask [1 1]", [0, 1]));
+
+        var ex = Assert.Throws<UnsupportedImageException>(() => Extract(pdf, needsScaling: false));
+
+        Assert.Equal("an indexed image with a colour-key mask is not supported", ex.Message);
+    }
+
+    [Fact]
+    public void Extract_IndexedLiteralLookupWithUtf16Bom_KeepsBytes()
+    {
+        // A binary lookup in a literal string that happens to start like UTF-16 (FE FF), with an odd length.
+        byte[][] palette = [[0xFE, 0xFF, 0x00], [0x10, 0x20, 0x30], [0xC8, 0x00, 0x64]];
+        var literal = "(" + string.Concat(palette.SelectMany(c => c).Select(b => "\\" + Convert.ToString(b, 8).PadLeft(3, '0'))) + ")";
+        var pdf = TestPdfs.CustomImage(_dir, "bom.pdf", _ =>
+            ($"/Type /XObject /Subtype /Image /Width 3 /Height 1 /ColorSpace [/Indexed /DeviceRGB 2 {literal}] /BitsPerComponent 8",
+                [0, 1, 2]));
+
+        using var tiff = new MagickImage(Extract(pdf, needsScaling: false).Path);
+
+        using var pixels = tiff.GetPixels();
+        Assert.Equal(palette.SelectMany(c => c).ToArray(), pixels.ToByteArray("RGB"));
+    }
+
+    [Fact]
+    public void Extract_DctColorTransformAgainstMarkers_Throws()
+    {
+        // ImageMagick writes a JFIF JPEG (no Adobe marker): 3 components are decoded as YCbCr, i.e. /ColorTransform 1.
+        var jpeg = File.ReadAllBytes(TestImages.Write(_dir, "ct.jpg", 16, 8, ColorSpace.sRGB, 8, 72));
+        string Pdf(int transform) => TestPdfs.CustomImage(_dir, $"ct{transform}.pdf", _ =>
+            ("/Type /XObject /Subtype /Image /Width 16 /Height 8 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode " +
+             $"/DecodeParms << /ColorTransform {transform} >>", jpeg));
+
+        var ex = Assert.Throws<UnsupportedImageException>(() => Extract(Pdf(0), needsScaling: false));
+        Assert.Equal("DCTDecode image data is not supported", ex.Message);
+
+        Assert.True(Extract(Pdf(1), needsScaling: false).IsJpeg);
+    }
+
+    [Fact]
+    public void Encode_SoftMaskSizeUnchanged_NoNewMask()
+    {
+        var png = TestImages.Write(_dir, "alpha1.png", 40, 30, ColorSpace.sRGB, 8, 72, alpha: true);
+        var pdf = TestPdfs.OnePage(_dir, "alpha1.pdf", png, 8, 6);
+
+        var r = RoundTrip(pdf, 1, 1);
+
+        Assert.NotNull(r.Extracted.SoftMaskId);
+        Assert.Null(r.Mask);
+        Assert.Equal(r.OldImage.Data["SMask"], r.NewImage.Data["SMask"]);
+    }
+
+    [Fact]
+    public void Encode_ProcessedNotADeviceSpace_Throws()
+    {
+        var pdf = TestPdfs.OnePage(_dir, "lab.pdf", TestImages.Write(_dir, "lab-src.png", 8, 6, ColorSpace.sRGB, 8, 72), 4, 3);
+        var id = ImageId(pdf);
+        using var doc = PdfDocument.Open(pdf);
+        var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: false, Work);
+        var lab = Path.Combine(Work, "lab.tif");
+        using (var image = new MagickImage(extracted.Path))
+        {
+            image.ColorSpace = ColorSpace.Lab;
+            image.Write(lab, MagickFormat.Tiff);
+        }
+
+        Assert.Throws<NotSupportedException>(() => PdfImageEncoder.Encode(doc, id, lab, extracted, (1, 1), ResampleFilter.Bicubic));
+    }
+
+    [Fact]
+    public void Encode_IndexedProcessedAsJpeg_Throws()
+    {
+        var pdf = IndexedPdf("indexed-jpeg.pdf");
+        var id = ImageId(pdf);
+        using var doc = PdfDocument.Open(pdf);
+        var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: false, Work);
+        var jpeg = TestImages.Write(_dir, "as.jpg", 5, 4, ColorSpace.sRGB, 8, 72);
+
+        Assert.Throws<InvalidOperationException>(() => PdfImageEncoder.Encode(doc, id, jpeg, extracted, (1, 1), ResampleFilter.Bicubic));
+    }
+
     // ---- helpers ----
 
     private sealed record Result(ExtractedImage Extracted, string ProcessedPath, PdfImageStream Image, PdfImageStream? Mask,
@@ -407,7 +537,7 @@ public sealed class PdfImageRoundTripTests : IDisposable
         var old = Assert.IsType<StreamToken>(doc.Structure.GetObject(new IndirectReference(id.Number, id.Generation)).Data);
         var extracted = PdfImageExtractor.Extract(doc, id, needsScaling: true, Work);
         var processed = Scale(extracted.Path, fx, fy, filter);
-        var (image, mask) = PdfImageEncoder.Encode(doc, id, processed, extracted, (fx, fy));
+        var (image, mask) = PdfImageEncoder.Encode(doc, id, processed, extracted, (fx, fy), ResampleFilter.Bicubic);
         return new Result(extracted, processed, image, mask, old.StreamDictionary, old.Data.ToArray());
     }
 
@@ -468,6 +598,21 @@ public sealed class PdfImageRoundTripTests : IDisposable
         var stats = patch.Statistics();
         double Mean(PixelChannel c) => stats.GetChannel(c)!.Mean / 65535;
         return Lab(Mean(PixelChannel.Red), Mean(PixelChannel.Green), Mean(PixelChannel.Blue));
+    }
+
+    /// <summary>
+    /// The mean raw (libjpeg) CMYK samples (0..255) of a patch, the values a PDF reader maps with <c>/Decode</c>. The
+    /// JPEG must carry an Adobe APP14 marker: ImageMagick then reads its samples inverted (the Adobe convention, as
+    /// Photoshop writes CMYK), so 255 − its reading is the raw sample. (Removing the marker is no way to check this: it
+    /// also drops the marker's YCCK transform flag, so libjpeg would decode different samples.)
+    /// </summary>
+    private static double[] RawCmykMeans(byte[] jpeg, int x, int y, uint w, uint h)
+    {
+        using (var stream = new MemoryStream(jpeg)) Assert.True(JpegInspector.Inspect(stream).HasAdobeMarker);
+        using var image = new MagickImage(jpeg);
+        using var pixels = image.GetPixels();
+        var samples = pixels.ToByteArray(x, y, w, h, "CMYK")!;
+        return Enumerable.Range(0, 4).Select(c => 255 - samples.Where((_, i) => i % 4 == c).Average(v => v)).ToArray();
     }
 
     private static (double L, double A, double B) Lab(double r, double g, double b)

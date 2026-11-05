@@ -121,9 +121,9 @@ public static class PdfImageScanner
             var order = new Dictionary<PdfObjectId, int>();
             foreach (var (id, width, height) in pageUses)
             {
-                // An image axis of length 0 (degenerate cm) is invisible and would give an infinite ppi; NaN (from an
-                // overflowing cm) has no size at all.
-                if (!(width > 0) || !(height > 0)) continue;
+                // An image axis of length 0 (degenerate cm) is invisible and would give an infinite ppi; an infinite or
+                // NaN length (from an overflowing cm) is no size at all.
+                if (!(double.IsFinite(width) && width > 0) || !(double.IsFinite(height) && height > 0)) continue;
                 if (!order.TryGetValue(id, out var index)) order[id] = index = order.Count + 1;
                 _uses.Add(new PdfImageUse(number, index, id, width, height));
             }
