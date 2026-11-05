@@ -11,9 +11,10 @@ using UglyToad.PdfPig.Tokens;
 namespace Illux.ImageTool.Tests;
 
 /// <summary>
-/// <see cref="PdfRewriter"/>: a full rewrite of the input (decision P1) in which only the given objects change. Objects
-/// are compared through PdfPig: dictionaries and arrays entry for entry, strings by their bytes, stream data byte for
-/// byte; a stream's <c>/Length</c> is checked separately (it becomes direct).
+/// <see cref="PdfRewriter"/> (ruling P1b): every unchanged object stored plainly in the input is copied byte for byte;
+/// only replaced images and objects from object streams are written again, and those only when that is exact.
+/// Unchanged objects are compared as raw bytes, each located through its file's own cross-reference data, and also
+/// through PdfPig (dictionaries and arrays entry for entry, strings by their bytes, stream data byte for byte).
 /// </summary>
 public sealed class PdfRewriterTests : IDisposable
 {
@@ -25,11 +26,15 @@ public sealed class PdfRewriterTests : IDisposable
         catch (UnauthorizedAccessException) { }
     }
 
-    private string Out(string name = "out.pdf") => Path.Combine(Directory.CreateDirectory(Path.Combine(_dir, "out")).FullName, name);
+    private string OutDir => Directory.CreateDirectory(Path.Combine(_dir, "out")).FullName;
+
+    private string Out(string name = "out.pdf") => Path.Combine(OutDir, name);
 
     private string Jpeg(string name = "a.jpg", int w = 60, int h = 45) => TestImages.Write(_dir, name, w, h, ColorSpace.sRGB, 8, 72);
 
     private static readonly Dictionary<PdfObjectId, PdfImageStream> None = [];
+
+    private static Dictionary<PdfObjectId, PdfImageStream> Replace(PdfObjectId id, PdfImageStream stream) => new() { [id] = stream };
 
     // ---- the brief's tests ----
 
@@ -39,18 +44,15 @@ public sealed class PdfRewriterTests : IDisposable
         var pdf = TestPdfs.ChiliLike(_dir, "chili.pdf", Jpeg(), 10, 7.5);
         var id = ImageId(pdf);
         var newJpeg = File.ReadAllBytes(Jpeg("new.jpg", 120, 90));
-        var replacement = JpegStream(newJpeg, 120, 90, "/Length 7");
 
-        PdfRewriter.Write(pdf, Out(), new Dictionary<PdfObjectId, PdfImageStream> { [id] = replacement });
+        PdfRewriter.Write(pdf, Out(), Replace(id, JpegStream(newJpeg, 120, 90, "/Length 7")));
 
         var before = Objects(pdf);
         var after = Objects(Out());
         Assert.Equal(before.Keys.OrderBy(Key), after.Keys.OrderBy(Key));
         foreach (var (reference, token) in before)
-        {
-            if (reference.ObjectNumber == id.Number) continue;
-            AssertSame(token, after[reference], reference.ToString());
-        }
+            if (reference.ObjectNumber != id.Number) AssertSame(token, after[reference], reference.ToString());
+        AssertRawSame(pdf, Out(), except: id.Number);
         var image = Assert.IsType<StreamToken>(after[new IndirectReference(id.Number, id.Generation)]);
         Assert.Equal(newJpeg, image.Data.ToArray());
         Assert.Equal(120, Int(image.StreamDictionary, "Width"));
@@ -71,6 +73,7 @@ public sealed class PdfRewriterTests : IDisposable
         var after = Objects(Out());
         Assert.Equal(before.Keys.OrderBy(Key), after.Keys.OrderBy(Key));
         foreach (var (reference, token) in before) AssertSame(token, after[reference], reference.ToString());
+        Assert.Equal(before.Count, AssertRawSame(pdf, Out()));
         AssertValidStructure(Out());
     }
 
@@ -80,8 +83,9 @@ public sealed class PdfRewriterTests : IDisposable
         var pdf = TestPdfs.Pages(_dir, "pages.pdf", (Jpeg("p1.jpg"), 10, 7.5), (Jpeg("p2.jpg", 40, 80), 5, 10));
         var form = TestPdfs.InForm(_dir, "form.pdf", Jpeg("f.jpg"), 12, 9);
         var chili = TestPdfs.ChiliLike(_dir, "chili.pdf", Jpeg("c.jpg"), 10, 7.5, crLineEndings: true);
+        var xref = TestPdfs.WithXrefStream(_dir, "xref.pdf", Jpeg("x.jpg"), 10, 7.5);
 
-        foreach (var input in new[] { pdf, form, chili })
+        foreach (var input in new[] { pdf, form, chili, xref })
         {
             var output = Out(Path.GetFileName(input));
             var scan = PdfImageScanner.Scan(input);
@@ -102,7 +106,7 @@ public sealed class PdfRewriterTests : IDisposable
                 var decoded = 0;
                 foreach (var reference in a.Structure.CrossReferenceTable.ObjectOffsets.Keys)
                 {
-                    if (a.Structure.GetObject(reference).Data is not StreamToken s || IsImage(s)) continue;
+                    if (a.Structure.GetObject(reference).Data is not StreamToken s || IsImage(s) || IsStructural(s)) continue;
                     var t = Assert.IsType<StreamToken>(b.Structure.GetObject(reference).Data);
                     Assert.Equal(s.Decode(a.Structure.FilterProvider, a.Structure.TokenScanner).ToArray(),
                         t.Decode(b.Structure.FilterProvider, b.Structure.TokenScanner).ToArray());
@@ -150,7 +154,7 @@ public sealed class PdfRewriterTests : IDisposable
         var id = ImageId(pdf);
         var newJpeg = File.ReadAllBytes(Jpeg("new.jpg", 30, 20));
 
-        PdfRewriter.Write(pdf, Out(), new Dictionary<PdfObjectId, PdfImageStream> { [id] = JpegStream(newJpeg, 30, 20) });
+        PdfRewriter.Write(pdf, Out(), Replace(id, JpegStream(newJpeg, 30, 20)));
 
         var raw = RawText(Out());
         Assert.StartsWith("%PDF-1.5\n", raw);
@@ -159,12 +163,18 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.DoesNotContain("/W [", raw);
         AssertValidStructure(Out());
 
-        // Every object but the object stream and the xref stream is there, as a plain object.
-        var before = Objects(pdf).Where(o => !IsStructural(o.Value)).ToDictionary();
+        // Every object but the object stream and the xref stream is there, as a plain object; the plain ones byte for byte.
+        var all = Objects(pdf);
+        var before = all.Where(o => !IsStructural(o.Value)).ToDictionary();
         var after = Objects(Out());
         Assert.Equal(before.Keys.OrderBy(Key), after.Keys.OrderBy(Key));
         foreach (var (reference, token) in before)
             if (reference.ObjectNumber != id.Number) AssertSame(token, after[reference], reference.ToString());
+        Assert.Equal(1, AssertRawSame(pdf, Out(), except: id.Number)); // the content stream
+        // The dropped object stream and xref stream are free entries for their next generation.
+        var entries = XrefEntries(File.ReadAllBytes(Out()));
+        foreach (var dropped in all.Where(o => IsStructural(o.Value)).Select(o => o.Key))
+            Assert.Equal(('f', 1), (entries[(int)dropped.ObjectNumber].Type, entries[(int)dropped.ObjectNumber].Generation));
         using var document = PdfDocument.Open(Out());
         Assert.Equal(newJpeg, Assert.Single(document.GetPage(1).GetImages()).RawBytes.ToArray());
         var image = Assert.Single(PdfImageScanner.Scan(Out()).Images);
@@ -180,56 +190,56 @@ public sealed class PdfRewriterTests : IDisposable
         var jpeg = File.ReadAllBytes(Jpeg("n.jpg", 30, 20));
         var good = JpegStream(jpeg, 30, 20);
 
-        void Fails<T>(string input, IReadOnlyDictionary<PdfObjectId, PdfImageStream> replacements) where T : Exception
+        T Fails<T>(string input, IReadOnlyDictionary<PdfObjectId, PdfImageStream> replacements) where T : Exception
         {
-            var output = Out();
-            Assert.ThrowsAny<T>(() => PdfRewriter.Write(input, output, replacements));
-            Assert.False(File.Exists(output));
-            Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(output)!));
+            var ex = Assert.Throws<T>(() => PdfRewriter.Write(input, Out(), replacements));
+            Assert.Empty(Directory.GetFiles(OutDir)); // neither the output nor a temporary file
+            return ex;
         }
 
-        // An object the file does not have (number or generation).
-        Fails<ArgumentException>(pdf, new Dictionary<PdfObjectId, PdfImageStream> { [new PdfObjectId(999, 0)] = good });
-        Fails<ArgumentException>(pdf, new Dictionary<PdfObjectId, PdfImageStream> { [id with { Generation = 1 }] = good });
-        // A replacement dictionary that is not exactly one dictionary.
-        Fails<Exception>(pdf, new Dictionary<PdfObjectId, PdfImageStream> { [id] = new("[1 2]"u8.ToArray(), jpeg) });
-        Fails<Exception>(pdf, new Dictionary<PdfObjectId, PdfImageStream> { [id] = new("<< /A 1 >> << /B 2 >>"u8.ToArray(), jpeg) });
-        Fails<Exception>(pdf, new Dictionary<PdfObjectId, PdfImageStream> { [id] = new("<< /A [1 2 >>"u8.ToArray(), jpeg) });
-        // An input that cannot be read, or that is encrypted.
-        Fails<Exception>(Path.Combine(_dir, "missing.pdf"), None);
+        // Caller errors: an object the file does not have (number or generation), a dictionary that is not exactly one.
+        Fails<ArgumentException>(pdf, Replace(new PdfObjectId(999, 0), good));
+        Fails<ArgumentException>(pdf, Replace(id with { Generation = 1 }, good));
+        Fails<ArgumentException>(pdf, Replace(id, new("[1 2]"u8.ToArray(), jpeg)));
+        Fails<ArgumentException>(pdf, Replace(id, new("<< /A 1 >> << /B 2 >>"u8.ToArray(), jpeg)));
+        Fails<ArgumentException>(pdf, Replace(id, new("<< /A [1 2 >>"u8.ToArray(), jpeg)));
+        Fails<ArgumentException>(pdf, Replace(id, new("<< /N 3000000000 >>"u8.ToArray(), jpeg)));
+        // The input: missing, not a PDF, encrypted.
+        Fails<FileNotFoundException>(Path.Combine(_dir, "missing.pdf"), None);
         File.WriteAllText(Path.Combine(_dir, "junk.pdf"), "not a PDF at all");
-        Fails<Exception>(Path.Combine(_dir, "junk.pdf"), None);
-        Fails<Exception>(TestPdfs.Encrypted(_dir, "enc.pdf"), None);
+        Fails<InvalidDataException>(Path.Combine(_dir, "junk.pdf"), None);
+        Assert.Equal("encrypted PDFs are not supported", Fails<NotSupportedException>(TestPdfs.Encrypted(_dir, "enc.pdf"), None).Message);
     }
 
     [Fact]
-    public void Rewrite_FailureAfterWritingStarted_RemovesPartialFile()
+    public void Rewrite_FailureAfterWritingStarted_LeavesNoFile()
     {
-        // The name is only found ambiguous while the objects are written, after the output file was created.
-        var pdf = TestPdfs.CustomImage(_dir, "name.pdf", w =>
-        {
-            TestPdfs.WriteStream(w, "/Filler true", new byte[100_000]);
-            w.WriteObject(w.Reserve(), "<< /caf#E9 1 >>");
-            return GrayImage();
-        });
+        // The image (a plain object) is copied first; the refused name comes later, from the object stream.
+        var pdf = TestPdfs.WithXrefStream(_dir, "late.pdf", Jpeg("big.jpg", 400, 300), 10, 7.5, packedExtras: "<< /caf#E9 1 >>");
 
-        Assert.ThrowsAny<Exception>(() => PdfRewriter.Write(pdf, Out(), None));
+        Assert.Throws<NotSupportedException>(() => PdfRewriter.Write(pdf, Out(), None));
 
-        Assert.False(File.Exists(Out()));
-        Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(Out())!));
+        Assert.Empty(Directory.GetFiles(OutDir));
     }
 
     [Fact]
-    public void Rewrite_Failure_RemovesAnOlderFileAtOutput()
+    public void Rewrite_OlderFileAtOutput_KeptOnFailure_ReplacedOnSuccess()
     {
         var pdf = TestPdfs.OnePage(_dir, "one.pdf", Jpeg(), 10, 7.5);
-        var jpeg = File.ReadAllBytes(Jpeg("n.jpg", 30, 20));
+        var late = TestPdfs.WithXrefStream(_dir, "late.pdf", Jpeg(), 10, 7.5, packedExtras: "<< /caf#E9 1 >>");
         File.WriteAllText(Out(), "an older output");
 
-        Assert.ThrowsAny<ArgumentException>(() => PdfRewriter.Write(pdf, Out(),
-            new Dictionary<PdfObjectId, PdfImageStream> { [new PdfObjectId(999, 0)] = JpegStream(jpeg, 30, 20) }));
+        Assert.Throws<ArgumentException>(() => PdfRewriter.Write(pdf, Out(),
+            Replace(new PdfObjectId(999, 0), JpegStream(File.ReadAllBytes(Jpeg("n.jpg", 30, 20)), 30, 20))));
+        Assert.Throws<NotSupportedException>(() => PdfRewriter.Write(late, Out(), None));
 
-        Assert.False(File.Exists(Out()));
+        Assert.Equal("an older output", File.ReadAllText(Out()));
+        Assert.Single(Directory.GetFiles(OutDir));
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        Assert.StartsWith("%PDF-1.4", RawText(Out()));
+        Assert.Single(Directory.GetFiles(OutDir));
     }
 
     [Fact]
@@ -271,24 +281,22 @@ public sealed class PdfRewriterTests : IDisposable
         }
     }
 
-    // ---- further behaviour ----
+    // ---- raw copy (ruling P1b) ----
 
     [Fact]
-    public void Rewrite_ChiliLikeWithCrLineEndings_ReplacesImage()
+    public void Rewrite_ChiliLikeWithCrLineEndings_CopiesObjectsByteForByte()
     {
         var pdf = TestPdfs.ChiliLike(_dir, "chili-cr.pdf", Jpeg(), 10, 7.5, crLineEndings: true);
         Assert.StartsWith("%PDF-1.6\r", RawText(pdf));
         var id = ImageId(pdf);
         var newJpeg = File.ReadAllBytes(Jpeg("new.jpg", 120, 90));
 
-        PdfRewriter.Write(pdf, Out(), new Dictionary<PdfObjectId, PdfImageStream> { [id] = JpegStream(newJpeg, 120, 90) });
+        PdfRewriter.Write(pdf, Out(), Replace(id, JpegStream(newJpeg, 120, 90)));
 
         AssertValidStructure(Out());
         Assert.StartsWith("%PDF-1.6\n", RawText(Out()));
-        var before = Objects(pdf);
-        var after = Objects(Out());
-        foreach (var (reference, token) in before)
-            if (reference.ObjectNumber != id.Number) AssertSame(token, after[reference], reference.ToString());
+        Assert.Equal(Objects(pdf).Count - 1, AssertRawSame(pdf, Out(), except: id.Number));
+        Assert.Contains("obj\r<<", RawText(Out())); // the copied objects keep their CR line ends
         using var document = PdfDocument.Open(Out());
         var image = Assert.Single(document.GetPage(1).GetImages());
         Assert.Equal(120, image.WidthInSamples);
@@ -297,6 +305,140 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.Equal(10, drawn.WidthCm, 0.001);
         Assert.Equal(7.5, drawn.HeightCm, 0.001);
     }
+
+    [Fact]
+    public void Rewrite_PlainObjectWithTokensPdfPigReadsLossily_CopiedByteForByte()
+    {
+        // Names PdfPig decodes as Windows-1252 or UTF-8, raw CR and CR LF in literals, integers beyond 32 bits and 2^53.
+        const string Body =
+            "<< /F#80 1 /BaseFont /#82l#82r#83S#83V#83b#83N /caf#E9 2 /caf#C3#A9 3 /Raw (a\rb\r\nc) /Esc (x\\ry) " +
+            "/Big 3000000000 /Huge 9007199254740993 /Real 1.001350000000000000001 /Tiny .000000000000000000000000000001234 >>";
+        var pdf = TestPdfs.CustomImage(_dir, "tokens.pdf", w =>
+        {
+            w.WriteObject(w.Reserve(), Body);
+            return GrayImage();
+        });
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        Assert.Contains(Body, RawText(Out()));
+        Assert.Equal(Objects(pdf).Count, AssertRawSame(pdf, Out()));
+    }
+
+    [Fact]
+    public void Rewrite_ResourceNameWithHighByte_KeptWithItsContent()
+    {
+        // "/Im0" → "/#80" (same length, so the offsets stay): the resource key and the content's "Do" must still match.
+        var pdf = Patch(TestPdfs.OnePage(_dir, "f80.pdf", Jpeg(), 10, 7.5), "/Im0", "/#80", expected: 2);
+        var id = ImageId(pdf);
+        var newJpeg = File.ReadAllBytes(Jpeg("new.jpg", 30, 20));
+
+        PdfRewriter.Write(pdf, Out(), Replace(id, JpegStream(newJpeg, 30, 20)));
+
+        var raw = RawText(Out());
+        Assert.Contains("/XObject << /#80 ", raw);
+        Assert.Contains("/#80 Do", raw);
+        Assert.Equal(Objects(pdf).Count - 1, AssertRawSame(pdf, Out(), except: id.Number));
+        using var document = PdfDocument.Open(Out());
+        Assert.Equal(newJpeg, Assert.Single(document.GetPage(1).GetImages()).RawBytes.ToArray());
+    }
+
+    [Fact]
+    public void Rewrite_InfoStringWithRawCr_KeptExactly()
+    {
+        var pdf = Patch(TestPdfs.OnePage(_dir, "cr.pdf", Jpeg(), 10, 7.5), "(TestPdfs)", "(T\rst\r\nPd)", expected: 1);
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        Assert.Contains("<< /Producer (T\rst\r\nPd) >>", RawText(Out()));
+        Assert.Equal(Objects(pdf).Count, AssertRawSame(pdf, Out()));
+    }
+
+    [Fact]
+    public void Rewrite_EndOfObject_FoundPastStringsCommentsAndNames()
+    {
+        var pdf = TestPdfs.CustomImage(_dir, "end.pdf", w =>
+        {
+            w.WriteObject(w.Reserve(), "<< /A (endobj) /B [(x\\)endobj (nested) stream)] /endobj 1 % endobj stream\n /C <656e646f626a> >>");
+            TestPdfs.WriteStream(w, "/S (stream endstream endobj) /endstream true", "data with endstream\nendobj inside"u8.ToArray());
+            w.WriteObject(w.Reserve(), "42");
+            w.WriteObject(w.Reserve(), "(a string)");
+            w.WriteObject(w.Reserve(), "[1 2 3]");
+            return GrayImage();
+        });
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        Assert.Equal(Objects(pdf).Count, AssertRawSame(pdf, Out()));
+        AssertValidStructure(Out());
+    }
+
+    [Fact]
+    public void Rewrite_StreamLengths_CopiedOnesKeepTheirIndirectLength_ReplacedGetsDirect()
+    {
+        // TestPdfs writes every /Length as an indirect object; copied streams keep it (and its object), the replacement is direct.
+        var pdf = TestPdfs.OnePage(_dir, "one.pdf", Jpeg(), 10, 7.5);
+        var id = ImageId(pdf);
+        var jpeg = File.ReadAllBytes(Jpeg("n.jpg", 30, 20));
+
+        PdfRewriter.Write(pdf, Out(), Replace(id, JpegStream(jpeg, 30, 20, "/Length 5 0 R")));
+
+        var raw = RawText(Out());
+        Assert.Matches(@"/Length \d+ 0 R >>\nstream\n", raw);
+        Assert.Contains($"/Length {jpeg.Length} >>\nstream\n", raw);
+        AssertValidStructure(Out());
+    }
+
+    [Fact]
+    public void Rewrite_StreamLengthNotMatchingItsData_Throws()
+    {
+        // The 4-byte image's length object says 3: the bytes are not where the length says, so nothing is guessed.
+        var pdf = Patch(TestPdfs.CustomImage(_dir, "len.pdf", _ => GrayImage()), " 0 obj\n4\nendobj", " 0 obj\n3\nendobj", expected: 1);
+
+        var ex = Assert.Throws<InvalidDataException>(() => PdfRewriter.Write(pdf, Out(), None));
+
+        Assert.Matches(@"^object \d+ 0 R", ex.Message);
+        Assert.Empty(Directory.GetFiles(OutDir));
+    }
+
+    // ---- objects from object streams (written again, only when exact) ----
+
+    [Fact]
+    public void Rewrite_ObjectStreamObject_WrittenExactly()
+    {
+        const string Body =
+            @"<< /Real 1.00135 /Tiny 0.000001 /NegReal -.5 /Small 0.00000000000000000000000000001234 /Big 2147483647 " +
+            @"/Doc (\200\201\240\351) /Bom (\376\377\000) /Esc (a\(b\)c\\d\n\t\000) /Hex <00FF10> /Name /A#23B#20C#2F " +
+            @"/Arr [1 0 R null true false [] << >>] >>";
+        var pdf = TestPdfs.WithXrefStream(_dir, "packed.pdf", Jpeg(), 10, 7.5, packedExtras: Body);
+
+        PdfRewriter.Write(pdf, Out(), None);
+
+        var reference = Objects(pdf).Single(o => o.Value is DictionaryToken d && d.Data.ContainsKey("Real")).Key;
+        AssertSame(Objects(pdf)[reference], Objects(Out())[reference], "the packed object");
+        Assert.Contains(
+            @"<< /Real 1.00135 /Tiny 0.000001 /NegReal -0.5 /Small 0.00000000000000000000000000001234 /Big 2147483647 " +
+            @"/Doc (\200\201\240\351) /Bom (\376\377\000) /Esc (a\(b\)c\\d\n\t\000) /Hex <00FF10> /Name /A#23B#20C#2F " +
+            @"/Arr [1 0 R null true false [] << >>] >>", RawText(Out()));
+    }
+
+    [Theory]
+    [InlineData("<< /XObject << /F#80 1 0 R >> >>")]
+    [InlineData("<< /Type /Font /BaseFont /#82l#82r#83S#83V#83b#83N >>")]
+    [InlineData("<< /Title (a\rb) >>")]
+    [InlineData("<< /Title (a\r\nb) >>")]
+    [InlineData("<< /N 3000000000 >>")]
+    public void Rewrite_ObjectStreamObject_NotExactlyWritable_Refused(string body)
+    {
+        var pdf = TestPdfs.WithXrefStream(_dir, "refused.pdf", Jpeg(), 10, 7.5, packedExtras: body);
+
+        var ex = Assert.Throws<NotSupportedException>(() => PdfRewriter.Write(pdf, Out(), None));
+
+        Assert.Matches(@"^object \d+ 0 R cannot be written back exactly \(", ex.Message);
+        Assert.Empty(Directory.GetFiles(OutDir));
+    }
+
+    // ---- further behaviour ----
 
     [Fact]
     public void Rewrite_EncoderOutput_NewSizeSameDrawnSize()
@@ -317,9 +459,10 @@ public sealed class PdfRewriterTests : IDisposable
             replacement = PdfImageEncoder.Encode(doc, id, scaled, extracted, (0.5, 0.5), ResampleFilter.Bicubic).Image;
         }
 
-        PdfRewriter.Write(pdf, Out(), new Dictionary<PdfObjectId, PdfImageStream> { [id] = replacement });
+        PdfRewriter.Write(pdf, Out(), Replace(id, replacement));
 
         AssertValidStructure(Out());
+        AssertRawSame(pdf, Out(), except: id.Number);
         using var document = PdfDocument.Open(Out());
         var drawnImage = Assert.Single(document.GetPage(1).GetImages());
         Assert.Equal((100, 75), (drawnImage.WidthInSamples, drawnImage.HeightInSamples));
@@ -339,66 +482,13 @@ public sealed class PdfRewriterTests : IDisposable
         foreach (var length in new[] { "", "/Length 7", "/Length 3 0 R", "/Length -1" })
         {
             var output = Out($"len{length.Length}.pdf");
-            PdfRewriter.Write(pdf, output, new Dictionary<PdfObjectId, PdfImageStream> { [id] = JpegStream(jpeg, 30, 20, length) });
+            PdfRewriter.Write(pdf, output, Replace(id, JpegStream(jpeg, 30, 20, length)));
 
             using var document = PdfDocument.Open(output);
             var image = Assert.IsType<StreamToken>(document.Structure.GetObject(new IndirectReference(id.Number, id.Generation)).Data);
             Assert.Equal(jpeg.Length, Assert.IsType<NumericToken>(image.StreamDictionary.Data["Length"]).Int);
             Assert.Equal(jpeg, image.Data.ToArray());
         }
-    }
-
-    [Fact]
-    public void Rewrite_NumbersStringsAndNames_KeptExactly()
-    {
-        const string Extra =
-            @"<< /Big 3000000000 /Neg -2147483649 /Real 1.00135 /Tiny 0.000001 /NegReal -.5 /Huge 123456789012.25 " +
-            @"/Doc (\200\201\240\351 caf\351) /Bom (\376\377\000) /Esc (a\(b\)c\\d\r\n\t\000) /Hex <00FF10> /Utf16 <FEFF20AC> " +
-            @"/Name /A#23B#20C#2F /Euro /#E2#82#AC /Mojibake /#C3#83#C2#A9 /Arr [1 0 R null true false [ ] << >>] /Null null >>";
-        var pdf = TestPdfs.CustomImage(_dir, "tokens.pdf", w =>
-        {
-            w.WriteObject(w.Reserve(), Extra);
-            return GrayImage();
-        });
-
-        PdfRewriter.Write(pdf, Out(), None);
-
-        var before = Objects(pdf);
-        var after = Objects(Out());
-        var reference = before.Single(o => o.Value is DictionaryToken d && d.Data.ContainsKey("Big")).Key;
-        AssertSame(before[reference], after[reference], "the token object");
-        var d = Assert.IsType<DictionaryToken>(after[reference]);
-        Assert.Equal(3000000000L, Assert.IsType<NumericToken>(d.Data["Big"]).Long);
-        Assert.Equal(-2147483649L, Assert.IsType<NumericToken>(d.Data["Neg"]).Long);
-        Assert.Equal(1.00135, Assert.IsType<NumericToken>(d.Data["Real"]).Double);
-        Assert.Equal(0.000001, Assert.IsType<NumericToken>(d.Data["Tiny"]).Double);
-        Assert.Equal([0x80, 0x81, 0xA0, 0xE9, 0x20, 0x63, 0x61, 0x66, 0xE9], Assert.IsType<StringToken>(d.Data["Doc"]).GetBytes());
-        Assert.Equal([0xFE, 0xFF, 0x00], Assert.IsType<StringToken>(d.Data["Bom"]).GetBytes());
-        Assert.Equal("a(b)c\\d\r\n\t\0"u8.ToArray(), Assert.IsType<StringToken>(d.Data["Esc"]).GetBytes());
-        Assert.Equal("A#B C/", Assert.IsType<NameToken>(d.Data["Name"]).Data);
-        Assert.Equal("€", Assert.IsType<NameToken>(d.Data["Euro"]).Data);
-        var raw = RawText(Out());
-        Assert.Contains("3000000000", raw);
-        Assert.Contains("-2147483649", raw);
-        Assert.Contains("0.000001", raw);
-        Assert.Contains("/A#23B#20C#2F", raw);
-        Assert.Contains("/#E2#82#AC", raw);
-        Assert.Contains("/#C3#83#C2#A9", raw); // "Ã©" from UTF-8: as Latin-1 its bytes would read as UTF-8 "é"
-        Assert.DoesNotMatch(new Regex(@"\d[eE][+-]?\d"), Regex.Replace(raw, @"stream\n.*?endstream", "", RegexOptions.Singleline));
-    }
-
-    [Fact]
-    public void Rewrite_NonAsciiNameOfUnknownEncoding_Throws()
-    {
-        // PdfPig reads both /caf#E9 (Latin-1) and /caf#C3#A9 (UTF-8) as "café"; which bytes were in the file is lost.
-        var pdf = TestPdfs.CustomImage(_dir, "name.pdf", w =>
-        {
-            w.WriteObject(w.Reserve(), "<< /caf#C3#A9 1 >>");
-            return GrayImage();
-        });
-
-        Assert.ThrowsAny<NotSupportedException>(() => PdfRewriter.Write(pdf, Out(), None));
-        Assert.False(File.Exists(Out()));
     }
 
     [Fact]
@@ -410,11 +500,11 @@ public sealed class PdfRewriterTests : IDisposable
         var ex = Assert.Throws<InvalidDataException>(() => PdfRewriter.Write(pdf, Out(), None));
 
         Assert.Matches(@"^object \d+ 0 R could not be read", ex.Message);
-        Assert.False(File.Exists(Out()));
+        Assert.Empty(Directory.GetFiles(OutDir));
     }
 
     [Fact]
-    public void Rewrite_LinearizationDictionary_Dropped()
+    public void Rewrite_LinearizationDictionary_Dropped_FreeForNextGeneration()
     {
         var number = 0;
         var pdf = TestPdfs.CustomImage(_dir, "lin.pdf", w =>
@@ -429,7 +519,7 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.DoesNotContain("/Linearized", RawText(Out()));
         AssertValidStructure(Out());
         var entries = XrefEntries(File.ReadAllBytes(Out()));
-        Assert.Equal('f', entries[number].Type);
+        Assert.Equal(('f', 1), (entries[number].Type, entries[number].Generation));
         Assert.Equal(Objects(pdf).Count - 1, Objects(Out()).Count);
     }
 
@@ -455,28 +545,25 @@ public sealed class PdfRewriterTests : IDisposable
         Assert.Equal(a.Information.Producer, b.Information.Producer);
     }
 
-    [Fact]
-    public void Rewrite_EveryStreamGetsADirectLength()
-    {
-        // TestPdfs writes every /Length as an indirect object; the rewrite writes them direct (the objects stay).
-        var pdf = TestPdfs.OnePage(_dir, "one.pdf", Jpeg(), 10, 7.5);
-        Assert.Matches(@"/Length \d+ 0 R", RawText(pdf));
-
-        PdfRewriter.Write(pdf, Out(), None);
-
-        Assert.DoesNotMatch(@"/Length \d+ 0 R", RawText(Out()));
-        AssertValidStructure(Out());
-    }
-
     // ---- helpers ----
 
     private static PdfObjectId ImageId(string pdf) => Assert.Single(PdfImageScanner.Scan(pdf).Images).Image;
 
     private static string RawText(string pdf) => Encoding.Latin1.GetString(File.ReadAllBytes(pdf));
 
-    private static long Key(IndirectReference r) => ((long)r.ObjectNumber << 16) + r.Generation;
+    private static long Key(IndirectReference r) => (r.ObjectNumber << 16) + r.Generation;
 
     private static int Int(DictionaryToken d, string key) => Assert.IsType<NumericToken>(d.Data[key]).Int;
+
+    /// <summary>Replaces every <paramref name="from"/> by <paramref name="to"/> (same length, so no offset moves).</summary>
+    private static string Patch(string pdf, string from, string to, int expected)
+    {
+        Assert.Equal(from.Length, to.Length);
+        var text = RawText(pdf);
+        Assert.Equal(expected, Regex.Matches(text, Regex.Escape(from)).Count);
+        File.WriteAllBytes(pdf, Encoding.Latin1.GetBytes(text.Replace(from, to, StringComparison.Ordinal)));
+        return pdf;
+    }
 
     /// <summary>A DCT image stream for the given JPEG bytes, with an optional <c>/Length</c> entry as given.</summary>
     private static PdfImageStream JpegStream(byte[] jpeg, int width, int height, string length = "") =>
@@ -500,16 +587,65 @@ public sealed class PdfRewriterTests : IDisposable
             .ToDictionary(r => r, r => document.Structure.GetObject(r).Data);
     }
 
-    /// <summary>Equal tokens: containers entry for entry, strings by their bytes, streams without <c>/Length</c> plus data.</summary>
+    /// <summary>
+    /// The raw bytes (<c>n g obj</c> … <c>endobj</c>) of every object stored plainly in the file, each located through
+    /// the file's own cross-reference data: from its offset to the last <c>endobj</c> before the next object's offset.
+    /// </summary>
+    private static Dictionary<IndirectReference, byte[]> RawObjects(string pdf)
+    {
+        var bytes = File.ReadAllBytes(pdf);
+        Dictionary<IndirectReference, long> offsets;
+        using (var document = PdfDocument.Open(pdf))
+        {
+            offsets = document.Structure.CrossReferenceTable.ObjectOffsets
+                .Where(o => o.Value.Type == XrefEntryType.File)
+                .ToDictionary(o => o.Key, o => o.Value.Value1);
+        }
+        var starts = offsets.Values.Order().Append(bytes.Length).ToList();
+        var result = new Dictionary<IndirectReference, byte[]>();
+        foreach (var (reference, offset) in offsets)
+        {
+            var next = starts[starts.IndexOf(offset) + 1];
+            var span = bytes.AsSpan((int)offset, (int)(next - offset));
+            var end = span.LastIndexOf("endobj"u8);
+            Assert.True(end > 0, $"{reference}: no endobj");
+            var raw = span[..(end + 6)].ToArray();
+            Assert.StartsWith($"{reference.ObjectNumber} {reference.Generation} obj", Encoding.Latin1.GetString(raw));
+            result[reference] = raw;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Every object stored plainly in <paramref name="input"/> (other than <paramref name="except"/> and the dropped
+    /// object/xref streams) is in <paramref name="output"/> with the same bytes. Returns how many were compared.
+    /// </summary>
+    private static int AssertRawSame(string input, string output, long except = -1)
+    {
+        var tokens = Objects(input);
+        var before = RawObjects(input);
+        var after = RawObjects(output);
+        var compared = 0;
+        foreach (var (reference, raw) in before)
+        {
+            if (reference.ObjectNumber == except || IsStructural(tokens[reference])
+                || tokens[reference] is DictionaryToken d && d.Data.ContainsKey("Linearized")) continue;
+            Assert.True(after.ContainsKey(reference), $"{reference} is not a plain object in the output");
+            Assert.True(raw.AsSpan().SequenceEqual(after[reference]), $"{reference}: the bytes differ");
+            compared++;
+        }
+        return compared;
+    }
+
+    /// <summary>Equal tokens: containers entry for entry, strings by their bytes, numbers by value, stream data byte for byte.</summary>
     private static void AssertSame(IToken expected, IToken actual, string where)
     {
         switch (expected)
         {
             case StreamToken s:
                 var t = Assert.IsType<StreamToken>(actual);
-                AssertSame(Without(s.StreamDictionary, "Length"), Without(t.StreamDictionary, "Length"), where);
+                AssertSame(s.StreamDictionary, t.StreamDictionary, where);
                 Assert.True(s.Data.Span.SequenceEqual(t.Data.Span), $"{where}: stream data differs");
-                Assert.Equal(t.Data.Length, Assert.IsType<NumericToken>(t.StreamDictionary.Data["Length"]).Int);
                 break;
             case DictionaryToken d:
                 var e = Assert.IsType<DictionaryToken>(actual);
@@ -537,9 +673,6 @@ public sealed class PdfRewriterTests : IDisposable
                 break;
         }
     }
-
-    private static DictionaryToken Without(DictionaryToken d, string key) =>
-        new(d.Data.Where(e => e.Key != key).ToDictionary(e => NameToken.Create(e.Key), e => e.Value));
 
     private readonly record struct XrefEntry(long Field1, int Generation, char Type);
 
@@ -578,7 +711,8 @@ public sealed class PdfRewriterTests : IDisposable
     /// <summary>
     /// The file's structure as a strict reader needs it: one classic table whose in-use entries point at
     /// <c>n g obj</c>, a linked free list from entry 0 (65535) ending in 0, a trailer with <c>/Size</c> = entries and
-    /// no <c>/Prev</c>, <c>/XRefStm</c> or <c>/Encrypt</c>, and a direct <c>/Length</c> equal to the data on every stream.
+    /// no <c>/Prev</c>, <c>/XRefStm</c> or <c>/Encrypt</c>, and on every stream a <c>/Length</c> (direct, or an
+    /// indirect one on a copied stream) equal to its data.
     /// </summary>
     private static void AssertValidStructure(string pdf)
     {
@@ -596,7 +730,7 @@ public sealed class PdfRewriterTests : IDisposable
             {
                 var head = $"{number} {entry.Generation} obj";
                 Assert.Equal(head, text.Substring((int)entry.Field1, head.Length));
-                Assert.True(entry.Field1 == 0 || text[(int)entry.Field1 - 1] is '\n' or '\r', $"object {number} starts a line");
+                Assert.True(text[(int)entry.Field1 - 1] is '\n' or '\r', $"object {number} starts a line");
             }
             else
             {
@@ -618,14 +752,13 @@ public sealed class PdfRewriterTests : IDisposable
         foreach (var reference in document.Structure.CrossReferenceTable.ObjectOffsets.Keys)
         {
             if (document.Structure.GetObject(reference).Data is not StreamToken stream) continue;
-            var length = Assert.IsType<NumericToken>(stream.StreamDictionary.Data["Length"]);
-            Assert.Equal(stream.Data.Length, length.Int);
+            var length = stream.StreamDictionary.Data["Length"] is IndirectReferenceToken r
+                ? document.Structure.GetObject(r.Data).Data
+                : stream.StreamDictionary.Data["Length"];
+            Assert.Equal(stream.Data.Length, Assert.IsType<NumericToken>(length).Int);
         }
-        // The raw text agrees with the parsed lengths: "stream\n" + Length bytes + "\nendstream".
-        var streams = Regex.Matches(text, @"/Length (\d+)\b[^\n]*?>>\nstream\n");
-        Assert.NotEmpty(streams);
-        Assert.Equal(Regex.Matches(text, "\nendstream\n").Count, streams.Count);
-        foreach (Match m in streams)
+        // Streams the rewriter wrote itself: "stream\n" + Length bytes + "\nendstream".
+        foreach (Match m in Regex.Matches(text, @"/Length (\d+) >>\nstream\n"))
         {
             var dataStart = m.Index + m.Length;
             var length = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);

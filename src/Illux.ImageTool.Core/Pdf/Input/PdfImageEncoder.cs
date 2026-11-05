@@ -25,7 +25,8 @@ public static class PdfImageEncoder
     /// for byte, anything else as Flate samples. When <paramref name="extracted"/> has a soft mask whose size changes,
     /// the mask is scaled by <paramref name="factors"/> (new size = old size × factor, rounded) with
     /// <paramref name="filter"/> and encoded as a Flate gray image for the mask's own object; a mask whose size does
-    /// not change gives null, so its stream stays as it is.
+    /// not change gives null, so its stream stays as it is. Throws <see cref="NotSupportedException"/> when the new
+    /// dictionary cannot be written exactly (<see cref="PdfSyntax"/>: e.g. a non-ASCII name kept from the old one).
     /// </summary>
     public static (PdfImageStream Image, PdfImageStream? SoftMask) Encode(PdfDocument doc, PdfObjectId image,
         string processedPath, ExtractedImage extracted, (double X, double Y) factors, ResampleFilter filter)

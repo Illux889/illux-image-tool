@@ -473,18 +473,30 @@ public sealed class PdfImageRoundTripTests : IDisposable
     [Fact]
     public void Encode_OtherEntries_KeepTheirExactValues()
     {
-        // Values PdfPig's TokenWriter would change: a PDFDocEncoding string (to UTF-16), an integer beyond 32 bits, '#' in a name.
+        // Values PdfPig's TokenWriter would change: a PDFDocEncoding string (to UTF-16), '#' in a name.
         var pdf = TestPdfs.CustomImage(_dir, "entries.pdf", _ =>
             (@"/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 " +
-             @"/Doc (\200\351) /Big 3000000000 /Tag /A#23B", [0, 80, 160, 255]));
+             @"/Doc (\200\351) /Tag /A#23B", [0, 80, 160, 255]));
 
         var r = RoundTrip(pdf, 2, 2);
 
         var d = r.NewImage;
         Assert.Equal([0x80, 0xE9], Assert.IsType<StringToken>(d.Data["Doc"]).GetBytes());
-        Assert.Equal(3000000000L, Assert.IsType<NumericToken>(d.Data["Big"]).Long);
         Assert.Equal("A#B", Name(d, "Tag"));
         Assert.Contains("/A#23B", System.Text.Encoding.ASCII.GetString(r.Image.Dictionary));
+    }
+
+    [Theory]
+    [InlineData("/Big 3000000000")]
+    [InlineData("/Tag /caf#E9")]
+    [InlineData("/Note (a\\rb)")]
+    public void Encode_EntryThatCannotBeWrittenExactly_Refused(string entry)
+    {
+        var pdf = TestPdfs.CustomImage(_dir, "refused.pdf", _ =>
+            ("/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 " + entry,
+                [0, 80, 160, 255]));
+
+        Assert.Throws<NotSupportedException>(() => RoundTrip(pdf, 2, 2));
     }
 
     [Fact]

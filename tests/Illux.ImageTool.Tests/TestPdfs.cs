@@ -242,10 +242,11 @@ internal static class TestPdfs
     /// A PDF 1.5 file as many exporters write it (the real Chili samples use a classic table instead): the image and
     /// content streams as plain objects, every other object (catalog, pages, page, info) in one compressed object
     /// stream, and a compressed cross-reference stream instead of a classic table and trailer. One page sized to the
-    /// image drawn over it.
+    /// image drawn over it. <paramref name="packedExtras"/> are further object bodies put into the object stream
+    /// (numbered after the others, referenced from nothing).
     /// </summary>
     public static string WithXrefStream(string dir, string name, string imagePath, double widthCm, double heightCm,
-        bool signed = false)
+        bool signed = false, params string[] packedExtras)
     {
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, name);
@@ -287,6 +288,7 @@ internal static class TestPdfs
             packed.Add((signature, "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>"));
             packed.Add((field, $"<< /FT /Sig /T (Signature1) /V {signature} 0 R >>"));
         }
+        foreach (var extra in packedExtras) packed.Add((next++, extra));
         var bodies = new StringBuilder();
         var header = new StringBuilder();
         foreach (var (number, body) in packed)
