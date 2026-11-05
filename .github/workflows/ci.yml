@@ -74,6 +74,67 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+  test-macos:
+    name: Test on macOS (Apple silicon)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build jpegtran
+        run: ./build/fetch-jpegtran.sh
+
+      - name: Test
+        run: dotnet test -c Release
+
+  macos-package:
+    name: macOS package, install, upgrade and uninstall
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Versions
+        id: versions
+        # The same scheme as the Windows installers: 0.0.<run number> (below every real release), and one patch
+        # higher for the upgrade test.
+        run: |
+          echo "version=0.0.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "upgrade_version=0.0.$((GITHUB_RUN_NUMBER + 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Build, check and smoke test the packages
+        uses: ./.github/actions/macos-package
+        with:
+          version: ${{ steps.versions.outputs.version }}
+          upgrade-version: ${{ steps.versions.outputs.upgrade_version }}
+
+      - name: Upload package
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64
+          path: |
+            artifacts/installer/IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64.pkg
+            artifacts/installer/IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64.pkg.sha256
+          if-no-files-found: ignore
+
+      - name: Upload smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-smoke-test-logs
+          path: ${{ runner.temp }}/smoke/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
   smoke-test:
     name: Install, upgrade and uninstall
     needs: build
@@ -101,3 +162,5 @@ jobs:
           version: ${{ needs.build.outputs.version }}
           upgrade-version: ${{ needs.build.outputs.upgrade_version }}
           fail-version: ${{ needs.build.outputs.fail_version }}
+          # The public v0.1.0 installer (checked against its .sha256 asset) is installed first and upgraded to this build.
+          previous-release-version: '0.1.0'

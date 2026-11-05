@@ -17,6 +17,14 @@
   5. Runs -FailingInstaller (built with -FailPrepareForTest) as SYSTEM with a planted flag: it fails before copying
      files, and the old version keeps running with the flag removed and the state Idle with an error.
   6. Uninstalls silently: service, Run key, Event Log source and program files gone, ProgramData kept.
+  7. Before all of that, when -PreviousReleaseVersion is given: installs that public release (downloaded from GitHub and
+     checked against its published .sha256 file), seeds a config.json the way an administrator would (one watched
+     folder, no resolutionRules), upgrades to -Installer, and checks that config.json is byte-identical (the installer
+     did not write it), that every [InstallDelete] file of the .iss that the old version had is gone (unless the new
+     version ships it again, checked after the fresh install below, which also compares the old and new file lists),
+     and that the CLI applies the default resolution rules (a 20 x 15 cm, 150 ppi JPEG comes out at 300 ppi). It then
+     uninstalls and removes the data folder.
+  Also checks that the installer is smaller than 100 MB and prints its size.
   Exits 1 if any check failed.
 #>
 [CmdletBinding()]
@@ -26,7 +34,11 @@ param(
     [Parameter(Mandatory)][string]$FailingInstaller,
     [Parameter(Mandatory)][string]$Version,
     [Parameter(Mandatory)][string]$UpgradeVersion,
-    [Parameter(Mandatory)][string]$WorkDir
+    [Parameter(Mandatory)][string]$WorkDir,
+
+    # Optional: a published release (for example 0.1.0) to install first and upgrade from, on this throw-away runner.
+    [ValidatePattern('^(\d+\.\d+\.\d+)?$')]
+    [string]$PreviousReleaseVersion = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +49,7 @@ $Cli      = Join-Path $App 'IlluxImageTool.exe'
 $StartMenu = Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\Illux Image Tool'
 $RunKey   = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 $EventKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Illux Image Tool'
+$Iss      = Join-Path $PSScriptRoot '..\installer\IlluxImageTool.iss'
 $script:Failures = New-Object System.Collections.Generic.List[string]
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -267,13 +280,13 @@ function Test-UserWrites([string]$When) {
 
 # --- a small test image: 120 x 80 px JPEG at 96 ppi ---
 Add-Type -AssemblyName System.Drawing
-function New-TestJpeg([string]$Path) {
-    $bmp = New-Object System.Drawing.Bitmap(120, 80)
+function New-TestJpeg([string]$Path, [int]$Width = 120, [int]$Height = 80, [int]$Ppi = 96) {
+    $bmp = New-Object System.Drawing.Bitmap($Width, $Height)
     try {
-        $bmp.SetResolution(96, 96)
+        $bmp.SetResolution($Ppi, $Ppi)
         $g = [System.Drawing.Graphics]::FromImage($bmp)
         $g.Clear([System.Drawing.Color]::SteelBlue)
-        $g.FillEllipse([System.Drawing.Brushes]::Orange, 20, 10, 80, 60)
+        $g.FillEllipse([System.Drawing.Brushes]::Orange, [int]($Width / 6), [int]($Height / 8), [int]($Width * 2 / 3), [int]($Height * 3 / 4))
         $g.Dispose()
         $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Jpeg)
     }
@@ -282,7 +295,7 @@ function New-TestJpeg([string]$Path) {
 
 function Get-ImageInfo([string]$Path) {
     $img = [System.Drawing.Image]::FromFile($Path)
-    try { [pscustomobject]@{ Width = $img.Width; Height = $img.Height; Ppi = [math]::Round($img.HorizontalResolution) } }
+    try { [pscustomobject]@{ Width = $img.Width; Height = $img.Height; Ppi = [math]::Round($img.HorizontalResolution); PpiY = [math]::Round($img.VerticalResolution) } }
     finally { $img.Dispose() }
 }
 
@@ -297,7 +310,130 @@ Remove-Item -Recurse -Force -LiteralPath $Smoke -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Smoke | Out-Null
 $TestJpeg = Join-Path $Smoke 'test.jpg'
 New-TestJpeg $TestJpeg
+# The case of the v0.2 brief: a 20 x 15 cm JPEG at 150 ppi is 1181 x 886 px (20 / 2.54 * 150 and 15 / 2.54 * 150, rounded).
+# It prints within 40 x 30 cm, so the default rule "Small" (target 300 ppi, leave alone 250-350) resamples it to 300 ppi.
+$PrintJpeg = Join-Path $Smoke 'print-20x15cm-150ppi.jpg'
+New-TestJpeg $PrintJpeg 1181 886 150
 
+# Runs the PowerShell AE script on the 20 x 15 cm, 150 ppi JPEG and checks that the default rules were applied.
+function Test-DefaultRulesViaAeScript([string]$When, [string]$OutName) {
+    $outDir = Join-Path $Smoke $OutName; New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $App 'scripts\ae\IlluxImageTool.ps1') $PrintJpeg $outDir | Write-Host
+    Check ($LASTEXITCODE -eq 0) "$($When): AE script exit code 0 for the 20 x 15 cm, 150 ppi JPEG (got $LASTEXITCODE)"
+    $result = Join-Path $outDir 'print-20x15cm-150ppi.jpg'
+    if (Test-Path -LiteralPath $result) {
+        $info = Get-ImageInfo $result
+        # Physical size kept: 20 x 15 cm at 300 ppi is 2362 x 1772 px.
+        Check ($info.Ppi -eq 300 -and $info.PpiY -eq 300 -and $info.Width -eq 2362 -and $info.Height -eq 1772) "$($When): 20 x 15 cm at 150 ppi comes out at 300 ppi, 2362 x 1772 px, by the default rule Small (got $($info.Ppi) x $($info.PpiY) ppi, $($info.Width) x $($info.Height) px)"
+    } else { Check $false "$($When): AE script wrote $result" }
+}
+
+# Uninstalls with the uninstaller of the installed version and waits for it to finish.
+function Uninstall-App([string]$LogName) {
+    $log = Join-Path $WorkDir $LogName
+    $code = Start-AndWait (Join-Path $App 'unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$log`"")
+    Check ($code -eq 0) "uninstaller exit code 0 (got $code)"
+    Check (Wait-Until { -not (Test-Path -LiteralPath (Join-Path $App 'unins000.exe')) } 120) 'uninstaller finished'
+    Show-Log $log
+}
+
+# =====================================================================================================
+Section 'Installer size'
+$installerBytes = (Get-Item -LiteralPath $Installer).Length
+Write-Host ('Installer size: {0:N1} MB ({1:N0} bytes)' -f ($installerBytes / 1MB), $installerBytes)
+Check ($installerBytes -lt 100MB) ('the installer is smaller than 100 MB ({0:N1} MB)' -f ($installerBytes / 1MB))
+
+# =====================================================================================================
+if ($PreviousReleaseVersion) {
+    Section "Upgrade from the public release $PreviousReleaseVersion"
+    if (Test-Path -LiteralPath $Data) { throw "$Data already exists on this runner." }
+    $prevName = "IlluxImageTool-Setup-$PreviousReleaseVersion.exe"
+    $prevDir = Join-Path $WorkDir 'previous-release'
+    New-Item -ItemType Directory -Force -Path $prevDir | Out-Null
+    $prevFile = Join-Path $prevDir $prevName
+    $baseUrl = "https://github.com/Illux889/illux-image-tool/releases/download/v$PreviousReleaseVersion"
+    # TLS 1.2, and TLS 1.3 where this .NET Framework knows it.
+    $protocols = [Net.SecurityProtocolType]::Tls12
+    if ([Enum]::GetNames([Net.SecurityProtocolType]) -contains 'Tls13') { $protocols = $protocols -bor [Net.SecurityProtocolType]::Tls13 }
+    [Net.ServicePointManager]::SecurityProtocol = $protocols
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri "$baseUrl/$prevName" -OutFile $prevFile -UseBasicParsing
+    Invoke-WebRequest -Uri "$baseUrl/$prevName.sha256" -OutFile "$prevFile.sha256" -UseBasicParsing
+    $ProgressPreference = 'Continue'
+    $expectedLine = ([IO.File]::ReadAllText("$prevFile.sha256")).Trim()
+    $actualHash = (Get-FileHash -LiteralPath $prevFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Host ('Downloaded {0}, {1:N1} MB, SHA-256 {2}; published: {3}' -f $prevName, ((Get-Item -LiteralPath $prevFile).Length / 1MB), $actualHash, $expectedLine)
+    # The file is only run when it matches its published checksum.
+    if ($expectedLine -ne "$actualHash  $prevName") { throw "The downloaded $prevName does not match its published .sha256 file." }
+
+    $code = Invoke-Installer $prevFile 'install-previous.log'
+    Check ($code -eq 0) "installer $PreviousReleaseVersion exit code 0 (got $code)"
+    if ($code -ne 0) { throw "The $PreviousReleaseVersion install failed; the upgrade cannot be checked." }
+    Check (Wait-Until { (Get-ServiceState) -eq 'Running' } 60) "service is running after installing $PreviousReleaseVersion (state: $(Get-ServiceState))"
+    $prevCliVersion = (& $Cli --version | Out-String).Trim()
+    Check ($prevCliVersion -eq $PreviousReleaseVersion) "CLI --version is $PreviousReleaseVersion (got '$prevCliVersion')"
+    # Every file [InstallDelete] names: it must exist now (a name the old version never had is skipped), or the
+    # clean-up check after the upgrade proves nothing.
+    $installDelete = @(Select-String -LiteralPath $Iss -Pattern '^Type: files; Name: "\{app\}\\(.+)"$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+    Write-Host "[InstallDelete] in the .iss: $($installDelete.Count) file(s)"
+    Check ($installDelete.Count -gt 0) 'the .iss has [InstallDelete] entries to check'
+    $stale = @($installDelete | Where-Object { Test-Path -LiteralPath (Join-Path $App $_) })
+    foreach ($rel in $installDelete | Where-Object { $stale -notcontains $_ }) { Write-Host "SKIP  $PreviousReleaseVersion never had $rel" }
+    Check ($stale.Count -gt 0) "$PreviousReleaseVersion installed $($stale.Count) of the $($installDelete.Count) [InstallDelete] files"
+    # The old version's program files, to compare with what a fresh install of the new one ships (after the upgrade).
+    $prevFiles = @(Get-ChildItem -LiteralPath $App -Recurse -File | ForEach-Object { $_.FullName.Substring($App.Length + 1) })
+
+    # As an administrator would have set it up: one watched folder, no resolutionRules section. No trailing newline:
+    # any rewrite of the file by the installer would change the bytes.
+    $prevWatch = Join-Path $WorkDir 'watch-previous'
+    foreach ($d in 'In', 'Out', 'Error') { New-Item -ItemType Directory -Force -Path (Join-Path $prevWatch $d) | Out-Null }
+    $prevConfig = @{ folders = @(@{ name = 'upgrade'; in = "$prevWatch\In"; out = "$prevWatch\Out"; error = "$prevWatch\Error"; parameters = @() }); pollSeconds = 1 } | ConvertTo-Json -Depth 5
+    Check ($prevConfig -notmatch 'resolutionRules') 'the seeded config.json has no resolutionRules section'
+    $configPath = Join-Path $Data 'config.json'
+    [IO.File]::WriteAllText($configPath, $prevConfig.TrimEnd(), (New-Object Text.UTF8Encoding($false)))
+    $prevBytes = [IO.File]::ReadAllBytes($configPath)
+    $prevStamp = (Get-Item -LiteralPath $configPath).LastWriteTimeUtc
+    Start-Sleep -Seconds 2
+
+    $code = Invoke-Installer $Installer 'install-over-previous.log'
+    Check ($code -eq 0) "installer $Version over $PreviousReleaseVersion exit code 0 (got $code)"
+    Check (Wait-Until { (Get-ServiceState) -eq 'Running' } 60) "service is running after the upgrade from $PreviousReleaseVersion (state: $(Get-ServiceState))"
+    $cliVersion = (& $Cli --version | Out-String).Trim()
+    Check ($cliVersion -eq $Version) "CLI --version is $Version after the upgrade from $PreviousReleaseVersion (got '$cliVersion')"
+    foreach ($rel in 'IlluxImageTool.exe', 'IlluxImageToolWatcher.exe', 'IlluxImageToolSettings.exe', 'Magick.NET-Q16-HDRI-AnyCPU.dll', 'Avalonia.Base.dll', 'unins000.exe') {
+        Check (Test-Path -LiteralPath (Join-Path $App $rel)) "installed $rel after the upgrade from $PreviousReleaseVersion"
+    }
+    # An [InstallDelete] file still there after the upgrade must be one the new version ships again (checked after the
+    # fresh install below); all others must be gone.
+    $keptByUpgrade = @($stale | Where-Object { Test-Path -LiteralPath (Join-Path $App $_) })
+    Check ($keptByUpgrade.Count -lt $stale.Count) "the upgrade removed $($stale.Count - $keptByUpgrade.Count) of the $($stale.Count) [InstallDelete] files $PreviousReleaseVersion had"
+    foreach ($rel in $keptByUpgrade) { Write-Host "Still there after the upgrade (must be shipped again): $rel" }
+    Check (-not (Get-ChildItem -LiteralPath $App -Recurse -File -Filter 'System.Windows.Forms*.dll' -ErrorAction SilentlyContinue)) 'no System.Windows.Forms file is left in the program folder'
+
+    $nowBytes = [IO.File]::ReadAllBytes($configPath)
+    Check ([Linq.Enumerable]::SequenceEqual([byte[]]$prevBytes, [byte[]]$nowBytes)) "config.json is byte-identical after the upgrade from $PreviousReleaseVersion (the installer did not write it)"
+    Check ((Get-Item -LiteralPath $configPath).LastWriteTimeUtc -eq $prevStamp) 'config.json was not even touched (same last-write time)'
+    Check (@(Get-ChildItem -LiteralPath $env:ProgramData -Directory -Filter 'Illux Image Tool (untrusted *').Count -eq 0) 'the data folder of the old version was kept, not moved aside'
+    Test-DataAcls "after upgrade from $PreviousReleaseVersion"
+
+    # A missing resolutionRules section means the default rules.
+    Test-DefaultRulesViaAeScript "upgrade from $PreviousReleaseVersion" 'out-after-previous'
+    $cliOut = Join-Path $Smoke 'out-cli-after-previous'; New-Item -ItemType Directory -Force -Path $cliOut | Out-Null
+    & $Cli run $PrintJpeg --out $cliOut | Write-Host
+    Check ($LASTEXITCODE -eq 0) "CLI exit code 0 after the upgrade from $PreviousReleaseVersion (got $LASTEXITCODE)"
+    $cliResult = Join-Path $cliOut 'print-20x15cm-150ppi.jpg'
+    if (Test-Path -LiteralPath $cliResult) {
+        $info = Get-ImageInfo $cliResult
+        Check ($info.Ppi -eq 300 -and $info.Width -eq 2362 -and $info.Height -eq 1772) "CLI without a resolutionRules section applies the defaults: 300 ppi, 2362 x 1772 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
+    } else { Check $false "CLI wrote $cliResult" }
+    Check ([Linq.Enumerable]::SequenceEqual([byte[]]$prevBytes, [byte[]][IO.File]::ReadAllBytes($configPath))) 'config.json is still byte-identical after running the CLI'
+
+    # Back to a clean runner for the fresh-install checks below (this machine is a throw-away runner).
+    Uninstall-App 'uninstall-after-previous.log'
+    Check (Wait-Until { (Get-ServiceState) -eq 'Missing' } 60) "service removed after the upgrade test (state: $(Get-ServiceState))"
+    Remove-Item -Recurse -Force -LiteralPath $Data
+    Check (-not (Test-Path -LiteralPath $Data)) 'data folder removed before the fresh-install checks'
+}
 # =====================================================================================================
 Section 'Untrusted data folder before the first install'
 if (Test-Path -LiteralPath $Data) { throw "$Data already exists on this runner." }
@@ -330,6 +466,18 @@ foreach ($rel in 'IlluxImageTool.exe', 'IlluxImageToolWatcher.exe', 'IlluxImageT
                  'LICENSE.txt', 'System.Diagnostics.EventLog.Messages.dll', 'unins000.exe') {
     Check (Test-Path -LiteralPath (Join-Path $App $rel)) "installed $rel"
 }
+if ($PreviousReleaseVersion) {
+    # The fresh install shows what this version ships: an [InstallDelete] file the upgrade left must be one of them,
+    # and every program file of the old version that this one does not ship must be an [InstallDelete] entry.
+    $newFiles = @(Get-ChildItem -LiteralPath $App -Recurse -File | ForEach-Object { $_.FullName.Substring($App.Length + 1) })
+    foreach ($rel in $keptByUpgrade) { Check ($newFiles -contains $rel) "$rel, left by the upgrade from $PreviousReleaseVersion, is shipped by $Version" }
+    $notShipped = @($prevFiles | Where-Object { $newFiles -notcontains $_ })
+    $notDeleted = @($notShipped | Where-Object { $installDelete -notcontains $_ })
+    Write-Host "Files of $PreviousReleaseVersion that $Version does not ship: $($notShipped.Count); [InstallDelete] entries: $($installDelete.Count)"
+    Check ($notDeleted.Count -eq 0) "every file of $PreviousReleaseVersion that $Version does not ship is in [InstallDelete] (missing: $($notDeleted -join ', '))"
+    $extra = @($installDelete | Where-Object { $notShipped -notcontains $_ })
+    foreach ($rel in $extra) { Write-Host "Note: [InstallDelete] entry $rel is not a file $PreviousReleaseVersion had and $Version lacks" }
+}
 Check (Test-Path -LiteralPath (Join-Path $StartMenu 'Illux Image Tool Settings.lnk')) 'Start menu: Illux Image Tool Settings'
 Check (Test-Path -LiteralPath (Join-Path $StartMenu 'AE setup guide.lnk')) 'Start menu: AE setup guide'
 $run = (Get-ItemProperty -Path $RunKey -Name IlluxImageToolTray -ErrorAction SilentlyContinue).IlluxImageToolTray
@@ -339,7 +487,7 @@ Check ([Diagnostics.EventLog]::SourceExists('Illux Image Tool') -and [Diagnostic
 Section 'Data folder'
 $aside = @(Get-ChildItem -LiteralPath $env:ProgramData -Directory -Filter 'Illux Image Tool (untrusted *')
 Check ($aside.Count -eq 1) "the planted data folder was moved aside (found: $($aside.Name -join ', '))"
-Check (-not (Test-Path -LiteralPath (Join-Path $Data 'config.json'))) 'the planted config.json is not in the new data folder'
+Check (-not (Test-Path -LiteralPath (Join-Path $Data 'config.json'))) 'the planted config.json is not in the new data folder, and a fresh install writes no config.json'
 foreach ($sub in 'runs', 'logs', 'service-logs', 'update') { Check (Test-Path -LiteralPath (Join-Path $Data $sub)) "data folder has $sub\" }
 # The settings window (elevated) is the normal writer of config.json; here the test writes it as administrator.
 $watch = Join-Path $WorkDir 'watch'
@@ -374,8 +522,11 @@ Check ($code -eq 0) "PowerShell AE script exit code 0 (got $code)"
 $result = Join-Path $out1 'test.jpg'
 if (Test-Path -LiteralPath $result) {
     $info = Get-ImageInfo $result
-    Check ($info.Ppi -eq 200 -and $info.Width -eq 250 -and $info.Height -eq 167) "AE output upsampled to 200 ppi, 250 x 167 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
+    # Default resolution rules: 120 x 80 px at 96 ppi print 3.2 x 2.1 cm, so rule "Small" resamples to 300 ppi.
+    Check ($info.Ppi -eq 300 -and $info.Width -eq 375 -and $info.Height -eq 250) "AE output resampled to 300 ppi, 375 x 250 px (got $($info.Ppi) ppi, $($info.Width) x $($info.Height))"
 } else { Check $false "AE script wrote $result" }
+
+Test-DefaultRulesViaAeScript 'fresh install' 'out-ps1-print'
 
 $out2 = Join-Path $Smoke 'out-bat'; New-Item -ItemType Directory -Force -Path $out2 | Out-Null
 # cmd /c strips the outer quotes, leaving:  "<bat>" "<input>" "<output folder>" output=pdf
@@ -425,7 +576,7 @@ Check (Wait-Until { Test-Path -LiteralPath $watchedOut } 90) 'the service conver
 if (Test-Path -LiteralPath $watchedOut) {
     Start-Sleep -Seconds 1
     $info = Get-ImageInfo $watchedOut
-    Check ($info.Ppi -eq 200) "watched-folder output is 200 ppi (got $($info.Ppi))"
+    Check ($info.Ppi -eq 300) "watched-folder output is 300 ppi (got $($info.Ppi))"
 }
 $originals = Join-Path $watch 'Originals\watched.jpg'
 Check (Wait-Until { Test-Path -LiteralPath $originals } 30) 'the original was moved to Originals'

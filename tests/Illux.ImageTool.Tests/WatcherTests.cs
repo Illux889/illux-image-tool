@@ -112,6 +112,87 @@ public sealed class WatcherTests : IDisposable
         Assert.False(scanner.Busy);
     }
 
+    /// <summary>A run marker (V15: the folders job's lock in runs/) that records when it is held.</summary>
+    private sealed class FakeRunMarker
+    {
+        public int Taken { get; private set; }
+
+        public int Held { get; private set; }
+
+        public IDisposable Take()
+        {
+            Taken++;
+            Held++;
+            return new Release(this);
+        }
+
+        private sealed class Release(FakeRunMarker owner) : IDisposable
+        {
+            private bool _done;
+
+            public void Dispose()
+            {
+                if (_done) return;
+                _done = true;
+                owner.Held--;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Scan_RunMarker_IsTakenBeforeTheUpdatingFlagIsLookedAt_AndReleasedWhenUpdating()
+    {
+        // V15 on macOS: the updater runs in another process, so it sees the folders job only through its lock in runs/,
+        // taken (like the CLI's, R30) before the flag is looked at.
+        Jpeg("a.jpg", ppi: 300);
+        var marker = new FakeRunMarker();
+        var heldWhenAsked = new List<int>();
+        var scanner = new FolderScanner(Folder(), _log, _clock, () =>
+        {
+            heldWhenAsked.Add(marker.Held);
+            return true;
+        }, runMarker: marker.Take);
+
+        await ScanTwice(scanner);
+
+        Assert.Equal([1], heldWhenAsked);
+        Assert.Equal(0, marker.Held);
+        Assert.Equal(["a.jpg"], Names(In));
+    }
+
+    [Fact]
+    public async Task Scan_RunMarker_IsHeldWhileAFileIsProcessed()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        var marker = new FakeRunMarker();
+        var scanner = new FolderScanner(Folder(), _log, _clock, () => false, runMarker: marker.Take);
+        var heldDuringVerify = -1;
+        scanner.OutputVerifier = outputs =>
+        {
+            heldDuringVerify = marker.Held;
+            return FolderScanner.VerifyOutputs(outputs);
+        };
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(1, heldDuringVerify);
+        Assert.Equal(1, marker.Taken);
+        Assert.Equal(0, marker.Held);
+        Assert.Equal(["a.jpg"], Names(Out));
+    }
+
+    [Fact]
+    public async Task Scan_RunMarkerThatCannotBeTaken_FileIsStillProcessed()
+    {
+        // As in the CLI: the lock only tells the updater we are busy; a conversion must not fail because of it.
+        Jpeg("a.jpg", ppi: 300);
+        var scanner = new FolderScanner(Folder(), _log, _clock, () => false, runMarker: () => null);
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(["a.jpg"], Names(Out));
+    }
+
     private string ToolTempFolder()
     {
         var path = Path.Combine(Out, ".illux-tmp-" + Guid.NewGuid().ToString("N"));
@@ -126,7 +207,7 @@ public sealed class WatcherTests : IDisposable
         Directory.SetLastWriteTimeUtc(folder, old);
     }
 
-    [Fact]
+    [WindowsFact]
     public void RemoveStaleTempFolders_OnlyOldTempFoldersMadeByTheToolInOut()
     {
         var old = ToolTempFolder();
@@ -145,7 +226,7 @@ public sealed class WatcherTests : IDisposable
         Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
     }
 
-    [Fact]
+    [WindowsFact]
     public void RemoveStaleTempFolders_PlantedFolderWithInheritedPermissions_IsLeftAlone()
     {
         // N1: anyone who may create folders in Out can make one with this name; the watcher (SYSTEM) must not delete it.
@@ -194,6 +275,23 @@ public sealed class WatcherTests : IDisposable
         Assert.False(Directory.Exists(temp));
         Assert.True(File.Exists(Path.Combine(elsewhere.FullName, "canary.txt")));
         Assert.Equal(["canary.txt"], Names(elsewhere.FullName));
+    }
+
+    [MacFact]
+    public void RemoveStaleTempFolders_OnMac_IsDisabled_NothingIsDeleted()
+    {
+        // No recursive deletes as root in folders users may write to; an administrator removes leftovers by hand.
+        var old = ToolTempFolder();
+        File.WriteAllText(Path.Combine(old, "half.jpg"), "partial");
+        Age(old);
+
+        Scanner().RemoveStaleTempFolders();
+        Scanner().RemoveStaleTempFolders();
+
+        Assert.True(File.Exists(Path.Combine(old, "half.jpg")));
+        Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
+        // Said once per process (Information); another test in this process may already have triggered it.
+        Assert.True(_log.Entries.Count(e => e.Message.Contains("not removed automatically on macOS")) <= 1);
     }
 
     [Fact]
@@ -290,8 +388,11 @@ public sealed class WatcherTests : IDisposable
             File.WriteAllBytes(Path.Combine(In, name), [1, 2, 3]);
         var hidden = Jpeg("e.jpg");
         File.SetAttributes(hidden, FileAttributes.Hidden);
-        var system = Jpeg("f.jpg");
-        File.SetAttributes(system, FileAttributes.System);
+        if (OperatingSystem.IsWindows()) // macOS has no System attribute (File.SetAttributes ignores it there)
+        {
+            var system = Jpeg("f.jpg");
+            File.SetAttributes(system, FileAttributes.System);
+        }
         TestImages.Write(Path.Combine(In, ".illux-tmp-abc"), "g.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
         var before = Names(In);
 
@@ -605,13 +706,192 @@ public sealed class WatcherTests : IDisposable
         Assert.Equal(Path.Combine(_dir, "elsewhere"), folder.OriginalsOrDefault);
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(@"D:\", @"D:\Originals")]
     [InlineData(@"D:\In", @"D:\Originals")]
     [InlineData(@"\\srv\share", @"\\srv\share\Originals")]
     [InlineData(@"\\srv\share\", @"\\srv\share\Originals")]
     public void OriginalsOrDefault_InAtARoot_IsAFullPath(string inFolder, string expected) =>
         Assert.Equal(expected, new WatchedFolder { In = inFolder }.OriginalsOrDefault);
+
+    // ----- final review: the folders job on folders others may write to (C1, C2, I1, M5) -----
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "mkfifo", SetLastError = true)]
+    private static extern int MakeFifo([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string path, ushort mode);
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "link", SetLastError = true)]
+    private static extern int HardLink(
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string existing,
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string link);
+
+    [MacFact]
+    public async Task Scan_OnMac_FifoInIn_BlocksNothing_AndIsLeftAlone()
+    {
+        Directory.CreateDirectory(In);
+        Assert.Equal(0, MakeFifo(Path.Combine(In, "pipe.jpg"), 0b110_110_110));
+        Jpeg("z.jpg", ppi: 300);
+        var scanner = Scanner();
+
+        var scans = Task.Run(() => ScanTwice(scanner));
+        Assert.True(scans.Wait(TimeSpan.FromSeconds(60)), "a FIFO in In blocked the scan");
+        await scans;
+
+        Assert.Equal(["z.jpg"], Names(Out));
+        Assert.Equal(["pipe.jpg"], Names(In));
+        Assert.DoesNotContain(_log.Entries, e => e.Level >= LogLevel.Warning);
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_LinkInIn_IsSkipped()
+    {
+        var outside = TestImages.Write(Path.Combine(_dir, "outside"), "secret.jpg", 60, 40, ColorSpace.sRGB, 8, 300);
+        Directory.CreateDirectory(In);
+        File.CreateSymbolicLink(Path.Combine(In, "link.jpg"), outside);
+        Assert.Equal(0, HardLink(outside, Path.Combine(In, "hard.jpg"))); // a regular file: processed as the account may read it
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal(["hard.jpg"], Names(Out));
+        Assert.Equal(["link.jpg"], Names(In));
+        Assert.True(File.Exists(outside));
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_WarningsLogThatIsAHardLink_IsNotWrittenThrough()
+    {
+        // C1: someone plants a second name of a file the folder account must not change in place of _warnings.log.
+        var victim = Path.Combine(_dir, "victim.txt");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(victim, "keep");
+        Directory.CreateDirectory(Out);
+        Assert.Equal(0, HardLink(victim, Path.Combine(Out, "_warnings.log")));
+        Jpeg("a.jpg", ppi: null); // no ppi: a Warning, which is appended to _warnings.log
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal("keep", File.ReadAllText(victim));
+        Assert.Equal(["a.jpg"], Names(Originals)); // the file itself is done all the same
+        Assert.Contains(_log.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("could not write _warnings.log"));
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_FileNameWithControlCharacters_IsLoggedOnOneLine()
+    {
+        Jpeg("a\nforged line.jpg", ppi: null);
+
+        await ScanTwice(Scanner());
+
+        var warnings = File.ReadAllText(Path.Combine(Out, "_warnings.log"));
+        Assert.Contains(" aforged line.jpg", warnings);
+        Assert.DoesNotContain(warnings.Split('\n'), line => line.StartsWith("forged", StringComparison.Ordinal));
+        Assert.All(_log.Entries, e => Assert.DoesNotContain('\n', e.Message));
+    }
+
+    private string StagingFolder()
+    {
+        var staging = Path.Combine(_dir, "folder-work");
+        Directory.CreateDirectory(staging);
+        if (OperatingSystem.IsMacOS()) File.SetUnixFileMode(staging, (UnixFileMode)0b111_000_000);
+        return staging;
+    }
+
+    [MacFact]
+    public async Task Scan_OnMac_WithStagingFolder_NoTempFolderInOut_NothingLeftInStaging()
+    {
+        // C2: the output is made in the private work folder and moved into Out; Out never holds a temp folder.
+        Jpeg("a.jpg", ppi: 300);
+        var staging = StagingFolder();
+        var scanner = new FolderScanner(Folder(), _log, _clock, () => false, stagingFolder: staging);
+        string[]? stagedWhileVerifying = null;
+        scanner.OutputVerifier = outputs =>
+        {
+            stagedWhileVerifying = Names(staging);
+            return FolderScanner.VerifyOutputs(outputs);
+        };
+
+        await ScanTwice(scanner);
+
+        Assert.Equal(["a.jpg"], Names(Out));
+        Assert.Empty(stagedWhileVerifying!);
+        Assert.Empty(Names(staging));
+        Assert.Equal(["a.jpg"], Names(Originals));
+    }
+
+    [MacFact]
+    public void RemoveStaleTempFolders_OnMac_WithStagingFolder_RemovesOnlyOldStagingFoldersThere()
+    {
+        var staging = StagingFolder();
+        var old = Path.Combine(staging, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(old);
+        File.WriteAllText(Path.Combine(old, "half.jpg"), "partial");
+        Age(old);
+        var fresh = Path.Combine(staging, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(fresh);
+        var magickTemp = Path.Combine(staging, "IlluxImageTool");
+        Directory.CreateDirectory(magickTemp);
+        Age(magickTemp);
+        var inOut = ToolTempFolder(); // Out is never touched on macOS
+        Age(inOut);
+
+        new FolderScanner(Folder(), _log, _clock, () => false, stagingFolder: staging).RemoveStaleTempFolders();
+
+        Assert.False(Directory.Exists(old));
+        Assert.True(Directory.Exists(fresh));
+        Assert.True(Directory.Exists(magickTemp));
+        Assert.True(Directory.Exists(inOut));
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public async Task Scan_OnMac_StagingFolderOthersMayWrite_FileGoesToError()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        var staging = StagingFolder();
+        File.SetUnixFileMode(staging, (UnixFileMode)0b111_111_111);
+
+        await ScanTwice(new FolderScanner(Folder(), _log, _clock, () => false, stagingFolder: staging));
+
+        Assert.Empty(Names(Out));
+        Assert.Equal(["a.jpg", "a.jpg.error.txt"], Names(Error));
+        Assert.Contains("writable by group or others", File.ReadAllText(Path.Combine(Error, "a.jpg.error.txt")));
+        Assert.Empty(Names(staging));
+    }
+
+    [Fact]
+    public void MoveClash_IsRecognisedAsNameTaken()
+    {
+        // M5: the name-clash retry of the moves to Originals and Error must see "already exists" on every system.
+        Directory.CreateDirectory(_dir);
+        var a = Path.Combine(_dir, "a.jpg");
+        var b = Path.Combine(_dir, "b.jpg");
+        File.WriteAllText(a, "a");
+        File.WriteAllText(b, "b");
+
+        var ex = Assert.ThrowsAny<IOException>(() => File.Move(a, b, overwrite: false));
+
+        Assert.True(FolderScanner.IsAlreadyExists(ex, b));
+        Assert.False(FolderScanner.IsAlreadyExists(new IOException("disk full"), Path.Combine(_dir, "free.jpg")));
+    }
+
+    [FactWhenFileSymlinksWork]
+    public async Task Scan_OriginalsNameTakenByADanglingLink_GetsTheNextFreeName()
+    {
+        Jpeg("a.jpg", ppi: 300);
+        Directory.CreateDirectory(Originals);
+        File.CreateSymbolicLink(Path.Combine(Originals, "a.jpg"), Path.Combine(_dir, "nowhere.jpg"));
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal(["a (2).jpg", "a.jpg"], Names(Originals));
+        Assert.False(File.Exists(Path.Combine(_dir, "nowhere.jpg")));
+    }
+
+    [MacFact]
+    public void OriginalsOrDefault_OnMac_IsSiblingOfIn()
+    {
+        Assert.Equal("/Users/Shared/Job/Originals", new WatchedFolder { In = "/Users/Shared/Job/In" }.OriginalsOrDefault);
+        Assert.Equal("/Users/Shared/Job/Originals", new WatchedFolder { In = "/Users/Shared/Job/In/" }.OriginalsOrDefault);
+    }
 
     [Fact]
     public void ConfigStore_RoundTrip()
@@ -646,7 +926,7 @@ public sealed class WatcherTests : IDisposable
         Assert.Null(b.Originals);
         Assert.True(b.Enabled);
         Assert.Empty(b.Parameters);
-        Assert.Equal(@"\\srv\b\Originals", b.OriginalsOrDefault);
+        if (OperatingSystem.IsWindows()) Assert.Equal(@"\\srv\b\Originals", b.OriginalsOrDefault); // a UNC path means nothing on macOS
         Assert.Contains("\n", File.ReadAllText(path)); // indented
         Assert.Equal(["config.json"], Names(Path.GetDirectoryName(path)!)); // no temp file left behind
     }

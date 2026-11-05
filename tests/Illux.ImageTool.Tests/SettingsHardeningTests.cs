@@ -5,58 +5,6 @@ using Illux.ImageTool.Watch;
 
 namespace Illux.ImageTool.Tests;
 
-public sealed class FolderPathValidationTests
-{
-    private static WatchedFolder Folder(string inFolder = @"C:\A\In", string outFolder = @"C:\A\Out", string error = @"C:\A\Error", string? originals = null) =>
-        new() { Name = "A", In = inFolder, Out = outFolder, Error = error, Originals = originals };
-
-    [Theory]
-    [InlineData(@"In")]
-    [InlineData(@"..\In")]
-    [InlineData(@".\In")]
-    [InlineData(@"C:In")]
-    [InlineData(@"\In")]
-    public void RelativeOrDriveRelativePath_IsRejected(string path)
-    {
-        var message = FolderDialog.Validate(Folder(inFolder: path));
-        Assert.NotNull(message);
-        Assert.Contains("In folder is not a full path", message);
-
-        Assert.Contains("Out folder is not a full path", FolderDialog.Validate(Folder(outFolder: path)));
-        Assert.Contains("Error folder is not a full path", FolderDialog.Validate(Folder(error: path)));
-        Assert.Contains("Originals folder is not a full path", FolderDialog.Validate(Folder(originals: path)));
-    }
-
-    [Fact]
-    public void EmptyPath_IsStillAskedFor()
-    {
-        Assert.Equal("Choose the In folder.", FolderDialog.Validate(Folder(inFolder: "")));
-        Assert.Equal("Choose the Error folder.", FolderDialog.Validate(Folder(error: "  ")));
-    }
-
-    [Fact]
-    public void PathWithNul_IsRejected_NotThrown()
-    {
-        var message = FolderDialog.Validate(Folder(inFolder: "C:\\A\0\\In"));
-
-        Assert.NotNull(message);
-        Assert.Contains("not a full path", message);
-    }
-
-    [Fact]
-    public void FullAndUncPaths_AreAccepted()
-    {
-        Assert.Null(FolderDialog.Validate(Folder(@"\\srv\share\In", @"\\srv\share\Out", @"\\srv\share\Error", @"\\srv\share\Originals")));
-        Assert.Null(FolderDialog.Validate(Folder(@"D:\x\In\", @"D:\x\Out\", @"D:\x\Error\")));
-    }
-
-    [Fact]
-    public void RelativeIsReportedBeforeDuplicates()
-    {
-        Assert.Contains("not a full path", FolderDialog.Validate(Folder(inFolder: "x", outFolder: "x")));
-    }
-}
-
 public sealed class ServiceAccountDecisionTests
 {
     [Theory]

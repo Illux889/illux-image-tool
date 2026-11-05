@@ -1,0 +1,44 @@
+name: Build and smoke test the macOS package
+description: >
+  Builds the macOS package of a version plus a second one (one patch higher, for the upgrade test), checks the
+  checksum file and runs build/smoke-test-macos.sh (install, upgrade, uninstall) on a throw-away runner with sudo.
+  The packages end up in artifacts/installer and the logs in $RUNNER_TEMP/smoke/logs. Used by ci.yml and release.yml
+  so both build and test the same way. The caller must have checked out the repository and installed .NET.
+
+inputs:
+  version:
+    description: Version of the package, for example 0.2.0
+    required: true
+  upgrade-version:
+    description: Version of the upgrade-test package (higher than version)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build packages
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        UPGRADE_VERSION: ${{ inputs.upgrade-version }}
+      run: |
+        ./installer/macos/build-pkg.sh "$VERSION"
+        ./installer/macos/build-pkg.sh "$UPGRADE_VERSION"
+
+    - name: Verify checksum file
+      shell: bash
+      working-directory: artifacts/installer
+      env:
+        VERSION: ${{ inputs.version }}
+      run: shasum -a 256 -c "IlluxImageTool-$VERSION-macOS-arm64.pkg.sha256"
+
+    - name: Smoke test (sudo on a throw-away runner)
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        UPGRADE_VERSION: ${{ inputs.upgrade-version }}
+      run: >
+        ./build/smoke-test-macos.sh
+        "artifacts/installer/IlluxImageTool-$VERSION-macOS-arm64.pkg"
+        "artifacts/installer/IlluxImageTool-$UPGRADE_VERSION-macOS-arm64.pkg"
+        "$VERSION" "$UPGRADE_VERSION" "$RUNNER_TEMP/smoke"

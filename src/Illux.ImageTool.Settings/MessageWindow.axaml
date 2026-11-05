@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Illux.ImageTool.Settings.MessageWindow"
+        Title="Illux Image Tool"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner">
+  <StackPanel Margin="16" Spacing="16" MinWidth="280">
+    <TextBlock x:Name="MessageText" TextWrapping="Wrap" MaxWidth="440" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="YesButton" Content="Yes" Width="90" HorizontalContentAlignment="Center" IsVisible="False" />
+      <Button x:Name="NoButton" Content="No" Width="90" HorizontalContentAlignment="Center" IsVisible="False" />
+      <Button x:Name="OkButton" Content="OK" Width="90" HorizontalContentAlignment="Center" IsDefault="True" IsCancel="True" />
+    </StackPanel>
+  </StackPanel>
+</Window>

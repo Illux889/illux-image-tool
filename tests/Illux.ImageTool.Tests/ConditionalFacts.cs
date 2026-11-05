@@ -1,17 +1,24 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Security.Principal;
 
 namespace Illux.ImageTool.Tests;
 
-/// <summary>Skipped (and reported as skipped) when the test runner is elevated: folders it creates are then owned by Administrators.</summary>
+/// <summary>
+/// Windows only (Windows folder owners); skipped (and reported as skipped) when the test runner is elevated: folders it
+/// creates are then owned by Administrators.
+/// </summary>
 public sealed class FactWhenNotElevatedAttribute : FactAttribute
 {
     public FactWhenNotElevatedAttribute()
     {
-        if (OperatingSystem.IsWindows() && IsElevated())
+        if (!OperatingSystem.IsWindows())
+            Skip = PlatformSkip.WindowsOnly;
+        else if (IsElevated())
             Skip = "Runs only for a non-elevated user (an elevated user's folders are owned by Administrators, which is trusted).";
     }
 
+    [SupportedOSPlatform("windows")]
     private static bool IsElevated()
     {
         using var identity = WindowsIdentity.GetCurrent();
@@ -19,14 +26,15 @@ public sealed class FactWhenNotElevatedAttribute : FactAttribute
     }
 }
 
-/// <summary>Skipped when a junction cannot be created with <c>mklink /J</c> on this machine.</summary>
+/// <summary>Windows only; skipped when a junction cannot be created with <c>mklink /J</c> on this machine.</summary>
 public sealed class FactWhenJunctionsWorkAttribute : FactAttribute
 {
     private static readonly Lazy<bool> Works = new(Probe);
 
     public FactWhenJunctionsWorkAttribute()
     {
-        if (!Works.Value) Skip = "Junctions cannot be created here (mklink /J failed).";
+        if (!OperatingSystem.IsWindows()) Skip = PlatformSkip.WindowsOnly;
+        else if (!Works.Value) Skip = "Junctions cannot be created here (mklink /J failed).";
     }
 
     public static bool TryCreateJunction(string link, string target)

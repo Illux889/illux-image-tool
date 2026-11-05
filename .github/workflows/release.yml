@@ -1,11 +1,27 @@
 name: Release
 
-# Runs only when a version tag such as v0.1.0 is pushed. Tests, builds and smoke-tests the installer, then publishes
-# a full GitHub Release with exactly two files: the installer and its .sha256 (the names the in-app updater expects).
+# Runs when a version tag such as v0.2.0 is pushed. Tests, builds and smoke-tests the Windows installer and the macOS
+# package, then publishes ONE GitHub Release with exactly four files:
+#   IlluxImageTool-Setup-X.Y.Z.exe        + .sha256   (the names the Windows updater expects)
+#   IlluxImageTool-X.Y.Z-macOS-arm64.pkg  + .sha256   (the names the macOS updater expects)
+# The publish job runs only when both platforms passed, and refuses (no partial release) if a file is missing or
+# does not match its checksum or the version.
+#
+# Manual run (workflow_dispatch): does everything except creating the release (dry run), to prove the four-file check.
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build in a dry run, for example 0.2.0 (no tag is needed or created)
+        required: true
+        default: '0.2.0'
+      dry-run:
+        description: Do everything except create the release (a release is only made by pushing a tag)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -13,6 +29,8 @@ permissions:
 env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # The tag being released. A manual dry run uses vX.Y.Z of the "version" input instead.
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
 
 jobs:
   build:
@@ -34,7 +52,7 @@ jobs:
         # v1.2.3 -> installer 1.2.3. The smoke test also needs a higher version (for the silent upgrade) and a third
         # one (built to fail); they are only used inside this run and are never published.
         run: |
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:RELEASE_TAG
           # No leading zeros (v01.2.3): the release name must equal the version the installer reports and the updater parses.
           if ($tag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw "Tag '$tag' is not of the form vX.Y.Z (numbers without leading zeros)." }
           $major = [int]$Matches[1]; $minor = [int]$Matches[2]; $patch = [int]$Matches[3]
@@ -67,7 +85,7 @@ jobs:
           $dir = 'artifacts/installer'
           $exe = "IlluxImageTool-Setup-$env:VERSION.exe"
           foreach ($name in @($exe, "$exe.sha256")) {
-            if (-not (Test-Path -LiteralPath (Join-Path $dir $name))) { throw "Expected $dir/$name was not built; the tag $env:GITHUB_REF_NAME and the built files do not match." }
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $name))) { throw "Expected $dir/$name was not built; the tag $env:RELEASE_TAG and the built files do not match." }
           }
           $info = (Get-Item -LiteralPath (Join-Path $dir $exe)).VersionInfo
           Write-Host "$exe : file version $($info.FileVersion), product version $($info.ProductVersion)"
@@ -118,46 +136,142 @@ jobs:
           version: ${{ needs.build.outputs.version }}
           upgrade-version: ${{ needs.build.outputs.upgrade_version }}
           fail-version: ${{ needs.build.outputs.fail_version }}
+          # The public v0.1.0 installer (checked against its .sha256 asset) is installed first and upgraded to this build.
+          previous-release-version: '0.1.0'
+
+  macos:
+    name: Test, build and smoke test the macOS package
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Versions from the tag
+        id: versions
+        # Same rule as for Windows: v1.2.3 -> package 1.2.3; the smoke test also builds 1.2.4 (never published).
+        run: |
+          re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [[ ! "$RELEASE_TAG" =~ $re ]]; then
+            echo "Tag '$RELEASE_TAG' is not of the form vX.Y.Z (numbers without leading zeros)."; exit 1
+          fi
+          major="${BASH_REMATCH[1]}"; minor="${BASH_REMATCH[2]}"; patch="${BASH_REMATCH[3]}"
+          echo "Releasing $major.$minor.$patch from tag $RELEASE_TAG"
+          echo "version=$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+          echo "upgrade_version=$major.$minor.$((patch + 1))" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build jpegtran
+        run: ./build/fetch-jpegtran.sh
+
+      - name: Test
+        run: dotnet test -c Release
+
+      - name: Build, check and smoke test the packages
+        uses: ./.github/actions/macos-package
+        with:
+          version: ${{ steps.versions.outputs.version }}
+          upgrade-version: ${{ steps.versions.outputs.upgrade_version }}
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64
+          path: |
+            artifacts/installer/IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64.pkg
+            artifacts/installer/IlluxImageTool-${{ steps.versions.outputs.version }}-macOS-arm64.pkg.sha256
+          if-no-files-found: error
+
+      - name: Upload smoke-test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-smoke-test-logs
+          path: ${{ runner.temp }}/smoke/logs/
+          if-no-files-found: ignore
+          retention-days: 7
 
   publish:
     name: Publish GitHub Release
-    needs: [build, smoke-test]
-    runs-on: windows-latest
+    # Only when BOTH platforms were built and smoke-tested. A release is never made with one platform.
+    needs: [build, smoke-test, macos]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: write
-    defaults:
-      run:
-        shell: powershell
     steps:
-      # No checkout: this job only uploads the files the earlier jobs built and tested.
+      # Checkout only for the release notes (docs/release-notes/vX.Y.Z.md); the four files come from the earlier jobs.
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           name: IlluxImageTool-Setup-${{ needs.build.outputs.version }}
           path: release-files
 
-      - name: Check the files match the tag
+      - uses: actions/download-artifact@v8
+        with:
+          name: IlluxImageTool-${{ needs.macos.outputs.version }}-macOS-arm64
+          path: release-files
+
+      - name: Check the four files
         env:
           VERSION: ${{ needs.build.outputs.version }}
+          MAC_VERSION: ${{ needs.macos.outputs.version }}
+          EVENT: ${{ github.event_name }}
         run: |
-          if ($env:GITHUB_REF_NAME -ne "v$env:VERSION") { throw "Tag '$env:GITHUB_REF_NAME' does not match the built version $env:VERSION." }
-          $exe = "IlluxImageTool-Setup-$env:VERSION.exe"
-          $expected = @($exe, "$exe.sha256") | Sort-Object
-          $found = @(Get-ChildItem -LiteralPath release-files -File | ForEach-Object Name) | Sort-Object
-          if (($found -join '|') -ne ($expected -join '|')) { throw "Release files are '$($found -join ', ')', expected '$($expected -join ', ')'." }
-          $checksum = (Get-Content -Raw "release-files/$exe.sha256").Trim()
-          $actual = "$((Get-FileHash "release-files/$exe" -Algorithm SHA256).Hash.ToLowerInvariant())  $exe"
-          if ($actual -ne $checksum) { throw "Checksum file says '$checksum', file is '$actual'" }
-          Write-Host $checksum
+          set -eu
+          if [ "$RELEASE_TAG" != "v$VERSION" ] || [ "$MAC_VERSION" != "$VERSION" ]; then
+            echo "Tag '$RELEASE_TAG', Windows version '$VERSION' and macOS version '$MAC_VERSION' must all match."; exit 1
+          fi
+          exe="IlluxImageTool-Setup-$VERSION.exe"
+          pkg="IlluxImageTool-$VERSION-macOS-arm64.pkg"
+          expected="$(printf '%s\n' "$exe" "$exe.sha256" "$pkg" "$pkg.sha256" | sort)"
+          found="$(cd release-files && find . -type f | sed 's|^\./||' | sort)"
+          if [ "$found" != "$expected" ]; then
+            echo "Release files are:"; echo "$found"; echo "Expected exactly:"; echo "$expected"; exit 1
+          fi
+          cd release-files
+          for name in "$exe" "$pkg"; do
+            # The file holds "<64 hex digits>  <name>" (two spaces), written by the build.
+            checksum="$(tr -d '\r' < "$name.sha256" | head -n 1)"
+            actual="$(sha256sum "$name" | cut -d' ' -f1)  $name"
+            if [ "$checksum" != "$actual" ]; then echo "Checksum file of $name says '$checksum', the file is '$actual'"; exit 1; fi
+            echo "$checksum"
+          done
+          echo "All four files are present, named for $VERSION, and match their checksums."
+          cd ..
+          if [ "$EVENT" = "push" ] && [ ! -f "docs/release-notes/v$VERSION.md" ]; then
+            echo "docs/release-notes/v$VERSION.md is missing: a release needs its release notes."; exit 1
+          fi
 
       - name: Create the release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
-        # A full release: neither --draft nor --prerelease (the updater ignores both).
+        # One full release: neither --draft nor --prerelease (the updaters ignore both). The body is
+        # docs/release-notes/vX.Y.Z.md, which must exist (checked above).
         run: |
-          gh release create $env:GITHUB_REF_NAME `
-            "release-files/IlluxImageTool-Setup-$env:VERSION.exe" `
-            "release-files/IlluxImageTool-Setup-$env:VERSION.exe.sha256" `
-            --repo $env:GITHUB_REPOSITORY --verify-tag --title $env:GITHUB_REF_NAME --generate-notes
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          set -eu
+          notes=(--notes-file "docs/release-notes/v$VERSION.md")
+          gh release create "$RELEASE_TAG" \
+            "release-files/IlluxImageTool-Setup-$VERSION.exe" \
+            "release-files/IlluxImageTool-Setup-$VERSION.exe.sha256" \
+            "release-files/IlluxImageTool-$VERSION-macOS-arm64.pkg" \
+            "release-files/IlluxImageTool-$VERSION-macOS-arm64.pkg.sha256" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$RELEASE_TAG" "${notes[@]}"
+
+      - name: Dry run, no release created
+        if: github.event_name != 'push'
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          echo "Manual run: everything above passed. No release was created (a release is only made by pushing a tag)."
+          if [ "$DRY_RUN" != "true" ]; then echo "::warning::dry-run=false is ignored: releases come only from a tag push."; fi
+          if [ -f "docs/release-notes/v$VERSION.md" ]; then echo "Release notes found: docs/release-notes/v$VERSION.md"
+          else echo "::error::No docs/release-notes/v$VERSION.md; a real release (tag push) would be refused."; exit 1; fi

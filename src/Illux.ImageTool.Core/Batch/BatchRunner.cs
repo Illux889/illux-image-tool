@@ -1,4 +1,5 @@
 using Illux.ImageTool.Options;
+using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Batch;
 
@@ -6,14 +7,22 @@ namespace Illux.ImageTool.Batch;
 public static class BatchRunner
 {
     /// <summary>Returns the worst status of all files; an empty input list is a Warning.</summary>
+    /// <param name="warnings">Problems found before the run (e.g. invalid resolution rules); logged first, each makes the result at least a Warning.</param>
     public static async Task<Status> RunAsync(
-        IReadOnlyList<string> inputs, string outputFolder, ProcessingOptions options, TextWriter log, CancellationToken ct)
+        IReadOnlyList<string> inputs, string outputFolder, ProcessingOptions options, TextWriter log, CancellationToken ct,
+        IReadOnlyList<string>? warnings = null)
     {
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(log);
 
         var worst = Status.Ok;
+        foreach (var warning in warnings ?? [])
+        {
+            log.WriteLine($"WARNING: {LogText.Clean(warning)}");
+            worst = Status.Warning;
+        }
+
         if (inputs.Count == 0)
         {
             log.WriteLine("WARNING: No input files");
@@ -57,6 +66,7 @@ public static class BatchRunner
     {
         var prefix = result.Status switch { Status.Error => "ERROR: ", Status.Warning => "WARNING: ", _ => "" };
         var messages = result.Messages.Count == 0 ? "OK" : string.Join("; ", result.Messages);
-        return $"{prefix}{Path.GetFileName(result.Input)}: {messages}";
+        // File names (and messages quoting them) may hold control characters: one line per file all the same.
+        return LogText.Clean($"{prefix}{Path.GetFileName(result.Input)}: {messages}");
     }
 }

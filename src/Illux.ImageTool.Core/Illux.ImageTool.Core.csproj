@@ -6,17 +6,27 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Magick.NET-Q16-HDRI-x64" Version="14.17.2" />
+    <!-- AnyCPU: one package with the win-x64 and osx-arm64 natives (among others). -->
+    <PackageReference Include="Magick.NET-Q16-HDRI-AnyCPU" Version="14.17.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
     <InternalsVisibleTo Include="Illux.ImageTool.Tests" />
   </ItemGroup>
 
-  <!-- jpegtran comes from third_party/ (git-ignored); run build/fetch-jpegtran.ps1 to populate it. -->
-  <ItemGroup>
+  <!--
+    jpegtran comes from third_party/ (git-ignored): build/fetch-jpegtran.ps1 fetches the official Windows binary,
+    build/fetch-jpegtran.sh builds it on macOS from the official source. Each OS copies only its own executable.
+  -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
     <Content Include="..\..\third_party\libjpeg-turbo\jpegtran.exe" Link="tools\jpegtran\jpegtran.exe"
              CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\jpegtran.exe')" />
     <Content Include="..\..\third_party\libjpeg-turbo\jpeg62.dll" Link="tools\jpegtran\jpeg62.dll"
              CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\jpeg62.dll')" />
+  </ItemGroup>
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Content Include="..\..\third_party\libjpeg-turbo\jpegtran" Link="tools\jpegtran\jpegtran"
+             CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\jpegtran')" />
+  </ItemGroup>
+  <ItemGroup>
     <Content Include="..\..\third_party\libjpeg-turbo\LICENSE.md" Link="tools\jpegtran\LICENSE.md"
              CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\third_party\libjpeg-turbo\LICENSE.md')" />
     <Content Include="..\..\third_party\libjpeg-turbo\README.ijg" Link="tools\jpegtran\README.ijg"

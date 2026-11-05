@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Illux.ImageTool.Options;
 
 namespace Illux.ImageTool.Watch;
 
@@ -16,7 +17,7 @@ public sealed class WatchedFolder
     /// <summary>Where untouched inputs go after success; null means an <c>Originals</c> folder next to <see cref="In"/>.</summary>
     public string? Originals { get; set; }
 
-    /// <summary>The same parameter strings Automation Engine passes (<c>8bit</c>, <c>upsample=300</c>, …).</summary>
+    /// <summary>The same parameter strings Automation Engine passes (<c>8bit</c>, <c>resample</c>, …).</summary>
     public List<string> Parameters { get; set; } = [];
 
     public bool Enabled { get; set; } = true;
@@ -41,4 +42,7 @@ public sealed class WatcherConfig
     public bool CheckForUpdates { get; set; } = true;
 
     public int PollSeconds { get; set; } = 5;
+
+    /// <summary>First match wins; the last rule must be <c>all</c>. Absent in a v0.1 file, which gives the defaults.</summary>
+    public List<ResolutionRule> ResolutionRules { get; set; } = [.. Options.ResolutionRules.Defaults];
 }

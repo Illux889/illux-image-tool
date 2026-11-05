@@ -19,19 +19,32 @@ public sealed class WatchWorkerOptions
 
     /// <summary>Tests only: replaces "updating.flag exists" for the scanners this worker creates.</summary>
     public Func<bool>? IsUpdating { get; init; }
+
+    /// <summary>
+    /// macOS folders job (V15): taken by a scanner before it looks at <c>updating.flag</c> and held while it processes
+    /// a file, so the updater in the root job sees the work (a lock in <c>runs/</c>). Null: only <see cref="WatchWorker.Busy"/>.
+    /// </summary>
+    public Func<IDisposable?>? RunMarker { get; init; }
+
+    /// <summary>
+    /// macOS folders job (V15, final review C2): the account's private work folder in which each file is staged, instead
+    /// of a temporary folder in Out. Null: the temporary folder in Out (Windows, R46).
+    /// </summary>
+    public string? StagingFolder { get; init; }
 }
 
 /// <summary>
 /// Scans every enabled watched folder every <c>PollSeconds</c>. <c>config.json</c> is reloaded when its last-write
 /// time or size changes; an invalid file keeps the last good configuration (logged once per change). When a folder's
 /// scanner is created (at start and after a change) old temporary folders are removed from its Out folder (R42).
+/// Every scan uses the resolution rules of the last good configuration, also in scanners kept across a reload.
 /// </summary>
 public sealed class WatchWorker : BackgroundService
 {
     private readonly ILogger _log;
     private readonly WatchWorkerOptions _options;
     private volatile ScannerEntry[] _scanners = [];
-    private WatcherConfig _config = new();
+    private volatile WatcherConfig _config = new();
     private (DateTime LastWriteUtc, long Length)? _loadedSignature;
     private string? _lastProblem;
 
@@ -195,7 +208,9 @@ public sealed class WatchWorker : BackgroundService
             {
                 try
                 {
-                    var scanner = _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(folder, _log, isUpdating: _options.IsUpdating);
+                    var scanner = _options.ScannerFactory?.Invoke(folder) ?? new FolderScanner(
+                        folder, _log, isUpdating: _options.IsUpdating, rules: () => _config.ResolutionRules, runMarker: _options.RunMarker,
+                        stagingFolder: _options.StagingFolder);
                     scanner.RemoveStaleTempFolders();
                     next.Add(new ScannerEntry(key, folder.Name, scanner));
                 }

@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using Illux.ImageTool.Batch;
@@ -20,7 +21,8 @@ public sealed class TempFolderTests : IDisposable
 
     private string Out => Path.Combine(_dir, "Out");
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public void Create_ProtectedAcl_OnlySystemAdministratorsAndThisAccountHaveAccessToTheFolder()
     {
         var temp = Path.Combine(Out, FileProcessor.TempPrefix + Guid.NewGuid().ToString("N"));
@@ -50,7 +52,8 @@ public sealed class TempFolderTests : IDisposable
         Assert.Null(TempFolder.WhyNotOurs(new DirectoryInfo(temp)));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public void WhyNotOurs_OrdinaryFolder_IsNotOurs()
     {
         var planted = Directory.CreateDirectory(Path.Combine(_dir, FileProcessor.TempPrefix + "planted"));
@@ -58,7 +61,8 @@ public sealed class TempFolderTests : IDisposable
         Assert.NotNull(TempFolder.WhyNotOurs(planted));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task Output_HasTheSamePermissionsAsAFileCreatedInOut()
     {
         var input = TestImages.Write(Path.Combine(_dir, "In"), "a.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
@@ -73,6 +77,31 @@ public sealed class TempFolderTests : IDisposable
         Assert.Equal(Rules(reference), Rules(Path.Combine(Out, "a.jpg")));
     }
 
+    [MacFact]
+    [SupportedOSPlatform("macos")]
+    public void Create_OnMac_OnlyTheOwnerMayEnterOrChangeTheFolder()
+    {
+        var temp = Path.Combine(Out, FileProcessor.TempPrefix + Guid.NewGuid().ToString("N"));
+
+        TempFolder.Create(temp);
+
+        Assert.True(Directory.Exists(temp));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(temp));
+    }
+
+    [MacFact]
+    public async Task Output_OnMac_IsWrittenAndTheTempFolderIsGone()
+    {
+        var input = TestImages.Write(Path.Combine(_dir, "In"), "a.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+
+        var result = await FileProcessor.ProcessAsync(input, Out, ProcessingOptions.Default, NamePolicy.Overwrite,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase), CancellationToken.None);
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.Equal(["a.jpg"], Directory.GetFileSystemEntries(Out).Select(Path.GetFileName));
+    }
+
+    [SupportedOSPlatform("windows")]
     private static string[] Rules(string file) =>
         new FileInfo(file).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>()
             .Select(r => $"{r.IdentityReference.Value} {r.AccessControlType} {(int)r.FileSystemRights:X}")

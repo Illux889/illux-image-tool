@@ -1,4 +1,8 @@
+using System.Runtime.Versioning;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Watch;
@@ -13,6 +17,7 @@ public static class ConfigStore
         WriteIndented = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
     /// <summary>
@@ -32,12 +37,41 @@ public static class ConfigStore
             if (config.PollSeconds < 1)
                 throw new ConfigException($"Configuration file '{path}': pollSeconds must be at least 1 (found {config.PollSeconds}).");
             config.Folders ??= [];
-            foreach (var folder in config.Folders) folder.Parameters ??= [];
+            config.ResolutionRules ??= [.. Options.ResolutionRules.Defaults];
+            var problems = Options.ResolutionRules.Validate(config.ResolutionRules);
+            if (problems.Count > 0)
+                throw new ConfigException($"Configuration file '{path}': invalid resolution rules: {string.Join(" ", problems)}");
+            for (var i = 0; i < config.Folders.Count; i++)
+            {
+                // A "null" entry (final review M2) is a problem in the file, not a NullReferenceException later.
+                var folder = config.Folders[i] ?? throw new ConfigException($"Configuration file '{path}': watched folder {i + 1} is empty.");
+                folder.Parameters ??= [];
+            }
             return config;
         }
         catch (JsonException ex)
         {
             throw new ConfigException($"Configuration file '{path}' is not valid: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// The resolution rules for a processing run; never throws. A missing file or section gives the defaults silently,
+    /// an unreadable or invalid file gives the defaults plus a warning to show (also for a failure nobody foresaw).
+    /// </summary>
+    public static (IReadOnlyList<ResolutionRule> Rules, string? Warning) LoadRulesForRun(string? path = null)
+    {
+        try
+        {
+            return (Load(path).ResolutionRules, null);
+        }
+        catch (Exception ex) when (ex is ConfigException or IOException or UnauthorizedAccessException)
+        {
+            return (Options.ResolutionRules.Defaults, $"{ex.Message} Using the default resolution rules instead.");
+        }
+        catch (Exception ex)
+        {
+            return (Options.ResolutionRules.Defaults, $"config.json could not be read ({ex.GetType().Name}: {ex.Message}). Using the default resolution rules instead.");
         }
     }
 
@@ -73,6 +107,42 @@ public static class ConfigStore
         finally
         {
             try { File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    /// <summary>
+    /// macOS, for the settings app (V7): writes the existing <c>config.json</c> (root:admin 0664, made by the installer)
+    /// in place, because Root is root-owned 0755 and a temporary file next to it cannot be created. Never follows a
+    /// link and never creates the file; a reader may briefly see a half-written file, which it treats like any other
+    /// invalid configuration (the service keeps its last good rules).
+    /// V14: its folder, Root, must be a real folder owned by root that group and others cannot write to; then only root
+    /// can put entries there, so a second name (hard link) that a user made elsewhere is harmless and does not block
+    /// the save (it shows the same content).
+    /// </summary>
+    /// <exception cref="IOException">Root is not trusted, or the file is missing, a link, not a regular file, or cannot be written.</exception>
+    /// <exception cref="UnauthorizedAccessException">This account may not write it (not in the admin group).</exception>
+    [SupportedOSPlatform("macos")]
+    public static void SaveInPlace(WatcherConfig config) => SaveInPlace(config, AppPaths.ConfigFile, RootUserId);
+
+    /// <summary>The installer makes Root (the folder of <c>config.json</c>) root-owned.</summary>
+    public const uint RootUserId = 0;
+
+    /// <summary>As <see cref="SaveInPlace(WatcherConfig)"/> for <paramref name="path"/>, whose folder must be owned by <paramref name="expectedFolderOwner"/> (tests run as an ordinary user).</summary>
+    [SupportedOSPlatform("macos")]
+    internal static void SaveInPlace(WatcherConfig config, string path, uint expectedFolderOwner)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        if (TrustedFolder.Problem(folder, expectedFolderOwner) is { } reason)
+            throw new IOException($"'{folder}' {reason}; config.json is not saved. Reinstall Illux Image Tool to repair the folder.");
+        var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config, Json));
+        try
+        {
+            UnixNative.WriteInPlace(path, bytes);
+        }
+        catch (FileNotFoundException ex)
+        {
+            throw new IOException($"'{path}' is missing. Reinstall Illux Image Tool to create it.", ex);
         }
     }
 }

@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Illux.ImageTool.Settings.AccountWindow"
+        Title="Service account"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen">
+  <Grid Margin="12" ColumnDefinitions="Auto,260" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="6" ColumnSpacing="8">
+    <TextBlock Grid.ColumnSpan="2" x:Name="HintText" TextWrapping="Wrap" MaxWidth="380" HorizontalAlignment="Left" Margin="0,0,0,8" />
+    <TextBlock Grid.Row="1" Text="User" VerticalAlignment="Center" />
+    <TextBox Grid.Row="1" Grid.Column="1" x:Name="UserBox" PlaceholderText="DOMAIN\user or user" />
+    <TextBlock Grid.Row="2" Text="Password" VerticalAlignment="Center" />
+    <TextBox Grid.Row="2" Grid.Column="1" x:Name="PasswordBox" PasswordChar="●" />
+    <StackPanel Grid.Row="3" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,8,0,0">
+      <Button x:Name="OkButton" Content="OK" Width="90" HorizontalContentAlignment="Center" IsDefault="True" />
+      <Button x:Name="CancelButton" Content="Cancel" Width="90" HorizontalContentAlignment="Center" IsCancel="True" />
+    </StackPanel>
+  </Grid>
+</Window>

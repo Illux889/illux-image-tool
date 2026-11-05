@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.Versioning;
 using System.Text;
 using Illux.ImageTool.Batch;
+using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
 using Illux.ImageTool.Update;
 using Illux.ImageTool.Watch;
@@ -145,6 +147,43 @@ public sealed class WatchWorkerTests : IDisposable
         Assert.True(File.Exists(Path.Combine(off.In, "a.jpg")));
     }
 
+    private static ResolutionRule OnlyRule(int ppi) => new("Only", SizeTest.All, null, null, null, null, ppi, ppi, ppi);
+
+    private static uint Width(string path)
+    {
+        using var image = new MagickImage(path);
+        return image.Width;
+    }
+
+    [Fact]
+    public async Task Worker_UsesConfigRules()
+    {
+        var folder = Folder("rules");
+        SaveConfig(new WatcherConfig { Folders = [folder], ResolutionRules = [OnlyRule(100)] });
+        TestImages.Write(folder.In, "a.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+        await StartAsync();
+
+        var a = Path.Combine(folder.Out, "a.jpg");
+        Assert.True(await WaitUntil(() => File.Exists(a)), "a.jpg was not processed");
+        Assert.Equal(30u, Width(a)); // 200 → 100 ppi
+
+        // Only the rules change: the folder keeps its scanner, which must still use the new rules.
+        SaveConfig(new WatcherConfig { Folders = [folder], ResolutionRules = [OnlyRule(1000)] });
+        Assert.True(await WaitUntil(() => _log.Count(LogLevel.Information, "Configuration loaded") >= 2));
+        TestImages.Write(folder.In, "b.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+        var b = Path.Combine(folder.Out, "b.jpg");
+        Assert.True(await WaitUntil(() => File.Exists(b)), "b.jpg was not processed");
+        Assert.Equal(300u, Width(b)); // 200 → 1000 ppi
+
+        // Invalid rules: the last good ones stay in use.
+        File.WriteAllText(ConfigPath, """{ "folders": [], "resolutionRules": [] }""");
+        Assert.True(await WaitUntil(() => _log.Count(LogLevel.Error, "invalid resolution rules") >= 1));
+        TestImages.Write(folder.In, "c.jpg", 60, 40, ColorSpace.sRGB, 8, 200);
+        var c = Path.Combine(folder.Out, "c.jpg");
+        Assert.True(await WaitUntil(() => File.Exists(c)), "c.jpg was not processed");
+        Assert.Equal(300u, Width(c));
+    }
+
     [Fact]
     public async Task Worker_InvalidConfig_KeepsLastGoodAndLogsOnce()
     {
@@ -209,7 +248,7 @@ public sealed class WatchWorkerTests : IDisposable
         Assert.False(worker.Busy);
     }
 
-    [Fact]
+    [WindowsFact] // disabled on macOS (see FolderScanner.RemoveStaleTempFolders)
     public async Task Worker_AtStart_RemovesOldTempFoldersFromOut()
     {
         var folder = Folder("cleanup");
@@ -355,13 +394,14 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
     }
 
     private async Task<UpdateWorker> StartAsync(
-        bool periodicChecks = true, TimeSpan? initialDelay = null, bool useConfigFile = false, TimeSpan? checkInterval = null)
+        bool periodicChecks = true, TimeSpan? initialDelay = null, bool useConfigFile = false, TimeSpan? checkInterval = null,
+        IServiceSignals? signals = null, Func<bool>? installerRunning = null, TimeSpan? unfinishedInstallCheckInterval = null)
     {
         var http = new HttpClient(new FakeHandler(Respond));
         var updater = new Updater(
-            new ReleaseClient(http), http, new Version(1, 0, 0),
+            new ReleaseClient(http, ReleasePlatform.WindowsX64), http, new Version(1, 0, 0),
             () => false,
-            (path, args) => { lock (_started) _started.Add((path, args)); return new Process(); },
+            start => { lock (_started) _started.Add((start.FileName, start.Arguments)); return new Process(); },
             NullLogger.Instance,
             downloadDirectory: Path.Combine(Dir, "download"),
             recheckInterval: TimeSpan.FromMilliseconds(10),
@@ -371,16 +411,41 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
             InitialDelay = initialDelay ?? TimeSpan.Zero,
             CheckInterval = checkInterval ?? TimeSpan.FromHours(6),
             SignalPollInterval = TimeSpan.FromMilliseconds(20),
-            CheckNowSignal = _checkNowName,
-            InstallNowSignal = _installNowName,
+            Signals = () => signals ?? OpenSignals(),
             PeriodicChecksEnabled = useConfigFile ? null : () => periodicChecks,
+            InstallerRunning = installerRunning ?? (() => false),
+            UnfinishedInstallCheckInterval = unfinishedInstallCheckInterval ?? TimeSpan.FromMinutes(1),
         });
         _workers.Add(worker);
         await worker.StartAsync(CancellationToken.None);
         return worker;
     }
 
+    /// <summary>Test-only events on Windows (R37); elsewhere a fake nobody signals unless a test does.</summary>
+    private IServiceSignals OpenSignals() =>
+        OperatingSystem.IsWindows() ? ServiceSignals.Open(NullLogger.Instance, _checkNowName, _installNowName) : new FakeSignals();
+
+    /// <summary>A request channel a test sets directly; auto-reset like the real ones.</summary>
+    private sealed class FakeSignals : IServiceSignals
+    {
+        private int _checkNow;
+        private int _installNow;
+
+        public bool Disposed { get; private set; }
+
+        public void RequestCheckNow() => Interlocked.Exchange(ref _checkNow, 1);
+
+        public void RequestInstallNow() => Interlocked.Exchange(ref _installNow, 1);
+
+        public bool TryWaitCheckNow(TimeSpan timeout) => Interlocked.Exchange(ref _checkNow, 0) == 1;
+
+        public bool TryWaitInstallNow(TimeSpan timeout) => Interlocked.Exchange(ref _installNow, 0) == 1;
+
+        public void Dispose() => Disposed = true;
+    }
+
     /// <summary>What the settings window and tray do; retried until the worker has created its events.</summary>
+    [SupportedOSPlatform("windows")]
     private async Task Request(bool install)
     {
         var name = install ? _installNowName : _checkNowName;
@@ -428,7 +493,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.False(File.Exists(AppPaths.UpdatingFlag));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_InstallRequest_TriggersInstall()
     {
         await StartAsync();
@@ -443,7 +509,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(1, ApiRequests()); // the release from the earlier check was reused
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_InstallRequest_WithoutEarlierCheck_ChecksFirst()
     {
         await StartAsync(periodicChecks: false);
@@ -456,7 +523,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(1, ApiRequests());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_InstallRequest_NoRelease_InstallsNothing()
     {
         _releaseAvailable = false;
@@ -470,7 +538,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(0, StartedCount());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_CheckNowRequest_ChecksEvenWhenPeriodicChecksAreOff()
     {
         await StartAsync(periodicChecks: false);
@@ -485,6 +554,154 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(0, StartedCount());
     }
 
+    [Theory]
+    [InlineData(false, 0)] // an install in progress: refused, nothing downloaded or started
+    [InlineData(true, 1)]  // left by an installer that died over 15 minutes ago: removed, then installed
+    public async Task UpdateWorker_InstallRequest_WhileFlagPresent_OnlyAStaleFlagIsCleared(bool stale, int expectedStarts)
+    {
+        Directory.CreateDirectory(AppPaths.Root);
+        File.WriteAllText(AppPaths.UpdatingFlag, "9.9.8");
+        if (stale) File.SetLastWriteTimeUtc(AppPaths.UpdatingFlag, DateTime.UtcNow - TimeSpan.FromMinutes(20));
+        var signals = new FakeSignals();
+        await StartAsync(periodicChecks: false, signals: signals, installerRunning: () => false);
+
+        signals.RequestInstallNow();
+
+        Assert.True(await WaitUntil(() => ApiRequests() == 1));
+        if (expectedStarts == 1) Assert.True(await WaitUntil(() => StartedCount() == 1), "the installer was not started");
+        await Task.Delay(300);
+        Assert.Equal(expectedStarts, StartedCount());
+        Assert.Equal(expectedStarts, InstallerDownloads());
+        Assert.True(File.Exists(AppPaths.UpdatingFlag)); // the old one kept, or the new install's
+    }
+
+    private static void WriteFlag(TimeSpan age)
+    {
+        Directory.CreateDirectory(AppPaths.Root);
+        File.WriteAllText(AppPaths.UpdatingFlag, "9.9.8");
+        File.SetLastWriteTimeUtc(AppPaths.UpdatingFlag, DateTime.UtcNow - age);
+    }
+
+    private static void SaveState(string phase) => UpdateStateStore.Save(new UpdateState { Phase = phase, AvailableVersion = "9.9.9" });
+
+    [Fact]
+    public async Task UpdateWorker_StaleFlag_IsRemovedWhileRunning_AndTheUpdateIsMarkedFailed()
+    {
+        // Final review I3: an installer that died must not block every CLI run until the service restarts.
+        await StartAsync(periodicChecks: false, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(200);
+        SaveState(UpdatePhase.Installing);
+        WriteFlag(TimeSpan.FromMinutes(20));
+
+        Assert.True(await WaitUntil(() => !File.Exists(AppPaths.UpdatingFlag)), "the stale flag was not removed");
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().Phase == UpdatePhase.Failed));
+        Assert.Contains("did not finish", UpdateStateStore.Load().Error);
+        Assert.Equal("9.9.9", UpdateStateStore.Load().AvailableVersion);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_RecentFlag_IsLeftAlone()
+    {
+        SaveState(UpdatePhase.Installing);
+        WriteFlag(TimeSpan.FromMinutes(1));
+        await StartAsync(periodicChecks: false, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(400);
+
+        Assert.True(File.Exists(AppPaths.UpdatingFlag));
+        Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_InstallingButTheFlagIsGone_IsMarkedFailed()
+    {
+        // macOS: a pkg the installer rejects before preinstall runs leaves the daemon running; the install script
+        // removes the flag ("|| rm -f"), so only the phase still says Installing.
+        SaveState(UpdatePhase.Installing);
+
+        await StartAsync(periodicChecks: false, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().Phase == UpdatePhase.Failed));
+        Assert.False(string.IsNullOrWhiteSpace(UpdateStateStore.Load().Error));
+    }
+
+    [Fact]
+    public async Task UpdateWorker_InstallingWithoutFlag_WhileAnInstallerRuns_IsLeftAlone()
+    {
+        SaveState(UpdatePhase.Installing);
+
+        await StartAsync(periodicChecks: false, installerRunning: () => true, unfinishedInstallCheckInterval: TimeSpan.FromMilliseconds(50));
+        await Task.Delay(400);
+
+        Assert.Equal(UpdatePhase.Installing, UpdateStateStore.Load().Phase);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_UsesInterface()
+    {
+        var signals = new FakeSignals();
+        var worker = await StartAsync(periodicChecks: false, signals: signals);
+        await Task.Delay(200);
+        Assert.Equal(0, ApiRequests());
+
+        signals.RequestCheckNow();
+        Assert.True(await WaitUntil(() => ApiRequests() == 1));
+        await Task.Delay(200);
+        Assert.Equal(1, ApiRequests()); // consumed once
+        Assert.Equal(0, StartedCount());
+
+        signals.RequestInstallNow();
+        Assert.True(await WaitUntil(() => StartedCount() == 1), "the installer was not started");
+        Assert.Equal(1, ApiRequests()); // the release from the check was reused
+
+        await worker.StopAsync(CancellationToken.None);
+        Assert.True(signals.Disposed);
+    }
+
+    [Fact]
+    public async Task UpdateWorker_ChannelThatCannotBeOpened_PeriodicChecksStillRun()
+    {
+        var http = new HttpClient(new FakeHandler(Respond));
+        var updater = new Updater(
+            new ReleaseClient(http, ReleasePlatform.WindowsX64), http, new Version(1, 0, 0), () => false,
+            _ => new Process(), NullLogger.Instance,
+            downloadDirectory: Path.Combine(Dir, "download"), trustDownloadDirectory: true);
+        var log = new ErrorLogger();
+        var worker = new UpdateWorker(updater, log, new UpdateWorkerOptions
+        {
+            InitialDelay = TimeSpan.Zero,
+            SignalPollInterval = TimeSpan.FromMilliseconds(20),
+            Signals = () => throw new IOException("the channel cannot be opened"),
+            PeriodicChecksEnabled = () => true,
+        });
+        _workers.Add(worker);
+        await worker.StartAsync(CancellationToken.None);
+
+        Assert.True(await WaitUntil(() => UpdateStateStore.Load().AvailableVersion == "9.9.9"));
+        // The same words on every system: Windows has named events, not a control socket.
+        var error = Assert.Single(log.Errors);
+        Assert.Equal("Could not open the request channel; the settings app and menu bar cannot reach the service", error);
+    }
+
+    /// <summary>Keeps the messages logged at Error.</summary>
+    private sealed class ErrorLogger : ILogger
+    {
+        private readonly List<string> _errors = [];
+
+        public string[] Errors
+        {
+            get { lock (_errors) return [.. _errors]; }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel == LogLevel.Error) lock (_errors) _errors.Add(formatter(state, exception));
+        }
+    }
+
     [Fact]
     public async Task UpdateWorker_FirstPeriodicCheck_WaitsForInitialDelay()
     {
@@ -495,7 +712,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.True(await WaitUntil(() => ApiRequests() == 1));
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_UnexpectedCheckFailure_IsNotRetriedEveryLoop_AndWorkerSurvives()
     {
         _throwOnApi = true;
@@ -511,7 +729,8 @@ public sealed class UpdateWorkerTests : AppRootTestBase, IDisposable
         Assert.Equal(2, ApiRequests());
     }
 
-    [Fact]
+    [WindowsFact]
+    [SupportedOSPlatform("windows")]
     public async Task UpdateWorker_StoppedWorker_NoLongerListens()
     {
         var worker = await StartAsync(periodicChecks: false);

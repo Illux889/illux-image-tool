@@ -13,28 +13,46 @@ public sealed class UpdateWorkerOptions
 
     public TimeSpan CheckInterval { get; init; } = TimeSpan.FromHours(6);
 
-    /// <summary>How often the request events are looked at.</summary>
+    /// <summary>How often the requests are looked at.</summary>
     public TimeSpan SignalPollInterval { get; init; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>Name of the "check now" event (R37); tests use a <c>Local\</c> name.</summary>
-    public string CheckNowSignal { get; init; } = ServiceSignals.CheckNowName;
+    /// <summary>
+    /// Opens the request channel (R37) when the worker starts. Null opens the platform's: the named events on Windows
+    /// (<see cref="ServiceSignals"/>), the control socket on macOS (<see cref="UnixSocketSignals"/>).
+    /// </summary>
+    public Func<IServiceSignals>? Signals { get; init; }
 
-    /// <summary>Name of the "update now" event (R37); tests use a <c>Local\</c> name.</summary>
-    public string InstallNowSignal { get; init; } = ServiceSignals.InstallNowName;
+    /// <summary>The clock for the age of a stale <c>updating.flag</c> (tests set the file's time instead).</summary>
+    public TimeProvider Time { get; init; } = TimeProvider.System;
+
+    /// <summary>Whether an installer is running, for the stale <c>updating.flag</c> check.</summary>
+    public Func<bool> InstallerRunning { get; init; } = StaleUpdatingFlag.IsInstallerRunning;
+
+    /// <summary>
+    /// How often an update that did not finish is looked for (final review I3): a stale <c>updating.flag</c>, or the
+    /// phase Installing without a flag. Also at start and before every install.
+    /// </summary>
+    public TimeSpan UnfinishedInstallCheckInterval { get; init; } = TimeSpan.FromMinutes(1);
 
     /// <summary>False stops the periodic checks (R4); "check now" still works. Defaults to <c>CheckForUpdates</c> of config.json.</summary>
     public Func<bool>? PeriodicChecksEnabled { get; init; }
 }
 
 /// <summary>
-/// Looks for updates at start (after a minute) and every 6 hours, and when the "check now" event is set. It installs
-/// only when the "update now" event is set, which the popup and the settings window do after the user clicks
-/// "Update now". The events (R37) are only triggers: the release to install always comes from this process's own
-/// check. They are auto-reset, so a request is acted on once and none is left over from a time the service was not
-/// running. All work happens in one loop, so installs are serialised.
+/// Looks for updates at start (after a minute) and every 6 hours, and when "check now" is requested. It installs
+/// only when "update now" is requested, which the popup and the settings window do after the user clicks
+/// "Update now". The requests (<see cref="IServiceSignals"/>, R37) are only triggers: the release to install always
+/// comes from this process's own check. They are auto-reset, so a request is acted on once and none is left over from
+/// a time the service was not running. All work happens in one loop, so installs are serialised.
 /// </summary>
 public sealed class UpdateWorker : BackgroundService
 {
+    /// <summary>The update-state error after a stale <c>updating.flag</c> was removed.</summary>
+    public const string StaleFlagError = "The last update did not finish. Try again.";
+
+    /// <summary>The update-state error when the installer ended without installing (the flag is gone, the phase still says Installing).</summary>
+    public const string InstallerEndedError = "The update could not be installed. Try again; the installer log is in the update folder.";
+
     private readonly Updater _updater;
     private readonly ILogger _log;
     private readonly UpdateWorkerOptions _options;
@@ -51,24 +69,30 @@ public sealed class UpdateWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        using var checkNow = CreateSignal(_options.CheckNowSignal);
-        using var installNow = CreateSignal(_options.InstallNowSignal);
+        using var signals = OpenSignals();
         var nextCheck = DateTime.UtcNow + _options.InitialDelay;
+        var nextUnfinishedCheck = DateTime.MinValue;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (IsSet(checkNow))
+                if (DateTime.UtcNow >= nextUnfinishedCheck)
+                {
+                    nextUnfinishedCheck = DateTime.UtcNow + _options.UnfinishedInstallCheckInterval;
+                    CheckUnfinishedInstall();
+                }
+
+                if (signals?.TryWaitCheckNow(TimeSpan.Zero) == true)
                 {
                     _log.LogInformation("Update check requested");
                     await CheckAsync(stoppingToken).ConfigureAwait(false);
                     nextCheck = DateTime.UtcNow + _options.CheckInterval;
                 }
 
-                if (IsSet(installNow))
+                if (signals?.TryWaitInstallNow(TimeSpan.Zero) == true)
                 {
                     // A second click while a started install waited for idle asks for the same thing.
-                    if (await InstallAsync(stoppingToken).ConfigureAwait(false) == InstallOutcome.Started) IsSet(installNow);
+                    if (await InstallAsync(stoppingToken).ConfigureAwait(false) == InstallOutcome.Started) signals.TryWaitInstallNow(TimeSpan.Zero);
                     nextCheck = DateTime.UtcNow + _options.CheckInterval;
                 }
 
@@ -147,26 +171,51 @@ public sealed class UpdateWorker : BackgroundService
         }
 
         _log.LogInformation("Update to {Version} requested by the user", release.Version);
+        // A flag left by an installer that died would otherwise refuse every install until the next periodic check.
+        CheckUnfinishedInstall();
         var outcome = await _updater.InstallAsync(release, ct).ConfigureAwait(false);
         _log.LogInformation("Update to {Version}: {Outcome}", release.Version, outcome);
         return outcome;
     }
 
-    /// <summary>The event for <paramref name="name"/>, or null (logged) when it cannot be created: periodic checks still run.</summary>
-    private WaitHandle? CreateSignal(string name)
+    /// <summary>
+    /// Final review I3: an <c>updating.flag</c> left by an installer that died is removed (older than 15 minutes, no
+    /// installer running), and an install whose installer ended without installing (no flag, phase still Installing:
+    /// the macOS install script removes the flag when the installer fails) is marked as failed. Never throws.
+    /// </summary>
+    private void CheckUnfinishedInstall()
     {
-        if (!OperatingSystem.IsWindows()) return null;
         try
         {
-            return ServiceSignals.Create(name);
+            if (StaleUpdatingFlag.RemoveIfStale(_options.Time, _options.InstallerRunning, _log))
+            {
+                _updater.MarkFailed(StaleFlagError);
+                return;
+            }
+            if (File.Exists(AppPaths.UpdatingFlag) || UpdateStateStore.Load().Phase != UpdatePhase.Installing) return;
+            if (_options.InstallerRunning()) return;
+            _updater.MarkFailed(InstallerEndedError, onlyIf: s => s.Phase == UpdatePhase.Installing);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            _log.LogError(ex, "Could not create the request event '{Name}'; the settings window and tray cannot reach the service", name);
-            return null;
+            _log.LogDebug("Could not check for an unfinished update: {Message}", ex.Message);
         }
     }
 
-    /// <summary>True (once) when the auto-reset event was set since the last look.</summary>
-    private static bool IsSet(WaitHandle? signal) => signal?.WaitOne(0) == true;
+    /// <summary>The request channel, or null (logged) when it cannot be opened: periodic checks still run.</summary>
+    private IServiceSignals? OpenSignals()
+    {
+        try
+        {
+            if (_options.Signals is { } open) return open();
+            if (OperatingSystem.IsWindows()) return ServiceSignals.Open(_log); // logs an event it cannot create itself
+            if (OperatingSystem.IsMacOS()) return UnixSocketSignals.Start(_log);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Could not open the request channel; the settings app and menu bar cannot reach the service");
+            return null;
+        }
+    }
 }

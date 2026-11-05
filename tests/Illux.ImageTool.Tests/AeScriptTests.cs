@@ -3,7 +3,7 @@ using ImageMagick;
 
 namespace Illux.ImageTool.Tests;
 
-/// <summary>Runs the real wrapper scripts (scripts/ae) against the built CLI, the way Esko's Script Runner would.</summary>
+/// <summary>Runs the real wrapper scripts (scripts/ae) against the built CLI, the way Esko's Script Runner would. Windows only (.bat/.ps1; no AE on macOS).</summary>
 [Collection("AppRoot")]
 public sealed class AeScriptTests : AppRootTestBase
 {
@@ -78,19 +78,19 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("ERROR: Unknown parameter 'bogus'.", bad.Output);
     }
 
-    [Fact]
+    [WindowsFact]
     public void Bat_ForwardsArgsAndExitCode()
     {
         AssertForwardsArgsAndExitCode("IlluxImageTool.bat");
     }
 
-    [Fact]
+    [WindowsFact]
     public void Ps1_ForwardsArgsAndExitCode()
     {
         AssertForwardsArgsAndExitCode("IlluxImageTool.ps1");
     }
 
-    [Fact]
+    [WindowsFact]
     public void Bat_TwelveParams_AllForwarded()
     {
         var a = Tiff16("a.tif");
@@ -101,11 +101,11 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Equal(0, exit);
         using var result = new MagickImage(Path.Combine(Out, "a.tif"));
         Assert.Equal(8u, result.Depth);
-        Assert.Equal(60u, result.Width); // 8bit only: the 100 ppi image was not upsampled
+        Assert.Equal(60u, result.Width); // 8bit only: the 100 ppi image was not resampled
         Assert.Contains("Result: OK", output);
     }
 
-    [Fact]
+    [WindowsFact]
     public async Task Bat_WaitsForUpdatingFlag()
     {
         var a = Tiff16("a.tif");
@@ -121,7 +121,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.True(File.Exists(Path.Combine(Out, "a.tif")));
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_UpdateNeverFinishes_Returns2(string name)
     {
@@ -137,7 +137,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.False(Directory.Exists(Out));
     }
 
-    [Fact]
+    [WindowsFact]
     public async Task Ps1_WaitsForUpdatingFlag()
     {
         var a = Tiff16("a.tif");
@@ -152,7 +152,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("Result: OK", output);
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_ExeMissing_Returns2(string name)
     {
@@ -165,7 +165,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Contains("nope.exe", output);
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_OutputFolderWithTrailingBackslash_Works(string name)
     {
@@ -177,7 +177,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.True(File.Exists(Path.Combine(Out, "a.tif")));
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(false)]
     [InlineData(true)]
     public void Bat_NameValueParams_AreNotSplitByCmd(bool quoted)
@@ -191,48 +191,54 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(p => Path.GetFileName(p)!).ToArray());
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Bat_UpsampleWithPpi_IsKept(bool quoted)
+    public void Bat_ResampleWithPpi_IsKept_AndRejectedWithTheSettingsMessage(bool quoted)
     {
-        var a = Tiff16("a.tif");
+        // cmd splits "resample=300" at the "="; joined again, the tool sees the value and explains where ppi is set.
+        // Split, it would instead complain about an unknown parameter '300'.
+        foreach (var name in new[] { "resample", "upsample" })
+        {
+            var a = Tiff16("a.tif");
 
-        var (exit, _) = Run(Script("IlluxImageTool.bat"), [a, Out, "8bit", "upsample=300"], quoted);
+            var (exit, output) = Run(Script("IlluxImageTool.bat"), [a, Out, "8bit", $"{name}=300"], quoted);
 
-        Assert.Equal(0, exit);
-        using var result = new MagickImage(Path.Combine(Out, "a.tif"));
-        Assert.Equal(8u, result.Depth);
-        Assert.Equal(180u, result.Width); // 60 px at 100 ppi -> 300 ppi
+            Assert.Equal(2, exit);
+            Assert.Contains("ERROR: ppi is set in Illux Image Tool Settings (Resolution rules), not in the AE ticket", output);
+        }
     }
 
-    [Theory]
+    [WindowsTheory]
     [InlineData(false)]
     [InlineData(true)]
     public void Bat_NameValueParams_WithOtherParamBetween(bool quoted)
     {
         var a = Tiff16("a.tif");
 
-        var (exit, _) = Run(Script("IlluxImageTool.bat"), [a, Out, "output=pdf", "8bit", "upsample=300"], quoted);
+        var (exit, _) = Run(Script("IlluxImageTool.bat"), [a, Out, "output=pdf", "8bit", "quality=80"], quoted);
 
         Assert.Equal(0, exit);
         Assert.Equal(["a.pdf"], Directory.GetFileSystemEntries(Out).Select(p => Path.GetFileName(p)!).ToArray());
     }
 
-    [Fact]
-    public void Bat_UpsampleWithoutPpi_DoesNotSwallowNextParam()
+    [WindowsFact]
+    public void Bat_ResampleWithoutPpi_DoesNotSwallowNextParam()
     {
-        var a = Tiff16("a.tif");
+        foreach (var name in new[] { "resample", "upsample" })
+        {
+            var a = Tiff16("a.tif");
 
-        var (exit, _) = Run(Script("IlluxImageTool.bat"), [a, Out, "upsample", "8bit"]);
+            var (exit, _) = Run(Script("IlluxImageTool.bat"), [a, Out, name, "8bit"]);
 
-        Assert.Equal(0, exit);
-        using var result = new MagickImage(Path.Combine(Out, "a.tif"));
-        Assert.Equal(8u, result.Depth);
-        Assert.Equal(120u, result.Width); // default 200 ppi
+            Assert.Equal(0, exit);
+            using var result = new MagickImage(Path.Combine(Out, "a.tif"));
+            Assert.Equal(8u, result.Depth);
+            Assert.Equal(180u, result.Width); // default rules: 1.5 cm wide is "Small", 100 -> 300 ppi
+        }
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(Scripts))]
     public void Script_ExeCannotStart_Returns2(string name)
     {
@@ -245,7 +251,7 @@ public sealed class AeScriptTests : AppRootTestBase
         Assert.Equal(2, exit);
     }
 
-    [Theory]
+    [WindowsTheory]
     [MemberData(nameof(ScriptsWithExitCodes))]
     public void Script_ExitCodeOtherThan0Or1_BecomesError(string name, int exeExit, int expected)
     {

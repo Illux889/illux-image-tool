@@ -72,9 +72,9 @@ public sealed class BatchTests : IDisposable
     }
 
     [Fact]
-    public async Task Batch_PhoneJpegRotated90_UpsampledPdfPageIsUpright()
+    public async Task Batch_PhoneJpegRotated90_ResampledPdfPageIsUpright()
     {
-        // 60 × 40 px stored, EXIF orientation 6 (shown 40 wide, 60 high), 100 ppi: upsampled to 200 ppi and re-encoded.
+        // 60 × 40 px stored, EXIF orientation 6 (shown 40 wide, 60 high), 100 ppi: resampled to 300 ppi and re-encoded.
         var input = Jpeg("phone.jpg", ppi: 100);
         using (var image = new MagickImage(input))
         {
@@ -93,6 +93,21 @@ public sealed class BatchTests : IDisposable
             Assert.Equal(OrientationType.RightTop, written.Orientation); // the image itself is not turned
         var raw = System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(Path.Combine(Out, "phone.pdf")));
         Assert.Contains("/MediaBox [0 0 28.8 43.2]", raw); // 40 × 60 pt shown at 100 ppi = 28.8 × 43.2 pt
+    }
+
+    [Fact]
+    public async Task Batch_DownscaledImage_PdfKeepsPhysicalSize()
+    {
+        // 60 x 40 px at 600 ppi is above the 350 ppi limit of the small rule: resampled to 300 ppi (30 x 20 px).
+        // The physical size is kept, so the page stays 7.2 x 4.8 pt.
+        var input = Jpeg("d.jpg", ppi: 600);
+
+        var status = await Run([input], Out, new StringWriter(), ProcessingOptions.Default with { Output = OutputMode.Both });
+
+        Assert.Equal(Status.Ok, status);
+        using (var written = new MagickImage(Path.Combine(Out, "d.jpg"))) Assert.Equal(30u, written.Width);
+        var raw = System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(Path.Combine(Out, "d.pdf")));
+        Assert.Contains("/MediaBox [0 0 7.2 4.8]", raw);
     }
 
     [Fact]
@@ -127,7 +142,7 @@ public sealed class BatchTests : IDisposable
     [Fact]
     public async Task Batch_ExistingOutput_Overwritten()
     {
-        var input = Jpeg("a.jpg");
+        var input = Jpeg("a.jpg", ppi: 300); // inside the default rule's range: copied unchanged
         Directory.CreateDirectory(Out);
         File.WriteAllText(Path.Combine(Out, "a.jpg"), "old");
 
@@ -141,7 +156,7 @@ public sealed class BatchTests : IDisposable
     [Fact]
     public async Task Suffix_Policy_AddsNumber()
     {
-        var input = Jpeg("a.jpg");
+        var input = Jpeg("a.jpg", ppi: 300); // inside the default rule's range: copied unchanged
         Directory.CreateDirectory(Out);
         File.WriteAllText(Path.Combine(Out, "a.jpg"), "old");
         File.WriteAllText(Path.Combine(Out, "a (2).jpg"), "old2");
@@ -222,7 +237,7 @@ public sealed class BatchTests : IDisposable
         Assert.Equal(Status.Error, status);
         var lines = log.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal(4, lines.Length);
-        Assert.Equal("a.jpg: no change needed", lines[0]);
+        Assert.Equal("a.jpg: ppi inside 250–350 (rule \"Small\") — not resampled; no change needed", lines[0]);
         Assert.StartsWith("WARNING: b.jpg: no resolution stored — assumed 72 ppi; ", lines[1]);
         Assert.StartsWith("ERROR: c.jpg: ", lines[2]);
         Assert.Equal("Result: Error (3 files)", lines[3]);

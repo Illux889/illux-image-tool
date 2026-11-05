@@ -1,16 +1,40 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    The settings window and the tray / menu-bar helper, on Avalonia for Windows and macOS. Windows-only parts (service
+    control manager, elevation, LSA) are marked [SupportedOSPlatform("windows")] and only called behind OS checks.
+  -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>Illux.ImageTool.Settings</RootNamespace>
     <AssemblyName>IlluxImageToolSettings</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
-    <ApplicationVisualStyles>true</ApplicationVisualStyles>
-    <ApplicationUseCompatibleTextRendering>false</ApplicationUseCompatibleTextRendering>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Avalonia 12.1.x, pinned (no open advisories on NuGet or GitHub at the time of pinning). -->
+    <PackageReference Include="Avalonia" Version="12.1.5" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.5" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.5" />
+    <!--
+      Avalonia pulls this in for build-time telemetry: an MSBuild task that writes below the user profile and sends
+      usage data to avaloniaui.net on every build. Referenced directly only to switch all of its assets off, so no
+      build of this repository (local or CI) runs it.
+    -->
+    <PackageReference Include="Avalonia.BuildServices" Version="11.3.2" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    SkiaSharp and HarfBuzzSharp ship debug symbols for their native libraries (about 100 MB together). They are of no
+    use to an installed app and would more than double the installer, so they are never published.
+  -->
+  <Target Name="IlluxDropNativeSymbols" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(ResolvedFileToPublish.Extension)' == '.pdb' And '%(ResolvedFileToPublish.AssetType)' == 'native'" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <!-- Core for config, parameters and update state; Cli only for CliHelp.Text, so the AE parameter help is always the same text as the command-line help. -->

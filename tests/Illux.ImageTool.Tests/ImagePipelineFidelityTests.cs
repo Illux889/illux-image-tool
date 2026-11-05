@@ -111,7 +111,7 @@ public sealed class ImagePipelineFidelityTests : IDisposable
     }
 
     [Fact]
-    public async Task Pipeline_PalettePngUpsampled_BecomesTrueColour()
+    public async Task Pipeline_PalettePngResampled_BecomesTrueColour()
     {
         // Resampling creates new colours, so a palette image is written as true colour rather than re-quantised.
         Directory.CreateDirectory(_dir);
@@ -129,7 +129,7 @@ public sealed class ImagePipelineFidelityTests : IDisposable
 
         Assert.Equal(2, PngColorType(output));
         using var result = new MagickImage(output);
-        Assert.Equal(80u, result.Width);
+        Assert.Equal(120u, result.Width);
     }
 
     [Fact]
@@ -148,7 +148,7 @@ public sealed class ImagePipelineFidelityTests : IDisposable
 
         var result = await Run(input, output);
 
-        Assert.Equal(["16→8 bit"], result.Messages);
+        Assert.Equal(["16→8 bit", "ppi inside 250–350 (rule \"Small\") — not resampled"], result.Messages);
         Assert.Equal(SrgbIcc, Icc(output));
     }
 
@@ -169,12 +169,12 @@ public sealed class ImagePipelineFidelityTests : IDisposable
         Assert.True(result.Changed);
         using var stream = File.OpenRead(output);
         using var image = new MagickImage(stream);
-        Assert.Equal(80u, image.Width);
+        Assert.Equal(120u, image.Width);
         Assert.Equal(8u, image.Depth);
     }
 
     [Fact]
-    public async Task Pipeline_UpsampleBeyond65000Pixels_Throws()
+    public async Task Pipeline_EnlargeBeyond65000Pixels_Throws()
     {
         var input = TestImages.Write(_dir, "tiny.jpg", 400, 400, ColorSpace.sRGB, 8, 1);
         Assert.Equal((1.0, 1.0, 1), JpegInspector.Inspect(input).JfifDensity);

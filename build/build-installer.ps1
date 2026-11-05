@@ -4,7 +4,7 @@
 .DESCRIPTION
   1. Fetches jpegtran (build/fetch-jpegtran.ps1).
   2. Downloads Microsoft's VC++ 2015-2022 x64 redistributable and checks its Microsoft signature (R11).
-  3. Publishes the command-line tool, the watcher service and the settings window self-contained for win-x64 into
+  3. Publishes the command-line tool, the watcher service and the (Avalonia) settings app self-contained for win-x64 into
      one shared folder, artifacts/publish/. A file that two apps publish differently must be a .dll; the higher
      version wins (a framework facade vs. the Windows Desktop implementation). Anything else stops the build.
   4. Compiles installer/IlluxImageTool.iss with Inno Setup 6.4 or newer (ISCC.exe).
@@ -145,3 +145,4 @@ $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInv
 [IO.File]::WriteAllText("$installer.sha256", "$hash  $name`n", (New-Object Text.ASCIIEncoding))
 Write-Host "Built $installer"
 Write-Host "SHA-256 $hash"
+Write-Host ('Installer size {0:N1} MB' -f ((Get-Item -LiteralPath $installer).Length / 1MB))

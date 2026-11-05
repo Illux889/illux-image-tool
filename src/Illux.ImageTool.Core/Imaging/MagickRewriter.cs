@@ -34,7 +34,7 @@ internal static class MagickRewriter
             image.Resize(new MagickGeometry(size.Width, size.Height) { IgnoreAspectRatio = true }, ToFilterType(spec.Filter));
             // ImageMagick writes this density into JFIF / TIFF / PNG pHYs and, while writing, also syncs an existing
             // EXIF X/YResolution + ResolutionUnit and Photoshop ResolutionInfo (8BIM 0x03ED) to it, so every
-            // resolution tag in the output agrees (covered by Pipeline_Upsample_RewritesExifAndPhotoshopResolution).
+            // resolution tag in the output agrees (covered by Pipeline_Resample_RewritesExifAndPhotoshopResolution).
             image.Density = new Density(spec.NewResolution.X, spec.NewResolution.Y, DensityUnit.PixelsPerInch);
         }
 

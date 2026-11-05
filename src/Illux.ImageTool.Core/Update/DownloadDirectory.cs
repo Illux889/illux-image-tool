@@ -1,31 +1,56 @@
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Update;
 
 /// <summary>
-/// The installer is run as SYSTEM, so the folder it is downloaded to must not be writable (or replaceable by a
-/// junction) by ordinary users: it is created with an ACL for SYSTEM and Administrators only, and an existing folder
-/// is refused unless it is a real folder owned by one of them.
+/// The installer is run as SYSTEM (root on macOS), so the folder it is downloaded to must not be writable (or
+/// replaceable by a link) by ordinary users.
+/// Windows: it is created with an ACL for SYSTEM and Administrators only, and an existing folder is refused unless it
+/// is a real folder owned by one of them.
+/// macOS: it must lie below <see cref="AppPaths.Root"/>; every folder from Root down to it (both included) that exists
+/// must be a real folder (no symbolic link) owned by root (ruling V5; read with lstat) whose mode gives group and others
+/// no write access. It is created with mode 0700, and an existing one is tightened to 0700.
 /// </summary>
-[SupportedOSPlatform("windows")]
 internal static class DownloadDirectory
 {
     /// <summary>
     /// Checks every existing folder on the way (before anything is created), creates the folder if needed and checks
     /// again. Returns null when it is safe, otherwise the reason it is not. No file in the folder is touched here.
     /// </summary>
-    public static string? PrepareTrusted(string directory)
+    public static string? PrepareTrusted(string directory) => PrepareTrusted(directory, RootUserId);
+
+    /// <summary>The daemon runs as root, which owns the update folder and every folder above it up to Root.</summary>
+    public const uint RootUserId = 0;
+
+    /// <summary>As <see cref="PrepareTrusted(string)"/>; on macOS every folder must be owned by <paramref name="expectedOwner"/>.</summary>
+    internal static string? PrepareTrusted(string directory, uint expectedOwner) =>
+        OperatingSystem.IsWindows() ? PrepareTrustedWindows(directory) : PrepareTrustedUnix(directory, AppPaths.Root, expectedOwner);
+
+    /// <summary>
+    /// A reason the folder cannot be trusted, or null. A folder that does not exist yet is not an error.
+    /// Windows: any existing folder in its path (itself included) that is a link, or that is not owned by
+    /// SYSTEM/Administrators. macOS: see the class remarks.
+    /// </summary>
+    public static string? Verify(string directory) => Verify(directory, RootUserId);
+
+    /// <summary>As <see cref="Verify(string)"/>; on macOS every folder must be owned by <paramref name="expectedOwner"/>.</summary>
+    internal static string? Verify(string directory, uint expectedOwner) =>
+        OperatingSystem.IsWindows() ? VerifyWindows(directory) : VerifyUnix(directory, AppPaths.Root, expectedOwner);
+
+    [SupportedOSPlatform("windows")]
+    private static string? PrepareTrustedWindows(string directory)
     {
         var full = Path.GetFullPath(directory);
-        var problem = Verify(full);
+        var problem = VerifyWindows(full);
         if (problem is not null) return problem;
 
         var info = new DirectoryInfo(full);
         if (!info.Exists) info.Create(CreateSecurity());
 
-        problem = Verify(full);
+        problem = VerifyWindows(full);
         if (problem is not null) return problem;
 
         info.Refresh();
@@ -33,11 +58,8 @@ internal static class DownloadDirectory
         return null;
     }
 
-    /// <summary>
-    /// A reason the folder cannot be trusted, or null: any existing folder in its path (itself included) that is a
-    /// link, or that is not owned by SYSTEM/Administrators. A folder that does not exist yet is not an error.
-    /// </summary>
-    public static string? Verify(string directory)
+    [SupportedOSPlatform("windows")]
+    private static string? VerifyWindows(string directory)
     {
         var existing = new List<DirectoryInfo>();
         for (var d = new DirectoryInfo(Path.GetFullPath(directory)); d is not null; d = d.Parent)
@@ -60,6 +82,54 @@ internal static class DownloadDirectory
         return null;
     }
 
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    [UnsupportedOSPlatform("windows")]
+    private static string? PrepareTrustedUnix(string directory, string root, uint owner)
+    {
+        var full = Path.GetFullPath(directory);
+        var problem = VerifyUnix(full, root, owner);
+        if (problem is not null) return problem;
+
+        if (!Directory.Exists(full)) Directory.CreateDirectory(full, OwnerOnly);
+
+        problem = VerifyUnix(full, root, owner);
+        if (problem is not null) return problem;
+
+        File.SetUnixFileMode(full, OwnerOnly); // also tightens a folder that already existed (checked above: not a link)
+        return null;
+    }
+
+    [UnsupportedOSPlatform("windows")]
+    private static string? VerifyUnix(string directory, string root, uint owner)
+    {
+        if (!UnixNative.IsSupported) return "The update folder can only be checked on macOS on Apple silicon; refusing to use it.";
+
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        if (!full.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            return $"The update folder '{directory}' is not below '{fullRoot}'; refusing to use it.";
+
+        var chain = new List<string>();
+        for (var d = full; d.Length >= fullRoot.Length; d = Path.GetDirectoryName(d)!)
+        {
+            chain.Add(d);
+            if (d.Length == fullRoot.Length) break;
+        }
+
+        foreach (var path in chain)
+        {
+            // lstat: the entry itself; a dangling link does not "exist" but is still there (and a link).
+            if (UnixNative.LStat(path) is not { } status) continue;
+            if (status.Type == UnixNative.SymbolicLinkType)
+                return $"The update folder '{directory}' is (or sits below) a link ('{path}'); refusing to use it.";
+            if (TrustedFolder.Problem(path, owner) is { } reason)
+                return $"The folder '{path}' on the way to the update folder {reason}; refusing to use it.";
+        }
+        return null;
+    }
+
+    [SupportedOSPlatform("windows")]
     public static bool IsTrustedOwner(SecurityIdentifier owner) =>
         owner.IsWellKnown(WellKnownSidType.LocalSystemSid)
         || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)
@@ -68,6 +138,7 @@ internal static class DownloadDirectory
     /// <summary>NT SERVICE\TrustedInstaller owns some system folders; it is as privileged as SYSTEM.</summary>
     private const string TrustedInstallerSid = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
+    [SupportedOSPlatform("windows")]
     private static DirectorySecurity CreateSecurity()
     {
         var security = new DirectorySecurity();

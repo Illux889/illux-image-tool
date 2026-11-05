@@ -12,26 +12,53 @@ namespace Illux.ImageTool.Batch;
 /// get in the output folder itself (its "files" entries are copied as inherit-only), so an output keeps the output
 /// folder's permissions after it is moved into place. The watcher (SYSTEM) only removes an old temp folder that still
 /// looks like this, and never follows a link while doing so.
+/// On macOS only the command-line tool uses it (as the user who runs it): the folder is created with mode 0700 (only that
+/// account may enter or change it) and old ones are never removed automatically. The macOS watched folders do not use it
+/// at all: the folders job stages each file in its private <c>folder-work/</c> and renames the result into Out
+/// (<see cref="FileProcessor"/>, V15 and final review C2), so no temporary folder is ever made in Out there.
 /// </summary>
-[SupportedOSPlatform("windows")]
 internal static class TempFolder
 {
+    /// <summary>rwx for the owner only (macOS).</summary>
+    internal const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
     private const FileSystemRights GenericAll = (FileSystemRights)0x10000000;
     private const FileSystemRights GenericExecute = (FileSystemRights)0x20000000;
     private const FileSystemRights GenericWrite = (FileSystemRights)0x40000000;
     private const FileSystemRights GenericRead = unchecked((FileSystemRights)0x80000000);
 
     /// <summary>Rights that let a principal add, remove, rename or re-permission entries of a folder.</summary>
+    [SupportedOSPlatform("windows")]
     private const FileSystemRights WriteRights = FileSystemRights.WriteData | FileSystemRights.AppendData
         | FileSystemRights.WriteExtendedAttributes | FileSystemRights.DeleteSubdirectoriesAndFiles
         | FileSystemRights.WriteAttributes | FileSystemRights.Delete | FileSystemRights.ChangePermissions
         | FileSystemRights.TakeOwnership | GenericWrite | GenericAll;
 
     /// <summary>
-    /// Creates the folder with the protected ACL. When that is not possible (for example the output folder's permissions
-    /// cannot be read on some network drives) it is created as an ordinary folder, which the watcher then never removes.
+    /// Windows: creates the folder with the protected ACL. When that is not possible (for example the output folder's
+    /// permissions cannot be read on some network drives) it is created as an ordinary folder, which the watcher then
+    /// never removes. macOS: creates it with mode 0700.
     /// </summary>
     public static void Create(string path)
+    {
+        if (OperatingSystem.IsWindows()) CreateWindows(path);
+        else CreateUnix(path);
+    }
+
+    /// <summary>
+    /// The output folder as usual; the temp folder itself with mode 0700 (a umask can only take bits away). No chmod
+    /// afterwards: it would follow a link, and the caller checks for one right after (R44).
+    /// </summary>
+    [UnsupportedOSPlatform("windows")]
+    private static void CreateUnix(string path)
+    {
+        var outputFolder = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        Directory.CreateDirectory(outputFolder);
+        Directory.CreateDirectory(path, OwnerOnly);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateWindows(string path)
     {
         var outputFolder = Path.GetDirectoryName(Path.GetFullPath(path))!;
         Directory.CreateDirectory(outputFolder);
@@ -46,6 +73,7 @@ internal static class TempFolder
     }
 
     /// <summary>Null when <paramref name="folder"/> looks like a folder made by <see cref="Create"/>, otherwise why not.</summary>
+    [SupportedOSPlatform("windows")]
     public static string? WhyNotOurs(DirectoryInfo folder)
     {
         folder.Refresh();
@@ -71,6 +99,7 @@ internal static class TempFolder
     /// and each entry's attributes are read again right before it is deleted. Throws <see cref="IOException"/> (leaving
     /// the rest) when a folder on the way has become a link.
     /// </summary>
+    [SupportedOSPlatform("windows")]
     public static void DeleteTree(string root)
     {
         DeleteContents(root, root);
@@ -78,6 +107,7 @@ internal static class TempFolder
         Directory.Delete(root, recursive: false);
     }
 
+    [SupportedOSPlatform("windows")]
     private static void DeleteContents(string root, string folder)
     {
         ThrowIfLinkOnTheWay(root, folder);
@@ -99,6 +129,7 @@ internal static class TempFolder
     }
 
     /// <summary>Every folder from <paramref name="root"/> down to <paramref name="folder"/> must still be a real folder.</summary>
+    [SupportedOSPlatform("windows")]
     private static void ThrowIfLinkOnTheWay(string root, string folder)
     {
         for (var current = folder; ; current = Path.GetDirectoryName(current)!)
@@ -108,6 +139,7 @@ internal static class TempFolder
         }
     }
 
+    [SupportedOSPlatform("windows")]
     private static DirectorySecurity CreateSecurity(string outputFolder)
     {
         var security = new DirectorySecurity();
@@ -133,6 +165,7 @@ internal static class TempFolder
     }
 
     /// <summary>Maps generic rights (common on inherit-only entries) to the file rights they stand for.</summary>
+    [SupportedOSPlatform("windows")]
     private static FileSystemRights Specific(FileSystemRights rights)
     {
         var result = rights & FileSystemRights.FullControl;
@@ -143,8 +176,10 @@ internal static class TempFolder
         return result;
     }
 
+    [SupportedOSPlatform("windows")]
     private static bool IsTrusted(SecurityIdentifier sid) => TrustedSids().Contains(sid);
 
+    [SupportedOSPlatform("windows")]
     private static SecurityIdentifier[] TrustedSids()
     {
         using var identity = WindowsIdentity.GetCurrent();

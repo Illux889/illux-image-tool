@@ -7,6 +7,9 @@ public sealed class ParameterException(string message) : Exception(message);
 /// <summary>Parses the Automation Engine parameter list into <see cref="ProcessingOptions"/>.</summary>
 public static class ParameterParser
 {
+    internal const string PpiInTicketMessage =
+        "ppi is set in Illux Image Tool Settings (Resolution rules), not in the AE ticket";
+
     public static ProcessingOptions Parse(IEnumerable<string> parameters)
     {
         ArgumentNullException.ThrowIfNull(parameters);
@@ -31,12 +34,10 @@ public static class ParameterParser
                 case "baseline" when value is null:
                     operations |= Operations.Baseline;
                     break;
-                case "upsample":
-                    operations |= Operations.Upsample;
-                    if (value is not null)
-                    {
-                        options = options with { TargetPpi = ParseInt(raw, value, 1, 2400) };
-                    }
+                case "resample" or "upsample":
+                    // v0.1 took the ppi here (upsample=300); it now comes from the resolution rules in Settings.
+                    if (value is not null) throw new ParameterException(PpiInTicketMessage);
+                    operations |= Operations.Resample;
                     break;
                 case "output":
                     options = options with { Output = ParseEnum<OutputMode>(raw, value) };

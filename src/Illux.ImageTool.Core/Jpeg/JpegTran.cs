@@ -20,7 +20,11 @@ public sealed class JpegTranException : Exception
 /// </remarks>
 public static class JpegTran
 {
-    public static string ExePath { get; } = Path.Combine(AppContext.BaseDirectory, "tools", "jpegtran", "jpegtran.exe");
+    /// <summary><c>tools/jpegtran/jpegtran.exe</c> on Windows, <c>tools/jpegtran/jpegtran</c> on macOS.</summary>
+    public static string ExePath { get; } =
+        Path.Combine(AppContext.BaseDirectory, "tools", "jpegtran", ExeFileName(OperatingSystem.IsWindows()));
+
+    internal static string ExeFileName(bool windows) => windows ? "jpegtran.exe" : "jpegtran";
 
     /// <summary>
     /// Rewrites <paramref name="inputPath"/> as a baseline JPEG without touching pixel data or any metadata segment.
@@ -29,8 +33,11 @@ public static class JpegTran
     public static Task ToBaselineAsync(string inputPath, string outputPath, CancellationToken ct = default) =>
         ToBaselineAsync(inputPath, outputPath, ExePath, ct);
 
-    internal static string MissingExeMessage(string exePath) =>
-        $@"jpegtran.exe not found at '{exePath}'. Run build\fetch-jpegtran.ps1 and rebuild.";
+    internal static string MissingExeMessage(string exePath) => MissingExeMessage(exePath, OperatingSystem.IsWindows());
+
+    internal static string MissingExeMessage(string exePath, bool windows) => windows
+        ? $@"jpegtran.exe not found at '{exePath}'. Run build\fetch-jpegtran.ps1 and rebuild."
+        : $"jpegtran not found at '{exePath}'. Run build/fetch-jpegtran.sh and rebuild.";
 
     internal static async Task ToBaselineAsync(string inputPath, string outputPath, string exePath, CancellationToken ct)
     {
@@ -67,7 +74,7 @@ public static class JpegTran
             }
             catch (Exception ex) when (ex is Win32Exception or InvalidOperationException)
             {
-                throw new JpegTranException($"Could not start jpegtran.exe: {ex.Message}", ex);
+                throw new JpegTranException($"Could not start {ExeFileName(OperatingSystem.IsWindows())}: {ex.Message}", ex);
             }
 
             // Any pump failure (or cancellation) kills jpegtran so that no other pump stays blocked on a pipe.

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Security.Principal;
 
 namespace Illux.ImageTool.Settings;
@@ -8,6 +9,7 @@ namespace Illux.ImageTool.Settings;
 /// Administrator, or the service cannot install updates). Only direct members are seen: an account that is an
 /// administrator through a domain group cannot be told apart cheaply, so the caller only warns.
 /// </summary>
+[SupportedOSPlatform("windows")]
 internal static class LocalAdministrators
 {
     private const int NerrSuccess = 0;

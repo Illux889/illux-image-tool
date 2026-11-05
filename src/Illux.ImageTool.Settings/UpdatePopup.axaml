@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Illux.ImageTool.Settings.UpdatePopup"
+        Title="Illux Image Tool"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        WindowStartupLocation="Manual">
+  <StackPanel Margin="14" Spacing="10">
+    <TextBlock x:Name="Message" FontSize="13" TextWrapping="Wrap" MaxWidth="330" HorizontalAlignment="Left" />
+    <StackPanel Orientation="Horizontal" Spacing="8">
+      <Button x:Name="UpdateNowButton" Content="Update now" Width="130" Height="36" FontWeight="Bold"
+              HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+      <Button x:Name="LaterButton" Content="Later" Width="90" Height="36"
+              HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+      <Button x:Name="CloseButton" Content="Close" Width="90" Height="36" IsVisible="False"
+              HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+    </StackPanel>
+  </StackPanel>
+</Window>

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace Illux.ImageTool.Settings;
 
@@ -10,6 +11,7 @@ public enum ServiceAction { Start, Stop, Account }
 /// The watcher service from the settings window. Reading the status needs no rights; start, stop and the account change
 /// run in a second copy of this exe started with <c>runas</c> (<c>--service start|stop|account</c>).
 /// </summary>
+[SupportedOSPlatform("windows")]
 internal static class ServiceControl
 {
     public const string ServiceName = "IlluxImageToolWatcher";

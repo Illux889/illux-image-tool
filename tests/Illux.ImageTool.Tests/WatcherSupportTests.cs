@@ -185,6 +185,56 @@ public sealed class StaleUpdatingFlagTests : AppRootTestBase
     [Fact]
     public void NoFlag_NothingHappens() =>
         Assert.False(StaleUpdatingFlag.RemoveIfStale(Now, () => false, NullLogger.Instance));
+
+    [Theory]
+    [InlineData("IlluxImageTool-Setup-0.2.0", true, true)]
+    [InlineData("illuximagetool-setup-0.2.0.tmp", true, true)]
+    [InlineData("installer", true, false)]
+    [InlineData("/usr/sbin/installer", false, true)]
+    [InlineData("installer", false, false)]
+    [InlineData("/tmp/installer", false, false)] // a user's program named installer must not hold the flag forever (I3)
+    [InlineData("/Users/someone/usr/sbin/installer", false, false)]
+    [InlineData("/usr/sbin/Installer", false, false)]
+    [InlineData("/usr/sbin/installerd", false, false)]
+    [InlineData("IlluxImageTool-Setup-0.2.0", false, false)]
+    public void InstallerProcess_IsTheSetupOnWindows_AndUsrSbinInstallerOnMac(string nameOrPath, bool windows, bool expected) =>
+        Assert.Equal(expected, StaleUpdatingFlag.IsInstallerProcess(nameOrPath, windows));
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void ProcessPath_OnMac_IsTheExecutablesFullPath()
+    {
+        using var sleep = System.Diagnostics.Process.Start("/bin/sleep", "30")!;
+        try
+        {
+            Assert.Equal("/bin/sleep", StaleUpdatingFlag.ProcessPath(sleep.Id));
+            Assert.Null(StaleUpdatingFlag.ProcessPath(-1));
+        }
+        finally
+        {
+            sleep.Kill();
+        }
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void InstallerRunning_OnMac_AProgramNamedInstallerElsewhere_DoesNotCount()
+    {
+        Directory.CreateDirectory(Dir);
+        var fake = Path.Combine(Dir, "installer");
+        File.Copy("/bin/sleep", fake);
+        File.SetUnixFileMode(fake, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        using var running = System.Diagnostics.Process.Start(fake, "30")!;
+        try
+        {
+            Assert.Equal("installer", running.ProcessName);
+            Assert.False(StaleUpdatingFlag.IsInstallerRunning());
+        }
+        finally
+        {
+            running.Kill();
+        }
+    }
 }
 
 [Collection("AppRoot")]
@@ -200,5 +250,160 @@ public sealed class FileLoggerDefaultFolderTests : AppRootTestBase
         Assert.Single(files);
         Assert.Contains("hello from the service", File.ReadAllText(files[0]));
         Assert.False(Directory.Exists(AppPaths.LogsDir)); // R38
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void ServiceLogs_OnMac_AreOwnerOnly()
+    {
+        Directory.CreateDirectory(AppPaths.ServiceLogsDir);
+        File.SetUnixFileMode(AppPaths.ServiceLogsDir, (UnixFileMode)0b111_101_101);
+
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the daemon");
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(AppPaths.ServiceLogsDir));
+        Assert.Single(Directory.GetFiles(AppPaths.ServiceLogsDir, FileLoggerProvider.Prefix + "*.log"));
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void ServiceLogs_OnMac_NewFolderIsOwnerOnly()
+    {
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the daemon");
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(AppPaths.ServiceLogsDir));
+    }
+
+    [MacFact]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    public void FolderLogs_OnMac_KeepTheirReadableMode()
+    {
+        // V15: the folders job logs into folder-logs/ (0755, so administrators can read it), not into service-logs/.
+        var readable = (UnixFileMode)0b111_101_101;
+        using (var provider = new FileLoggerProvider(() => AppPaths.FolderLogsDir, folderMode: readable))
+            provider.CreateLogger("Test").LogInformation("hello from the folders job");
+
+        Assert.Equal(readable, File.GetUnixFileMode(AppPaths.FolderLogsDir));
+        Assert.Contains("hello from the folders job", File.ReadAllText(Assert.Single(Directory.GetFiles(AppPaths.FolderLogsDir))));
+        Assert.False(Directory.Exists(AppPaths.ServiceLogsDir));
+    }
+
+    [MacFact]
+    public void ServiceLogs_OnMac_FolderThatIsALink_IsNotWrittenThrough()
+    {
+        var elsewhere = Path.Combine(Dir, "elsewhere");
+        Directory.CreateDirectory(elsewhere);
+        Directory.CreateDirectory(AppPaths.Root);
+        Directory.CreateSymbolicLink(AppPaths.ServiceLogsDir, elsewhere);
+
+        using (var provider = new FileLoggerProvider())
+            provider.CreateLogger("Test").LogInformation("hello from the daemon");
+
+        Assert.Empty(Directory.GetFiles(elsewhere));
+    }
+}
+
+/// <summary>The watcher as launchd runs it on macOS: a plain process (no Windows service, no event log) that SIGTERM stops.</summary>
+[Collection("AppRoot")]
+public sealed class WatcherHostTests : AppRootTestBase
+{
+    private System.Diagnostics.Process StartWatcher(params string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "IlluxImageToolWatcher"))
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = "/",
+        };
+        foreach (var arg in args) psi.ArgumentList.Add(arg);
+        psi.Environment["ILLUX_IMAGETOOL_ROOT"] = AppRoot;
+        return System.Diagnostics.Process.Start(psi)!;
+    }
+
+    private static string? WaitForLog(string folder, string text, System.Diagnostics.Process watcher, Task<string> errors)
+    {
+        for (var waited = 0; waited < 30000; waited += 200)
+        {
+            Thread.Sleep(200);
+            if (watcher.HasExited) Assert.Fail("the watcher stopped on its own: " + errors.Result);
+            var files = Directory.Exists(folder) ? Directory.GetFiles(folder, FileLoggerProvider.Prefix + "*.log") : [];
+            if (files.Length != 1) continue;
+            var log = File.ReadAllText(files[0]);
+            if (log.Contains(text, StringComparison.Ordinal)) return log;
+        }
+        return null;
+    }
+
+    private static void StopWithSigterm(System.Diagnostics.Process watcher, Task<string> output, Task<string> errors)
+    {
+        using (var kill = System.Diagnostics.Process.Start("kill", ["-TERM", watcher.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)]))
+            kill.WaitForExit();
+        Assert.True(watcher.WaitForExit(20000), "SIGTERM did not stop the watcher");
+        Assert.Equal(0, watcher.ExitCode);
+        Assert.DoesNotContain("Unhandled", errors.Result + output.Result, StringComparison.Ordinal);
+    }
+
+    [MacFact]
+    public void Watcher_OnMac_WithoutARole_IsRefusedAndSaysSo()
+    {
+        using var watcher = StartWatcher();
+        var errors = watcher.StandardError.ReadToEndAsync();
+        watcher.StandardOutput.ReadToEnd();
+
+        Assert.True(watcher.WaitForExit(20000), "the watcher without a role did not stop");
+        Assert.NotEqual(0, watcher.ExitCode);
+        Assert.Contains("--role updates", errors.Result);
+        // The refusal is also logged (the daemon's log; here the test user owns Root, so it can be written).
+        var log = File.ReadAllText(Assert.Single(Directory.GetFiles(AppPaths.ServiceLogsDir, FileLoggerProvider.Prefix + "*.log")));
+        Assert.Contains("--role updates", log);
+    }
+
+    [MacFact]
+    public void Watcher_OnMac_FoldersRole_LogsIntoFolderLogs_AndOpensNoControlSocket()
+    {
+        using var watcher = StartWatcher("--role", "folders");
+        var output = watcher.StandardOutput.ReadToEndAsync();
+        var errors = watcher.StandardError.ReadToEndAsync();
+        try
+        {
+            var log = WaitForLog(AppPaths.FolderLogsDir, "Watcher started", watcher, errors);
+            Assert.NotNull(log);
+            Assert.Contains("role: folders", log);
+            Assert.DoesNotContain("request channel", log);
+            Assert.False(Directory.Exists(Path.Combine(AppRoot, "run")));
+            Assert.False(Directory.Exists(AppPaths.ServiceLogsDir));
+            StopWithSigterm(watcher, output, errors);
+        }
+        finally
+        {
+            if (!watcher.HasExited) watcher.Kill();
+        }
+    }
+
+    [MacFact]
+    public void Watcher_OnMac_UpdatesRole_RunsAsPlainProcess_LogsToServiceLogs_RunsNoWatchedFolders_AndStopsOnSigterm()
+    {
+        using var watcher = StartWatcher("--role", "updates");
+        var output = watcher.StandardOutput.ReadToEndAsync();
+        var errors = watcher.StandardError.ReadToEndAsync();
+        try
+        {
+            // Not root here, so the control socket is refused (Root is not owned by root) and that is logged.
+            var log = WaitForLog(AppPaths.ServiceLogsDir, "Could not open the request channel", watcher, errors);
+            Assert.NotNull(log);
+            Assert.Contains("not 0", log);
+            // V15: the root job runs no watched folders.
+            Assert.Contains("role: updates", log);
+            Assert.DoesNotContain("Watcher started", log);
+            Assert.False(Directory.Exists(AppPaths.FolderLogsDir));
+            StopWithSigterm(watcher, output, errors);
+        }
+        finally
+        {
+            if (!watcher.HasExited) watcher.Kill();
+        }
     }
 }

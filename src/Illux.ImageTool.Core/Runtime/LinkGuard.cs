@@ -20,16 +20,24 @@ public static class LinkGuard
         if (IsLink(file)) throw new IOException($"'{file}' is a link; refusing to write through it.");
     }
 
-    /// <summary>True when <paramref name="path"/> exists and is a reparse point (the link itself is looked at, not its target).</summary>
+    /// <summary>
+    /// True when <paramref name="path"/> exists and is a link (the link itself is looked at, not its target): a reparse
+    /// point on Windows, a symbolic link on macOS (.NET reports those as reparse points too; the link target is checked as well).
+    /// </summary>
     public static bool IsLink(string path)
     {
         try
         {
-            return File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+            if (File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint)) return true;
+            return !OperatingSystem.IsWindows() && new FileInfo(path).LinkTarget is not null;
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return false;
         }
     }
+
+    /// <summary>True when the entry (as listed, not followed) is a link; see <see cref="IsLink(string)"/>.</summary>
+    public static bool IsLink(FileSystemInfo entry) =>
+        entry.Attributes.HasFlag(FileAttributes.ReparsePoint) || (!OperatingSystem.IsWindows() && entry.LinkTarget is not null);
 }

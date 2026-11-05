@@ -11,7 +11,13 @@ public static class AppPaths
     /// <summary>Environment variable that moves <see cref="Root"/>; used by tests.</summary>
     public const string RootOverrideVariable = "ILLUX_IMAGETOOL_ROOT";
 
-    /// <summary><c>C:\ProgramData\Illux Image Tool</c>, unless <see cref="RootOverrideVariable"/> is set.</summary>
+    /// <summary>The macOS data folder (machine-wide, like ProgramData on Windows).</summary>
+    public const string MacRoot = "/Library/Application Support/Illux Image Tool";
+
+    /// <summary>
+    /// <c>C:\ProgramData\Illux Image Tool</c> on Windows, <see cref="MacRoot"/> on macOS, unless
+    /// <see cref="RootOverrideVariable"/> is set.
+    /// </summary>
     public static string Root
     {
         get
@@ -19,9 +25,12 @@ public static class AppPaths
             var overridden = Environment.GetEnvironmentVariable(RootOverrideVariable);
             return !string.IsNullOrWhiteSpace(overridden)
                 ? overridden
-                : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Illux Image Tool");
+                : DefaultRoot(OperatingSystem.IsWindows(), Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
         }
     }
+
+    internal static string DefaultRoot(bool windows, string commonApplicationData) =>
+        windows ? Path.Combine(commonApplicationData, "Illux Image Tool") : MacRoot;
 
     public static string ConfigFile => Path.Combine(Root, "config.json");
 
@@ -34,4 +43,13 @@ public static class AppPaths
     public static string RunsDir => Path.Combine(Root, "runs");
 
     public static string UpdatingFlag => Path.Combine(Root, "updating.flag");
+
+    /// <summary>macOS (V15): the account that runs the watched folders, one line, written by the package (root:wheel 0644).</summary>
+    public static string FolderAccountFile => Path.Combine(Root, "folder-account");
+
+    /// <summary>macOS (V15): the folders job's private work folder (owned by the folder account, 0700): ImageMagick's temp and the staging folders.</summary>
+    public static string FolderWorkDir => Path.Combine(Root, "folder-work");
+
+    /// <summary>macOS (V15): the folders job's own log (owned by the folder account, 0755).</summary>
+    public static string FolderLogsDir => Path.Combine(Root, "folder-logs");
 }

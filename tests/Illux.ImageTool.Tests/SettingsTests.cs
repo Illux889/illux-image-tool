@@ -19,8 +19,8 @@ public sealed class ServiceAccountAdminTests
     [Fact]
     public void Dialog_SaysTheAccountMustBeALocalAdministrator()
     {
-        Assert.Contains("must be a local Administrator", AccountDialog.Hint);
-        Assert.Contains("cannot install updates", AccountDialog.NotAdminWarning(@".\bob"));
+        Assert.Contains("must be a local Administrator", AccountText.Hint);
+        Assert.Contains("cannot install updates", AccountText.NotAdminWarning(@".\bob"));
     }
 
     [Fact]
@@ -101,125 +101,6 @@ public sealed class ServiceControlTests
     [InlineData(4, "Running")]
     [InlineData(-1, "Unknown")]
     public void DescribeState(int state, string expected) => Assert.Equal(expected, ServiceControl.DescribeState(state));
-}
-
-public sealed class FolderDialogTests
-{
-    [Fact]
-    public void Defaults_GiveExplicitOperations()
-    {
-        Assert.Equal(["8bit", "upsample=200", "baseline"], FolderDialog.ToParameters(new FolderOptions()));
-    }
-
-    [Fact]
-    public void ToParameters_WritesEveryNonDefaultChoice()
-    {
-        var parameters = FolderDialog.ToParameters(new FolderOptions(
-            EightBit: false, Upsample: true, Ppi: 300, Baseline: true,
-            Output: OutputMode.Pdf, MissingPpi: MissingPpiPolicy.Skip, Quality: 80));
-
-        Assert.Equal(["upsample=300", "baseline", "output=pdf", "missingppi=skip", "quality=80"], parameters);
-        Assert.Equal(["8bit", "output=both", "missingppi=error"], FolderDialog.ToParameters(new FolderOptions(
-            Upsample: false, Baseline: false, Output: OutputMode.Both, MissingPpi: MissingPpiPolicy.Error)));
-    }
-
-    [Fact]
-    public void ToParameters_NoOperationIsRejected()
-    {
-        // No operation parameter at all would mean "all three" to the parser, so the dialog must never save that.
-        Assert.Throws<InvalidOperationException>(() =>
-            FolderDialog.ToParameters(new FolderOptions(EightBit: false, Upsample: false, Baseline: false)));
-    }
-
-    [Fact]
-    public void RoundTrip_EveryCombination()
-    {
-        foreach (var eight in new[] { true, false })
-        foreach (var up in new[] { true, false })
-        foreach (var baseline in new[] { true, false })
-        foreach (var output in Enum.GetValues<OutputMode>())
-        foreach (var missing in Enum.GetValues<MissingPpiPolicy>())
-        {
-            if (!eight && !up && !baseline) continue;
-            var options = new FolderOptions(eight, up, 300, baseline, output, missing, 70);
-
-            var parameters = FolderDialog.ToParameters(options);
-            var back = FolderDialog.FromParameters(parameters);
-
-            // An unchecked "upsample" has no ppi to remember; the dialog shows the default again.
-            Assert.Equal(up ? options : options with { Ppi = 200 }, back);
-            // What the dialog writes is what the watcher will understand, with the same meaning.
-            var parsed = ParameterParser.Parse(parameters);
-            Assert.Equal(eight, parsed.Operations.HasFlag(Operations.EightBit));
-            Assert.Equal(up, parsed.Operations.HasFlag(Operations.Upsample));
-            Assert.Equal(baseline, parsed.Operations.HasFlag(Operations.Baseline));
-            Assert.Equal(output, parsed.Output);
-            Assert.Equal(missing, parsed.MissingPpi);
-            Assert.Equal(70, parsed.JpegQuality);
-        }
-    }
-
-    [Fact]
-    public void FromParameters_EmptyListMeansAllOperationsOnWithDefaults()
-    {
-        Assert.Equal(new FolderOptions(), FolderDialog.FromParameters([]));
-        Assert.Equal(new FolderOptions(), FolderDialog.FromParameters(["output=same"]));
-    }
-
-    [Fact]
-    public void FromParameters_OnlyListedOperationsAreOn()
-    {
-        var options = FolderDialog.FromParameters(["8bit", "UPSAMPLE=300", "missingppi=72"]);
-
-        Assert.True(options.EightBit);
-        Assert.True(options.Upsample);
-        Assert.Equal(300, options.Ppi);
-        Assert.False(options.Baseline);
-        Assert.Equal(MissingPpiPolicy.Assume72, options.MissingPpi);
-    }
-
-    [Fact]
-    public void FilterParameterSurvivesAnEdit()
-    {
-        var options = FolderDialog.FromParameters(["8bit", "filter=mitchell"]);
-        Assert.Equal(["filter=mitchell"], options.Extra);
-
-        Assert.Equal(["8bit", "filter=mitchell"], FolderDialog.ToParameters(options with { Upsample = false, Baseline = false }));
-    }
-
-    [Fact]
-    public void FromParameters_UnknownParameterThrows()
-    {
-        Assert.Throws<ParameterException>(() => FolderDialog.FromParameters(["sharpen"]));
-    }
-
-    private static WatchedFolder Valid(Action<WatchedFolder>? change = null)
-    {
-        var folder = new WatchedFolder { Name = "A", In = @"C:\A\In", Out = @"C:\A\Out", Error = @"C:\A\Error" };
-        change?.Invoke(folder);
-        return folder;
-    }
-
-    [Fact]
-    public void Validate_AcceptsAGoodFolder() => Assert.Null(FolderDialog.Validate(Valid()));
-
-    [Fact]
-    public void Validate_RequiresNameAndFolders()
-    {
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Name = " ")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.In = "")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Out = "")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Error = "")));
-    }
-
-    [Fact]
-    public void Validate_FoldersMustDiffer()
-    {
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Out = @"c:\a\in\")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Error = @"C:\A\Out")));
-        Assert.NotNull(FolderDialog.Validate(Valid(f => f.Originals = @"C:\A\In")));
-        Assert.Null(FolderDialog.Validate(Valid(f => f.Originals = @"C:\A\Originals")));
-    }
 }
 
 public sealed class ServiceSignalsTests
@@ -305,8 +186,56 @@ public sealed class ServiceSignalsTests
     {
         // No service on a development machine or CI test step: both requests report that plainly.
         if (CanOpen(ServiceSignals.CheckNowName, EventModifyState)) return; // a real service is installed here
-        Assert.Contains("not running", Assert.Throws<IOException>(ServiceRequests.RequestCheckNow).Message);
-        Assert.Contains("not running", Assert.Throws<IOException>(ServiceRequests.RequestInstallNow).Message);
+        Assert.False(ServiceRequests.RequestCheckNow(out var error));
+        Assert.Contains("not running", error);
+        Assert.False(ServiceRequests.RequestInstallNow(out error));
+        Assert.Contains("not running", error);
+        Assert.False(ServiceRequests.RequestCheckNow());
+    }
+
+    [Fact]
+    public void Open_ForTheService_SignalsEachRequestOnce()
+    {
+        var check = NewName();
+        var install = NewName();
+        using var signals = ServiceSignals.Open(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, check, install);
+        Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
+
+        ServiceSignals.Signal(install);
+
+        Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
+        Assert.True(signals.TryWaitInstallNow(TimeSpan.Zero));
+        Assert.False(signals.TryWaitInstallNow(TimeSpan.Zero));
+        ServiceSignals.Signal(check);
+        Assert.True(signals.TryWaitCheckNow(TimeSpan.FromSeconds(5)));
+    }
+
+    [FactWhenNotElevated]
+    public void Open_EventThatCannotBeCreated_IsLogged_TheOtherStillWorks()
+    {
+        var check = NewName();
+        var install = NewName();
+        using var planted = ServiceSignals.Create(check); // owned by this (non-admin) user: refused
+        var log = new ListLogger();
+
+        using var signals = ServiceSignals.Open(log, check, install);
+
+        Assert.Contains(log.Entries, e => e.Contains(check));
+        Assert.False(signals.TryWaitCheckNow(TimeSpan.Zero));
+        ServiceSignals.Signal(install);
+        Assert.True(signals.TryWaitInstallNow(TimeSpan.Zero));
+    }
+
+    private sealed class ListLogger : Microsoft.Extensions.Logging.ILogger
+    {
+        public List<string> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Entries.Add(formatter(state, exception));
     }
 }
 

@@ -7,10 +7,46 @@ namespace Illux.ImageTool.Update;
 /// <summary>The latest full release: its version and where to fetch the installer and its checksum.</summary>
 public sealed record ReleaseInfo(Version Version, Uri InstallerUrl, Uri ChecksumUrl);
 
+/// <summary>Which installer of a release this system uses.</summary>
+public enum ReleasePlatform
+{
+    /// <summary>Windows: <c>IlluxImageTool-Setup-X.Y.Z.exe</c> (Inno Setup).</summary>
+    WindowsX64,
+
+    /// <summary>macOS on Apple silicon: <c>IlluxImageTool-X.Y.Z-macOS-arm64.pkg</c>.</summary>
+    MacOSArm64,
+}
+
+/// <summary>Gives <see cref="ReleasePlatform"/> its <c>ReleasePlatform.Current</c>.</summary>
+public static class ReleasePlatformExtensions
+{
+    extension(ReleasePlatform)
+    {
+        /// <summary>
+        /// The platform of the running system: macOS uses the pkg (an Intel Mac too, although only Apple silicon is
+        /// supported), every other system the Windows installer. That is safe because the updater refuses to work on a
+        /// system it does not support: on any Unix other than macOS on Apple silicon <see cref="DownloadDirectory"/>
+        /// refuses the update folder, so nothing is downloaded or run.
+        /// </summary>
+        public static ReleasePlatform Current => OperatingSystem.IsMacOS() ? ReleasePlatform.MacOSArm64 : ReleasePlatform.WindowsX64;
+    }
+}
+
 /// <summary>Asks the public GitHub API (no key) for the latest full release of the project.</summary>
-public sealed partial class ReleaseClient(HttpClient http)
+public sealed partial class ReleaseClient(HttpClient http, ReleasePlatform platform)
 {
     public const string LatestReleaseUrl = "https://api.github.com/repos/Illux889/illux-image-tool/releases/latest";
+
+    /// <summary>The platform whose installer <see cref="GetLatestAsync"/> looks for (and the updater installs).</summary>
+    public ReleasePlatform Platform => platform;
+
+    /// <summary>The installer's asset name in a release (its checksum is this name plus <c>.sha256</c>).</summary>
+    public static string InstallerFileName(ReleasePlatform platform, Version version) => platform switch
+    {
+        ReleasePlatform.WindowsX64 => $"IlluxImageTool-Setup-{version}.exe",
+        ReleasePlatform.MacOSArm64 => $"IlluxImageTool-{version}-macOS-arm64.pkg",
+        _ => throw new ArgumentOutOfRangeException(nameof(platform), platform, "Unknown platform."),
+    };
 
     private static readonly string AppVersion =
         typeof(ReleaseClient).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
@@ -20,7 +56,7 @@ public sealed partial class ReleaseClient(HttpClient http)
 
     /// <summary>
     /// The latest release, or null when there is none, it is a draft/pre-release, the tag is not <c>vX.Y.Z</c>, or the
-    /// installer or checksum asset is missing. Network and HTTP errors throw (<see cref="HttpRequestException"/>).
+    /// installer of <see cref="Platform"/> or its checksum asset is missing. Network and HTTP errors throw (<see cref="HttpRequestException"/>).
     /// </summary>
     public async Task<ReleaseInfo?> GetLatestAsync(CancellationToken ct)
     {
@@ -37,7 +73,7 @@ public sealed partial class ReleaseClient(HttpClient http)
         return Parse(doc.RootElement);
     }
 
-    private static ReleaseInfo? Parse(JsonElement root)
+    private ReleaseInfo? Parse(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) return null;
         if (IsTrue(root, "draft") || IsTrue(root, "prerelease")) return null;
@@ -50,7 +86,7 @@ public sealed partial class ReleaseClient(HttpClient http)
             || !int.TryParse(match.Groups[3].Value, out var patch)) return null;
 
         var version = new Version(major, minor, patch);
-        var installerName = $"IlluxImageTool-Setup-{version}.exe";
+        var installerName = InstallerFileName(platform, version);
         var installer = FindAsset(root, installerName);
         var checksum = FindAsset(root, installerName + ".sha256");
         return installer is null || checksum is null ? null : new ReleaseInfo(version, installer, checksum);

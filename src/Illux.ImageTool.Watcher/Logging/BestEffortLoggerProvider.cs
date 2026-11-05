@@ -1,3 +1,4 @@
+using Illux.ImageTool.Runtime;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -35,7 +36,7 @@ public sealed class BestEffortLoggerProvider(ILoggerProvider inner, LogLevel min
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (!IsEnabled(logLevel)) return;
-            try { inner.Log(logLevel, eventId, state, exception, formatter); }
+            try { inner.Log(logLevel, eventId, state, exception, (s, e) => LogText.Clean(formatter(s, e))); }
             catch (Exception) { /* the file log is the record of truth */ }
         }
     }

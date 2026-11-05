@@ -20,14 +20,25 @@ public sealed partial class Updater
 
     private const int MaxChecksumFileBytes = 4096;
 
+    /// <summary>
+    /// macOS: run by <c>/bin/sh</c> with the package as <c>$1</c>, the log as <c>$2</c> and <c>updating.flag</c> as
+    /// <c>$3</c>. The installer's output goes straight into the log file (no pipe back to the daemon, which the package
+    /// stops while it installs). When the installer fails (for example a package it rejects before its preinstall ran,
+    /// final review I3) the flag is removed, so command-line runs do not wait for an update that is not coming; the
+    /// package's postinstall removes it after a good install. The stale-flag check finds a running installer by its path,
+    /// <c>/usr/sbin/installer</c>, not by its name. build/smoke-test-macos.sh runs this exact line.
+    /// </summary>
+    internal const string MacInstallScript = "/usr/sbin/installer -pkg \"$1\" -target / >\"$2\" 2>&1 || /bin/rm -f \"$3\"";
+
     [GeneratedRegex("^[0-9a-fA-F]{64}$")]
     private static partial Regex Sha256HexPattern();
 
     private readonly ReleaseClient _client;
+    private readonly ReleasePlatform _platform;
     private readonly HttpClient _http;
     private readonly Version _current;
     private readonly Func<bool> _watcherBusy;
-    private readonly Func<string, string, Process?> _startInstaller;
+    private readonly Func<ProcessStartInfo, Process?> _startInstaller;
     private readonly ILogger _log;
     private readonly TimeProvider _time;
     private readonly string _downloadDirectory;
@@ -38,9 +49,16 @@ public sealed partial class Updater
     private readonly object _stateLock = new();
     private bool _stateDeniedLogged;
 
-    /// <param name="startInstaller">Called with the installer path and its command-line arguments; null means it could not be started.</param>
+    /// <param name="client">Its <see cref="ReleaseClient.Platform"/> decides which installer is downloaded and how it is run.</param>
+    /// <param name="startInstaller">
+    /// Starts the installer as described (in production <see cref="Process.Start(ProcessStartInfo)"/>); null means it could
+    /// not be started. Windows: the setup program with silent arguments. macOS: <c>/usr/sbin/installer -pkg … -target /</c>
+    /// (through <c>/bin/sh</c>, see <see cref="MacInstallScript"/>).
+    /// </param>
     /// <param name="timeProvider">Used for the idle waits, so tests can run them fast.</param>
-    /// <param name="downloadDirectory">Defaults to <c>update</c> below <see cref="AppPaths.Root"/> (SYSTEM/Administrators only).</param>
+    /// <param name="downloadDirectory">
+    /// Defaults to <c>update</c> below <see cref="AppPaths.Root"/> (SYSTEM/Administrators only; root only on macOS).
+    /// </param>
     /// <param name="trustDownloadDirectory">
     /// Tests only: skip creating the folder with a restricted ACL and the link/owner checks. The default (false) enforces them.
     /// </param>
@@ -49,7 +67,7 @@ public sealed partial class Updater
         HttpClient http,
         Version current,
         Func<bool> watcherBusy,
-        Func<string, string, Process?> startInstaller,
+        Func<ProcessStartInfo, Process?> startInstaller,
         ILogger log,
         TimeProvider? timeProvider = null,
         string? downloadDirectory = null,
@@ -59,6 +77,7 @@ public sealed partial class Updater
         long maxInstallerBytes = DefaultMaxInstallerBytes)
     {
         _client = client;
+        _platform = client.Platform;
         _http = http;
         // The release tag has three parts; an assembly version such as 1.2.3.0 must not look newer than release 1.2.3.
         _current = new Version(Math.Max(current.Major, 0), Math.Max(current.Minor, 0), Math.Max(current.Build, 0));
@@ -72,6 +91,12 @@ public sealed partial class Updater
         _recheckInterval = recheckInterval ?? DefaultRecheckInterval;
         _giveUpAfter = giveUpAfter ?? DefaultGiveUpAfter;
     }
+
+    /// <summary>
+    /// macOS: the owner the update folder, and every folder from <see cref="AppPaths.Root"/> down to it, must have: root
+    /// (the daemon's user). Tests, which run as an ordinary user, set their own user id.
+    /// </summary>
+    internal uint DownloadDirectoryOwner { get; init; } = DownloadDirectory.RootUserId;
 
     /// <summary>
     /// Asks GitHub for the latest release and records it in <c>update-state.json</c>. Returns the release when it is
@@ -112,10 +137,20 @@ public sealed partial class Updater
     /// Downloads, verifies and starts the installer. Call only after a user click. Cancellation throws
     /// <see cref="OperationCanceledException"/> (state goes back to Idle); every other problem is reported through the
     /// outcome and <c>update-state.json</c>.
+    /// While <c>updating.flag</c> exists (written before an installer is started, removed by the installer) nothing is
+    /// done at all: <see cref="InstallOutcome.AlreadyInstalling"/>, logged, state untouched. A second "update now" must not
+    /// delete or replace the package a running installer reads (macOS does not lock it), nor start a second installer.
+    /// The service removes a stale flag (<c>StaleUpdatingFlag</c>) before it asks for an install.
     /// </summary>
     public async Task<InstallOutcome> InstallAsync(ReleaseInfo release, CancellationToken ct)
     {
-        var installerPath = Path.Combine(_downloadDirectory, $"IlluxImageTool-Setup-{release.Version}.exe");
+        if (File.Exists(AppPaths.UpdatingFlag))
+        {
+            _log.LogWarning("Update to {Version} not started: an update is already being installed (updating.flag exists)", release.Version);
+            return InstallOutcome.AlreadyInstalling;
+        }
+
+        var installerPath = Path.Combine(_downloadDirectory, ReleaseClient.InstallerFileName(_platform, release.Version));
         var partPath = installerPath + ".part";
         var started = false;
 
@@ -185,6 +220,21 @@ public sealed partial class Updater
         }
     }
 
+    /// <summary>
+    /// Marks an update that did not finish (final review I3) as failed with <paramref name="error"/>, when
+    /// <paramref name="onlyIf"/> (if given) holds for the saved state; other values in the state are kept.
+    /// </summary>
+    public void MarkFailed(string error, Func<UpdateState, bool>? onlyIf = null)
+    {
+        _log.LogWarning("Update marked as failed: {Error}", error);
+        UpdateState(s =>
+        {
+            if (onlyIf is not null && !onlyIf(s)) return;
+            s.Phase = UpdatePhase.Failed;
+            s.Error = error;
+        });
+    }
+
     private InstallOutcome Fail(ReleaseInfo release, InstallOutcome outcome, string error)
     {
         _log.LogWarning("Update to {Version} not installed ({Outcome}): {Error}", release.Version, outcome, error);
@@ -194,18 +244,23 @@ public sealed partial class Updater
 
     private string? PrepareDownloadDirectory()
     {
-        if (_trustDownloadDirectory || !OperatingSystem.IsWindows())
+        if (_trustDownloadDirectory)
         {
             Directory.CreateDirectory(_downloadDirectory);
             return null;
         }
-        return DownloadDirectory.PrepareTrusted(_downloadDirectory);
+        return DownloadDirectory.PrepareTrusted(_downloadDirectory, DownloadDirectoryOwner);
     }
 
-    /// <summary>Removes installers (and partial downloads) left by earlier attempts; one that is still running stays.</summary>
+    /// <summary>
+    /// Removes installers (and partial downloads) left by earlier attempts. Only reached while no <c>updating.flag</c>
+    /// exists, so no installer of ours is running (see <see cref="InstallAsync"/>): on macOS nothing would stop this
+    /// from deleting a package that is being installed.
+    /// </summary>
     private void DeleteOldInstallers()
     {
-        foreach (var file in Directory.EnumerateFiles(_downloadDirectory, "IlluxImageTool-Setup-*.exe*"))
+        var pattern = _platform == ReleasePlatform.MacOSArm64 ? "IlluxImageTool-*-macOS-arm64.pkg*" : "IlluxImageTool-Setup-*.exe*";
+        foreach (var file in Directory.EnumerateFiles(_downloadDirectory, pattern))
             TryDelete(file);
     }
 
@@ -291,8 +346,10 @@ public sealed partial class Updater
     }
 
     /// <summary>
-    /// Locks the installer against writes and deletion, re-hashes it, writes the flag, re-checks idleness and starts
-    /// it. The lock is held until the process has started, so the file cannot be swapped after it was verified.
+    /// Opens the installer (Windows: locked against writes and deletion), re-hashes it, writes the flag, re-checks
+    /// idleness and starts it. On Windows the lock is held until the process has started, so the file cannot be swapped
+    /// after it was verified. On macOS the share mode is only advisory; there the protection is the update folder
+    /// itself (root-only 0700, owned by root and checked with lstat by <see cref="DownloadDirectory"/>).
     /// Null means a job started in the meantime (flag removed, caller should wait again).
     /// </summary>
     private async Task<InstallOutcome?> TryStartAsync(ReleaseInfo release, string installerPath, string expectedHash, CancellationToken ct)
@@ -302,10 +359,11 @@ public sealed partial class Updater
         if (!HashesEqual(expectedHash, actual))
             return Fail(release, InstallOutcome.ChecksumFailed, "The installer changed on disk after it was verified and was discarded.");
 
-        // R36: the installer runs as SYSTEM, so its log goes into the vetted download folder (SYSTEM/Administrators
-        // only), never into logs\ where users may write and could plant a link under the log's name.
+        // R36: the installer runs as SYSTEM (root on macOS), so its log goes into the vetted download folder
+        // (SYSTEM/Administrators only; root only on macOS), never into logs\ where users may write and could plant a
+        // link under the log's name.
         var logFile = Path.Combine(_downloadDirectory, $"update-{release.Version}.log");
-        var args = $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{logFile}\"";
+        var start = InstallerStartInfo(installerPath, logFile);
         string? error;
         try
         {
@@ -319,7 +377,7 @@ public sealed partial class Updater
             }
 
             UpdateState(s => s.Phase = UpdatePhase.Installing);
-            using var process = _startInstaller(installerPath, args);
+            using var process = _startInstaller(start);
             error = process is null ? "The installer could not be started." : null;
         }
         catch (Exception ex)
@@ -337,6 +395,18 @@ public sealed partial class Updater
         }
         TryDelete(AppPaths.UpdatingFlag);
         return Fail(release, InstallOutcome.Failed, error);
+    }
+
+    private ProcessStartInfo InstallerStartInfo(string installerPath, string logFile)
+    {
+        if (_platform != ReleasePlatform.MacOSArm64)
+            return new ProcessStartInfo(installerPath, $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{logFile}\"") { UseShellExecute = false };
+
+        // The paths are passed as their own arguments, never pasted into the script.
+        var start = new ProcessStartInfo("/bin/sh") { UseShellExecute = false };
+        foreach (var argument in new[] { "-c", MacInstallScript, "sh", installerPath, logFile, AppPaths.UpdatingFlag })
+            start.ArgumentList.Add(argument);
+        return start;
     }
 
     /// <summary>Read-modify-write so values owned by others (AvailableVersion, or the installer's reset to Idle) are kept.</summary>

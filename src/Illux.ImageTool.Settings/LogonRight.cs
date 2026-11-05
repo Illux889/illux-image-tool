@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text;
 
 namespace Illux.ImageTool.Settings;
 
 /// <summary>Grants an account the "Log on as a service" right (SeServiceLogonRight). Needs admin rights.</summary>
+[SupportedOSPlatform("windows")]
 internal static class LogonRight
 {
     private const string ServiceLogonRight = "SeServiceLogonRight";
