@@ -373,7 +373,9 @@ if [[ -f "$WATCH/Out/chili-like.pdf" ]]; then
     cp "$WATCH/Out/chili-like.pdf" "$WORK/pdf-check/watched-macos.pdf"
 fi
 check_eq 'Out holds exactly one PDF' 1 "$(find "$WATCH/Out" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')"
-check 'the folders job log shows page 1, image 1 going from 120 to 200 ppi' wait_until 30 folder_log_has 'page 1, image 1: 120.*200 ppi'
+check 'the folders job log says the PDF is done, without warnings or errors' wait_until 30 folder_log_has "'chili-like.pdf' done."
+check 'the output PDF image is 4803 px wide' grep -aq '/Width 4803' "$WATCH/Out/chili-like.pdf"
+check 'the output PDF image is 3598 px high (200 ppi at 61 x 45.7 cm)' grep -aq '/Height 3598' "$WATCH/Out/chili-like.pdf"
 check 'the root job did no watched-folder work' not log_has 'Watched folder'
 check 'the root job runs no watcher loop' not log_has 'Watcher started'
 check "the squatted $SQUAT changed nothing (still the planted file)" test -f "$SQUAT" -a ! -L "$SQUAT"

@@ -623,7 +623,9 @@ if (Test-Path -LiteralPath $pdfOut) {
     Copy-Item -LiteralPath $pdfOut -Destination (Join-Path $pdfCheck 'watched-windows.pdf')
 }
 Check (@(Get-ChildItem -LiteralPath (Join-Path $watch 'Out') -Filter '*.pdf').Count -eq 1) 'Out holds exactly one PDF'
-Check (Wait-Until { (Get-ServiceLogText) -match 'page 1, image 1: 120\S+200 ppi' } 30) 'the service log shows page 1, image 1 going from 120 to 200 ppi'
+Check (Wait-Until { (Get-ServiceLogText) -match "'chili-like.pdf' done." } 30) 'the service log says the PDF is done, without warnings or errors'
+$pdfText = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($pdfOut))
+Check ($pdfText -match '/Width 4803' -and $pdfText -match '/Height 3598') 'the output PDF image is 4803 x 3598 px (200 ppi at 61 x 45.7 cm)'
 Show-Log (Get-ChildItem -LiteralPath $ServiceLogs -Filter 'watcher*.log' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 
 # =====================================================================================================

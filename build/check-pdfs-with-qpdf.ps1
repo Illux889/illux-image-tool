@@ -21,7 +21,8 @@ if ($files.Count -eq 0) { Write-Host "::error::No PDF files in $Folder to check"
 $errors = 0; $warnings = 0
 foreach ($file in $files) {
     Write-Host "--- qpdf --check $($file.Name)"
-    $output = & $qpdf --check $file.FullName 2>&1 | Out-String
+    $ErrorActionPreference = 'Continue' # qpdf writes warnings to stderr; they are not exceptions
+    $output = & $qpdf --check $file.FullName 2>&1 | ForEach-Object { "$_" } | Out-String
     $code = $LASTEXITCODE
     Write-Host $output
     if ($code -eq 2) { Write-Host "::error::qpdf --check reported errors in $($file.Name)"; $errors++ }
