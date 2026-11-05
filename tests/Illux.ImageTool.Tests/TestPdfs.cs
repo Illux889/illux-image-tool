@@ -151,6 +151,46 @@ internal static class TestPdfs
         });
 
     /// <summary>
+    /// One 5 x 5 cm page drawing the image through the given <c>cm</c> operators (e.g. matrices whose product is not a
+    /// number).
+    /// </summary>
+    public static string WithMatrices(string dir, string name, string imagePath, string matrices) =>
+        Write(dir, name, "1.4", pdf =>
+        {
+            var image = WriteImage(pdf, Encode(imagePath));
+            return [new PageSpec(5 * PointsPerCm, 5 * PointsPerCm, $"q {matrices} /Im0 Do Q", $"/Im0 {image} 0 R")];
+        });
+
+    /// <summary>
+    /// Like <see cref="OnePage"/> (5 x 5 cm, header <paramref name="headerVersion"/>), with <c>/Version</c> in the
+    /// catalog.
+    /// </summary>
+    public static string WithCatalogVersion(string dir, string name, string imagePath, string headerVersion, string catalogVersion) =>
+        Write(dir, name, headerVersion, pdf => [FullPage(WriteImage(pdf, Encode(imagePath)), 5, 5)],
+            _ => $" /Version /{catalogVersion}");
+
+    /// <summary>
+    /// One 5 x 5 cm page drawing one image object built by <paramref name="image"/>: it returns the image dictionary's
+    /// entries (without <c>/Length</c>) and its stream data, and may first write further objects (an ICC profile, a
+    /// palette, a soft mask) with <see cref="WriteStream"/>.
+    /// </summary>
+    public static string CustomImage(string dir, string name, Func<PdfObjectWriter, (string Entries, byte[] Data)> image,
+        string version = "1.5") =>
+        Write(dir, name, version, pdf =>
+        {
+            var (entries, data) = image(pdf);
+            return [FullPage(WriteStream(pdf, entries, data), 5, 5)];
+        });
+
+    /// <summary>Writes one stream object and returns its number.</summary>
+    public static int WriteStream(PdfObjectWriter pdf, string entries, byte[] data)
+    {
+        var number = pdf.Reserve();
+        pdf.WriteStream(number, entries, output => output.Write(data));
+        return number;
+    }
+
+    /// <summary>
     /// A PDF 1.6 page shaped like a CHILI Publish export: the page content sets an ExtGState and scales a form XObject
     /// slightly (1.0014 × 1.002; Chili writes factors like 1.00135 × 1.00202); the form (no <c>/Matrix</c>, resources
     /// by reference, Flate content) flips the y axis, clips to its <c>/BBox</c> and draws the JPEG with a
@@ -381,7 +421,7 @@ internal static class TestPdfs
         return bytes;
     }
 
-    private static byte[] Deflate(byte[] data)
+    public static byte[] Deflate(byte[] data)
     {
         using var result = new MemoryStream();
         using (var zlib = new ZLibStream(result, CompressionLevel.Optimal, leaveOpen: true)) zlib.Write(data);

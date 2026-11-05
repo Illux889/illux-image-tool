@@ -215,4 +215,39 @@ public sealed class PdfImageScannerTests : IDisposable
         Assert.False(image.DifferentSizes);
         Assert.Equal(5, image.WidthCm, 0.01);
     }
+
+    [Fact]
+    public void Scan_CatalogVersionHigher_Wins()
+    {
+        var scan = PdfImageScanner.Scan(TestPdfs.WithCatalogVersion(_dir, "catver.pdf", Jpeg(), "1.4", "1.7"));
+
+        Assert.Equal("1.7", scan.Version);
+    }
+
+    [Fact]
+    public void Scan_CatalogVersionLower_HeaderWins()
+    {
+        var scan = PdfImageScanner.Scan(TestPdfs.WithCatalogVersion(_dir, "catver-low.pdf", Jpeg(), "1.6", "1.3"));
+
+        Assert.Equal("1.6", scan.Version);
+    }
+
+    [Fact]
+    public void FirstLine_KeepsOnlyTheFirstNonEmptyLine()
+    {
+        Assert.Equal("first line", PdfImageScanner.FirstLine("\r\n  first line  \r\nsecond line\nthird"));
+        Assert.Equal("unknown error", PdfImageScanner.FirstLine("\r\n"));
+    }
+
+    [Fact]
+    public void Scan_NotANumberAxis_NotListed()
+    {
+        // 1e200 squared overflows to infinity; the swap matrix then multiplies infinity by 0: NaN axis lengths.
+        var big = "1" + new string('0', 200);
+        var matrices = $"{big} 0 0 {big} 0 0 cm {big} 0 0 {big} 0 0 cm 0 1 1 0 0 0 cm";
+
+        var scan = PdfImageScanner.Scan(TestPdfs.WithMatrices(_dir, "nan.pdf", Jpeg(), matrices));
+
+        Assert.Empty(scan.Images);
+    }
 }

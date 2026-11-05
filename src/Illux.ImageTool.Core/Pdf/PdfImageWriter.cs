@@ -1,6 +1,4 @@
-using System.Buffers.Binary;
 using System.Globalization;
-using System.IO.Compression;
 using System.Reflection;
 using System.Text;
 using ImageMagick;
@@ -18,9 +16,6 @@ namespace Illux.ImageTool.Pdf;
 public static class PdfImageWriter
 {
     private const string PdfVersion = "1.6";
-
-    // Uncompressed sample data handed to the deflater per call (whole rows).
-    private const int StripBytes = 4 << 20;
 
     // Largest page side in default user space units that Acrobat accepts (PDF 1.6 implementation limit).
     private const double MaxPageUnits = 14400;
@@ -109,44 +104,15 @@ public static class PdfImageWriter
         {
             var mask = pdf.Reserve();
             pdf.WriteStream(mask, ImageEntries(width, height, "/DeviceGray", bits) + " /Filter /FlateDecode",
-                output => WriteSamples(output, image, "A", bits));
+                output => PdfSamples.WriteFlate(output, image, "A", bits));
             softMask = $" /SMask {mask} 0 R";
         }
 
         var number = pdf.Reserve();
         pdf.WriteStream(number, ImageEntries(width, height, colorSpace, bits) + " /Filter /FlateDecode" + softMask,
-            output => WriteSamples(output, image, mapping, bits));
+            output => PdfSamples.WriteFlate(output, image, mapping, bits));
         var orientation = (int)image.Orientation is var o and >= 1 and <= 8 ? o : 1;
         return new ImageObject(number, width, height, orientation);
-    }
-
-    /// <summary>Exports the channels in <paramref name="mapping"/> row strip by row strip into a zlib stream (FlateDecode).</summary>
-    private static void WriteSamples(Stream output, MagickImage image, string mapping, int bits)
-    {
-        var width = image.Width;
-        var rowBytes = (long)width * mapping.Length * bits / 8;
-        var rowsPerStrip = (uint)Math.Clamp(StripBytes / rowBytes, 1, image.Height);
-
-        using var zlib = new ZLibStream(output, CompressionLevel.Optimal, leaveOpen: true);
-        using var pixels = image.GetPixels();
-        for (uint y = 0; y < image.Height; y += rowsPerStrip)
-        {
-            var rows = Math.Min(rowsPerStrip, image.Height - y);
-            if (bits == 8)
-            {
-                zlib.Write(pixels.ToByteArray(0, (int)y, width, rows, mapping)
-                    ?? throw new InvalidOperationException("Pixel export failed."));
-            }
-            else
-            {
-                var samples = pixels.ToShortArray(0, (int)y, width, rows, mapping)
-                    ?? throw new InvalidOperationException("Pixel export failed.");
-                var bytes = new byte[samples.Length * 2];
-                for (var i = 0; i < samples.Length; i++)
-                    BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(i * 2), samples[i]); // PDF samples are big-endian
-                zlib.Write(bytes);
-            }
-        }
     }
 
     private static string ImageEntries(int width, int height, string colorSpace, int bits) =>
@@ -239,7 +205,7 @@ public static class PdfImageWriter
             $"(D:{time:yyyyMMddHHmmss}{sign}{offset.Hours:D2}'{offset.Minutes:D2}')");
     }
 
-    private static bool IsJpeg(string path)
+    internal static bool IsJpeg(string path)
     {
         Span<byte> magic = stackalloc byte[3];
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);

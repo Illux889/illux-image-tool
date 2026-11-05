@@ -29,9 +29,11 @@ public static class PdfImageScanner
         try
         {
             using var stream = File.OpenRead(path);
+            var headerVersion = HeaderVersion(stream);
+            stream.Position = 0;
             using var document = PdfDocument.Open(stream, new ParsingOptions { SkipMissingFonts = true });
             if (document.IsEncrypted) throw new UnsupportedImageException("encrypted PDFs are not supported");
-            return new Walker(document).Scan(HeaderVersion(stream));
+            return new Walker(document).Scan(headerVersion);
         }
         catch (UnsupportedImageException)
         {
@@ -47,14 +49,13 @@ public static class PdfImageScanner
         }
     }
 
-    private static string FirstLine(string message) =>
+    internal static string FirstLine(string message) =>
         message.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "unknown error";
 
-    /// <summary>The version text of the <c>%PDF-x.y</c> header (within the first 1024 bytes), or null.</summary>
+    /// <summary>The version text of the <c>%PDF-x.y</c> header (within the first 1024 bytes from the stream's position), or null.</summary>
     private static string? HeaderVersion(Stream stream)
     {
         var buffer = new byte[1024];
-        stream.Position = 0;
         var read = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
         var text = System.Text.Encoding.Latin1.GetString(buffer, 0, read);
         var match = System.Text.RegularExpressions.Regex.Match(text, @"%PDF-(\d+\.\d+)");
@@ -120,8 +121,9 @@ public static class PdfImageScanner
             var order = new Dictionary<PdfObjectId, int>();
             foreach (var (id, width, height) in pageUses)
             {
-                // An image axis of length 0 (degenerate cm) is invisible and would give an infinite ppi.
-                if (width <= 0 || height <= 0) continue;
+                // An image axis of length 0 (degenerate cm) is invisible and would give an infinite ppi; NaN (from an
+                // overflowing cm) has no size at all.
+                if (!(width > 0) || !(height > 0)) continue;
                 if (!order.TryGetValue(id, out var index)) order[id] = index = order.Count + 1;
                 _uses.Add(new PdfImageUse(number, index, id, width, height));
             }
@@ -238,6 +240,7 @@ public static class PdfImageScanner
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
+                    // Deliberately ignored: an object PdfPig cannot parse is not a signature a reader would honour either.
                 }
             }
         }
