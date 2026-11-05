@@ -212,7 +212,8 @@ public static class ImagePipeline
 
     private static string Cm(double value) => value.ToString("0.0", CultureInfo.InvariantCulture);
 
-    private static string Format(Resolution r) => r.X == r.Y ? Format(r.X) : $"{Format(r.X)}×{Format(r.Y)}";
+    // One value when both axes print the same (a drawn resolution in a PDF is rarely exactly equal on both axes).
+    private static string Format(Resolution r) => Format(r.X) is var x && Format(r.Y) is var y && x == y ? x : $"{x}×{y}";
 
     private static uint Scale(uint size, double factor) =>
         (uint)Math.Max(1, Math.Round(size * factor, MidpointRounding.AwayFromZero));

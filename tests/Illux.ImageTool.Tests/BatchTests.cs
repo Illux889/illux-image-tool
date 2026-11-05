@@ -111,6 +111,23 @@ public sealed class BatchTests : IDisposable
     }
 
     [Fact]
+    public async Task Batch_PdfAndJpeg_SameRun()
+    {
+        // The PDF's image is drawn at 100 ppi (Small → 300 ppi); output=both still gives only one PDF for it.
+        var image = TestImages.Write(Path.Combine(_dir, "src"), "p.jpg", 60, 40, ColorSpace.sRGB, 8, 72);
+        var pdf = TestPdfs.OnePage(Path.Combine(_dir, "in"), "card.pdf", image, 60 / 100.0 * 2.54, 40 / 100.0 * 2.54);
+        var jpeg = Jpeg("photo.jpg");
+        var log = new StringWriter();
+
+        var status = await Run([pdf, jpeg], Out, log, ProcessingOptions.Default with { Output = OutputMode.Both });
+
+        Assert.Equal(Status.Ok, status);
+        Assert.Equal(["card.pdf", "photo.jpg", "photo.pdf"], OutNames());
+        Assert.Contains("card.pdf: page 1, image 1: 100→300 ppi (rule \"Small\"", log.ToString());
+        Assert.Contains("Result: OK (2 files)", log.ToString());
+    }
+
+    [Fact]
     public async Task Batch_OutputBoth_WritesImageAndPdf()
     {
         var input = Jpeg("a.jpg");

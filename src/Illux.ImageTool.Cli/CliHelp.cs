@@ -7,6 +7,10 @@ public static class CliHelp
         Illux Image Tool - converts images to 8 bit, resamples them to the ppi of the resolution rules, makes JPEGs
         baseline and can wrap them in a PDF.
 
+        PDF files are accepted too: every image in the PDF gets the same treatment, at the size it is drawn on the
+        page, and the PDF keeps its pages and page sizes. A PDF in always gives one PDF out, with the same name,
+        whatever output= says.
+
         Usage:
           IlluxImageTool.exe ae "<input files>" "<output folder>" [parameters]
               For Automation Engine. The input files are one string separated by ";".
@@ -25,6 +29,7 @@ public static class CliHelp
           output=same          Write the same format as the input (default).
           output=pdf           Write a PDF 1.6 with the image on one page instead.
           output=both          Write both the image and the PDF.
+                               For a PDF input, output= has no effect: it always gives one PDF.
           missingppi=72        Image has no resolution stored: assume 72 ppi and give a warning (default).
           missingppi=skip      Image has no resolution stored: do not resample it and give a warning.
           missingppi=error     Image has no resolution stored: treat it as an error.
@@ -38,7 +43,8 @@ public static class CliHelp
         operation on or off. An unknown parameter is an error.
 
         Resolution rules (Illux Image Tool Settings; checked top to bottom, the first that fits is used):
-        the print size in cm is pixels / ppi x 2.54. Defaults:
+        the print size in cm is pixels / ppi x 2.54. For an image in a PDF it is the size the image is drawn at,
+        and its ppi is pixels / drawn size. Defaults:
           Small   fits within 40 x 30 cm   target 300 ppi, left alone at 250-350 ppi
           Large   all other images         target 200 ppi, left alone at 150-250 ppi
         The ppi cannot be set in a parameter: resample=N is an error.

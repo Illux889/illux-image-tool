@@ -597,7 +597,7 @@ public sealed class WatcherTests : IDisposable
         var truncatedPdf = Path.Combine(_dir, "truncated.pdf");
         File.WriteAllText(truncatedPdf, "%PDF-1.6\n1 0 obj\n<<>>\nendobj\n");
         var wrongVersion = Path.Combine(_dir, "old.pdf");
-        File.WriteAllText(wrongVersion, "%PDF-1.4\n%%EOF");
+        File.WriteAllText(wrongVersion, "%PDF-2.1\n%%EOF");
 
         Assert.Null(FolderScanner.VerifyOutputs([good, pdf]));
         Assert.NotNull(FolderScanner.VerifyOutputs([garbage]));
@@ -605,6 +605,53 @@ public sealed class WatcherTests : IDisposable
         Assert.NotNull(FolderScanner.VerifyOutputs([truncatedPdf]));
         Assert.NotNull(FolderScanner.VerifyOutputs([wrongVersion]));
         Assert.NotNull(FolderScanner.VerifyOutputs([good, garbage]));
+    }
+
+    [Theory]
+    [InlineData("1.0", true)]
+    [InlineData("1.1", true)]
+    [InlineData("1.2", true)]
+    [InlineData("1.3", true)]
+    [InlineData("1.4", true)]
+    [InlineData("1.5", true)]
+    [InlineData("1.6", true)]
+    [InlineData("1.7", true)]
+    [InlineData("2.0", true)]
+    [InlineData("1.8", false)]
+    [InlineData("2.1", false)]
+    [InlineData("0.9", false)]
+    [InlineData("1.x", false)]
+    public void VerifyOutputs_AcceptsAnyPdfVersion(string version, bool accepted)
+    {
+        Directory.CreateDirectory(_dir);
+        var pdf = Path.Combine(_dir, "v.pdf");
+        File.WriteAllText(pdf, $"%PDF-{version}\n1 0 obj\n<<>>\nendobj\n%%EOF\n");
+
+        Assert.Equal(accepted, FolderScanner.VerifyOutputs([pdf]) is null);
+    }
+
+    [Fact]
+    public async Task Watcher_PdfDropped_PdfInOut_OriginalMoved()
+    {
+        // A PDF 1.4 whose image is drawn at 100 ppi (Small → 300 ppi); output=both still gives only the PDF.
+        var image = TestImages.Write(Path.Combine(_dir, "src"), "p.jpg", 60, 40, ColorSpace.sRGB, 8, 72);
+        var input = TestPdfs.OnePage(In, "card.pdf", image, 60 / 100.0 * 2.54, 40 / 100.0 * 2.54);
+        var bytes = File.ReadAllBytes(input);
+
+        await ScanTwice(Scanner(Folder("output=both")));
+
+        Assert.Empty(Names(In));
+        Assert.Equal(["card.pdf"], Names(Out));
+        Assert.Equal(["card.pdf"], Names(Originals));
+        Assert.Equal(bytes, File.ReadAllBytes(Path.Combine(Originals, "card.pdf")));
+        Assert.False(Directory.Exists(Error));
+        var written = Path.Combine(Out, "card.pdf");
+        Assert.StartsWith("%PDF-1.4", System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(written), 0, 8));
+        var scanned = Illux.ImageTool.Pdf.Input.PdfImageScanner.Scan(written).Images.Single();
+        using var document = UglyToad.PdfPig.PdfDocument.Open(written);
+        var stream = (UglyToad.PdfPig.Tokens.StreamToken)document.Structure.GetObject(
+            new UglyToad.PdfPig.Core.IndirectReference(scanned.Image.Number, scanned.Image.Generation)).Data;
+        Assert.Equal("180", stream.StreamDictionary.Data["Width"].ToString());
     }
 
     [Fact]

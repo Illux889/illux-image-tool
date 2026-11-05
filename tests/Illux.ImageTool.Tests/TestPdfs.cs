@@ -184,6 +184,20 @@ internal static class TestPdfs
         });
 
     /// <summary>
+    /// One page per entry, each drawing one image object built by its <c>Image</c> (as <see cref="CustomImage"/>) over
+    /// the whole page of <c>WidthCm</c> × <c>HeightCm</c>.
+    /// </summary>
+    public static string CustomPages(string dir, string name,
+        params (Func<PdfObjectWriter, (string Entries, byte[] Data)> Image, double WidthCm, double HeightCm)[] pages) =>
+        Write(dir, name, "1.5", pdf => pages
+            .Select(p =>
+            {
+                var (entries, data) = p.Image(pdf);
+                return FullPage(WriteStream(pdf, entries, data), p.WidthCm, p.HeightCm);
+            })
+            .ToList());
+
+    /// <summary>
     /// Appends an incremental update to a classic-table <paramref name="pdf"/> (one written by this class): object
     /// <paramref name="redefined"/> gets the new body <paramref name="body"/> (same generation), object
     /// <paramref name="freed"/> is freed (an <c>f</c> entry for generation 1), and the new trailer has <c>/Prev</c>.

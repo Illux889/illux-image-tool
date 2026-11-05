@@ -535,11 +535,18 @@ public sealed class FolderScanner
         return info.Width > 0 && info.Height > 0;
     }
 
+    // Image outputs are PDF 1.6; a PDF input keeps its own version (never lowered), so any version can come out.
+    private static readonly HashSet<string> PdfVersions = new(StringComparer.Ordinal)
+    {
+        "%PDF-1.0", "%PDF-1.1", "%PDF-1.2", "%PDF-1.3", "%PDF-1.4", "%PDF-1.5", "%PDF-1.6", "%PDF-1.7", "%PDF-2.0",
+    };
+
     private static bool LooksLikePdf(string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         var header = new byte[8];
-        if (stream.Read(header) != header.Length || Encoding.ASCII.GetString(header) != "%PDF-1.6") return false;
+        if (stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false) != header.Length
+            || !PdfVersions.Contains(Encoding.ASCII.GetString(header))) return false;
 
         var tailLength = (int)Math.Min(stream.Length, 1024);
         stream.Seek(-tailLength, SeekOrigin.End);

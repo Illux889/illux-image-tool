@@ -39,6 +39,23 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         return settings;
     }
 
+    /// <summary>How far into a file the <c>%PDF-</c> header may start (ISO 32000-1, annex H.3: readers accept it within 1024 bytes).</summary>
+    private const int PdfHeaderWindow = 1024;
+
+    /// <summary>
+    /// True when <paramref name="path"/> is a PDF by content: <c>%PDF-</c> lies within the first 1024 bytes. Such
+    /// files go to the PDF pipeline; <see cref="Inspect"/> does not take them as images.
+    /// </summary>
+    public static bool IsPdf(string path)
+    {
+        if (Directory.Exists(path)) return false; // Inspect gives the reason
+        var header = new byte[PdfHeaderWindow];
+        int read;
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            read = fs.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+        return header.AsSpan(0, read).IndexOf("%PDF-"u8) >= 0;
+    }
+
     /// <summary>Inspects <paramref name="path"/>; throws <see cref="UnsupportedImageException"/> for inputs we reject.</summary>
     public static SourceImage Inspect(string path)
     {
@@ -78,8 +95,6 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         {
             null => throw new UnsupportedImageException("unrecognised file format"),
             MagickFormat.Psd or MagickFormat.Psb => throw new UnsupportedImageException("Photoshop documents (PSD/PSB) are not supported"),
-            MagickFormat.Pdf or MagickFormat.Epdf or MagickFormat.Pdfa or MagickFormat.Ai =>
-                throw new UnsupportedImageException("PDF input is not supported"),
             { } f when Supported.Contains(f) => f,
             { } f => throw new UnsupportedImageException($"{f.ToString().ToUpperInvariant()} files are not supported"),
         };
