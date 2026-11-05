@@ -1,8 +1,10 @@
 using System.Text;
 using ImageMagick;
+using Illux.ImageTool.Jpeg;
 using UglyToad.PdfPig;
 using UglyToad.PdfPig.Content;
 using UglyToad.PdfPig.Core;
+using UglyToad.PdfPig.CrossReference;
 
 namespace Illux.ImageTool.Tests;
 
@@ -15,6 +17,7 @@ public sealed class TestPdfsTests : IDisposable
     public void Dispose()
     {
         try { Directory.Delete(_dir, true); } catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private string Jpeg(string name = "a.jpg") => TestImages.Write(_dir, name, 60, 45, ColorSpace.sRGB, 8, 72);
@@ -183,8 +186,36 @@ public sealed class TestPdfsTests : IDisposable
         Assert.DoesNotContain("\nxref\n", raw);
         Assert.DoesNotContain("trailer", raw);
         using var document = PdfDocument.Open(File.ReadAllBytes(pdf));
+        Assert.Equal(CrossReferenceType.Stream, Assert.Single(document.Structure.CrossReferenceTable.Parts).Type);
         var (w, h) = DrawnCm(Assert.Single(document.GetPage(1).GetImages()));
         Assert.Equal(10, w, 0.001);
         Assert.Equal(7.5, h, 0.001);
+    }
+
+    [Fact]
+    public void OnePage_16BitPng_RaisesVersionTo15()
+    {
+        var png = TestImages.Write(_dir, "b.png", 40, 30, ColorSpace.sRGB, 16, 72);
+
+        Assert.StartsWith("%PDF-1.5\n", RawText(TestPdfs.OnePage(_dir, "v.pdf", png, 8, 6)));
+        Assert.StartsWith("%PDF-1.4\n", RawText(TestPdfs.OnePage(_dir, "w.pdf", Jpeg(), 8, 6)));
+    }
+
+    [Fact]
+    public void ChiliLike_AdobeCmykJpeg_HasInvertedDecode()
+    {
+        var cmyk = TestImages.Write(_dir, "c.jpg", 60, 45, ColorSpace.CMYK, 8, 72);
+        Assert.True(JpegInspector.Inspect(cmyk).HasAdobeMarker);
+
+        var pdf = TestPdfs.ChiliLike(_dir, "chili-cmyk.pdf", cmyk, 10, 7.5);
+
+        Assert.Contains("/DCTDecode /Decode [1 0 1 0 1 0 1 0] /DecodeParms", RawText(pdf));
+    }
+
+    [Fact]
+    public void Signed_HasSigFlagsOrByteRange()
+    {
+        Assert.Contains("/SigFlags 3", RawText(TestPdfs.Signed(_dir, "s1.pdf")));
+        Assert.Contains("/ByteRange", RawText(TestPdfs.Signed(_dir, "s2.pdf", byteRange: true)));
     }
 }

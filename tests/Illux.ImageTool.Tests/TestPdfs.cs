@@ -24,12 +24,21 @@ internal static class TestPdfs
     /// </summary>
     public static string OnePage(string dir, string name, string imagePath, double widthCm, double heightCm,
         double rotateDegrees = 0, string version = "1.4") =>
-        Write(dir, name, version, pdf =>
+        Write(dir, name, MinVersion(version, imagePath), pdf =>
         {
             var image = WriteImage(pdf, Encode(imagePath));
             var (matrix, pageWidth, pageHeight) = Rotated(widthCm * PointsPerCm, heightCm * PointsPerCm, rotateDegrees);
             return [new PageSpec(pageWidth, pageHeight, $"q {matrix} cm /Im0 Do Q", $"/Im0 {image} 0 R")];
         });
+
+    /// <summary>16 bit samples need PDF 1.5; a lower requested version is raised to it.</summary>
+    private static string MinVersion(string version, string imagePath)
+    {
+        var bytes = File.ReadAllBytes(imagePath);
+        if (bytes is [0xFF, 0xD8, 0xFF, ..]) return version;
+        using var image = new MagickImage(imagePath);
+        return image.Depth > 8 && string.CompareOrdinal(version, "1.5") < 0 ? "1.5" : version;
+    }
 
     /// <summary>One page per entry, each with its own image drawn over the whole page.</summary>
     public static string Pages(string dir, string name, params (string imagePath, double widthCm, double heightCm)[] pages) =>
@@ -92,11 +101,29 @@ internal static class TestPdfs
 
         // The trailer comes after the cross-reference table, so inserting entries there moves no object offsets.
         var text = Encoding.Latin1.GetString(File.ReadAllBytes(path));
-        var trailer = text.LastIndexOf("trailer\n<< ", StringComparison.Ordinal) + "trailer\n<< ".Length;
+        var anchor = text.LastIndexOf("trailer\n<< ", StringComparison.Ordinal);
+        if (anchor < 0) throw new InvalidOperationException("The trailer anchor was not found in the test PDF.");
+        var trailer = anchor + "trailer\n<< ".Length;
         var id = new string('0', 32);
         File.WriteAllBytes(path, Encoding.Latin1.GetBytes(text.Insert(trailer, $"/Encrypt {encrypt} 0 R /ID [<{id}> <{id}>] ")));
         return path;
     }
+
+    /// <summary>
+    /// One empty 5 × 5 cm page that looks signed: by default the catalog's AcroForm has <c>/SigFlags 3</c>; with
+    /// <paramref name="byteRange"/> instead a signature dictionary with <c>/ByteRange</c> is in the file and the AcroForm
+    /// has no flags. Nothing is actually signed.
+    /// </summary>
+    public static string Signed(string dir, string name, bool byteRange = false) =>
+        Write(dir, name, "1.4", _ => [new PageSpec(5 * PointsPerCm, 5 * PointsPerCm, "", "")], pdf =>
+        {
+            if (!byteRange) return " /AcroForm << /Fields [] /SigFlags 3 >>";
+            var signature = pdf.Reserve();
+            pdf.WriteObject(signature, "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 10 20 30] /Contents <00> >>");
+            var field = pdf.Reserve();
+            pdf.WriteObject(field, $"<< /FT /Sig /T (Signature1) /V {signature} 0 R >>");
+            return $" /AcroForm << /Fields [{field} 0 R] >>";
+        });
 
     /// <summary>
     /// A PDF 1.6 page shaped like a CHILI Publish export: the page content sets an ExtGState and scales a form XObject
@@ -122,7 +149,8 @@ internal static class TestPdfs
             var image = pdf.Reserve();
             pdf.WriteStream(image,
                 $"/Type /XObject /Subtype /Image /Width {info.Width} /Height {info.Height} /ColorSpace [/ICCBased {profile} 0 R] " +
-                "/BitsPerComponent 8 /Filter /DCTDecode /DecodeParms << >>",
+                "/BitsPerComponent 8 /Filter /DCTDecode" + (info.Components == 4 && info.HasAdobeMarker ? " /Decode [1 0 1 0 1 0 1 0]" : "") +
+                " /DecodeParms << >>",
                 o => o.Write(File.ReadAllBytes(imagePath)));
 
             double w = widthCm * PointsPerCm, h = heightCm * PointsPerCm;
@@ -231,7 +259,8 @@ internal static class TestPdfs
     }
 
     /// <summary>Writes the header, the objects from <paramref name="body"/>, then the page tree, catalog, info and trailer.</summary>
-    private static string Write(string dir, string name, string version, Func<PdfObjectWriter, IReadOnlyList<PageSpec>> body)
+    private static string Write(string dir, string name, string version, Func<PdfObjectWriter, IReadOnlyList<PageSpec>> body,
+        Func<PdfObjectWriter, string>? catalogExtra = null)
     {
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, name);
@@ -239,6 +268,7 @@ internal static class TestPdfs
         var pdf = new PdfObjectWriter(output);
         pdf.WriteHeader(version);
         var specs = body(pdf);
+        var extra = catalogExtra?.Invoke(pdf) ?? "";
 
         int catalog = pdf.Reserve(), pages = pdf.Reserve(), info = pdf.Reserve();
         var kids = new List<int>();
@@ -253,7 +283,7 @@ internal static class TestPdfs
             kids.Add(page);
         }
         pdf.WriteObject(pages, $"<< /Type /Pages /Kids [{string.Join(' ', kids.Select(k => $"{k} 0 R"))}] /Count {kids.Count} >>");
-        pdf.WriteObject(catalog, $"<< /Type /Catalog /Pages {pages} 0 R >>");
+        pdf.WriteObject(catalog, $"<< /Type /Catalog /Pages {pages} 0 R{extra} >>");
         pdf.WriteObject(info, "<< /Producer (TestPdfs) >>");
         pdf.WriteTrailer(catalog, info);
         return path;

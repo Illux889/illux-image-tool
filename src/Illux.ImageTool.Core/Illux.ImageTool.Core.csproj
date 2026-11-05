@@ -9,6 +9,8 @@
     <!-- AnyCPU: one package with the win-x64 and osx-arm64 natives (among others). -->
     <PackageReference Include="Magick.NET-Q16-HDRI-AnyCPU" Version="14.17.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.13" />
+    <!-- PDF input: reads PDFs (Apache 2.0, managed only). Pinned; updates are deliberate (decision P3). -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
     <InternalsVisibleTo Include="Illux.ImageTool.Tests" />
   </ItemGroup>
 
