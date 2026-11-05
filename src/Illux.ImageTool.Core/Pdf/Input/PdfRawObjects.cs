@@ -111,7 +111,7 @@ internal sealed class PdfRawObjects(Stream file, IEnumerable<long> boundaries)
         for (var left = end - start; left > 0;)
         {
             var read = file.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
-            if (read <= 0) throw new EndOfStreamException("The PDF file ended while an object was copied.");
+            if (read <= 0) throw new InvalidDataException("the PDF file ended while an object was copied");
             output.Write(buffer, 0, read);
             left -= read;
         }

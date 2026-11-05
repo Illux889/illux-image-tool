@@ -87,8 +87,7 @@ internal sealed class PdfImageObject
         var data = Stream.Data;
         if (count == 0) return data;
 
-        foreach (var name in Filters.Take(count))
-            if (!FullNames.ContainsKey(name) || name is Dct or Jpx) throw Unsupported(name);
+        CheckFilters();
 
         // The filters read their /DecodeParms from the dictionary, so references there must be followed first.
         var dictionary = Dictionary;
@@ -96,12 +95,23 @@ internal sealed class PdfImageObject
             dictionary = dictionary.With("DecodeParms", parms is ArrayToken array ? new ArrayToken(array.Data.Select(Resolve).Select(t => t ?? NullToken.Instance).ToList()) : parms);
 
         var filters = DefaultFilterProvider.Instance.GetNamedFilters(Filters.Take(count).Select(NameToken.Create).ToList());
-        for (var i = 0; i < count; i++)
-        {
-            if (!filters[i].IsSupported) throw Unsupported(Filters[i]);
-            data = filters[i].Decode(data, dictionary, DefaultFilterProvider.Instance, i);
-        }
+        for (var i = 0; i < count; i++) data = filters[i].Decode(data, dictionary, DefaultFilterProvider.Instance, i);
         return data;
+    }
+
+    /// <summary>
+    /// Throws <c>&lt;filter&gt; image data is not supported</c> when a filter before a final <see cref="Codec"/> (or
+    /// any filter without one) is unknown, an image codec, or one PdfPig cannot decode. Nothing is decoded.
+    /// </summary>
+    public void CheckFilters()
+    {
+        var count = Codec is null ? Filters.Count : Filters.Count - 1;
+        if (count == 0) return;
+        foreach (var name in Filters.Take(count))
+            if (!FullNames.ContainsKey(name) || name is Dct or Jpx) throw Unsupported(name);
+        var filters = DefaultFilterProvider.Instance.GetNamedFilters(Filters.Take(count).Select(NameToken.Create).ToList());
+        for (var i = 0; i < count; i++)
+            if (!filters[i].IsSupported) throw Unsupported(Filters[i]);
     }
 
     /// <summary>The image's colour space (an image mask has none: one component, 1 bit).</summary>

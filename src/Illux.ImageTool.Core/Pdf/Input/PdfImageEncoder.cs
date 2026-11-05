@@ -24,12 +24,14 @@ public static class PdfImageEncoder
     /// Encodes <paramref name="processedPath"/> as the new data of image <paramref name="image"/>: a JPEG as DCT data byte
     /// for byte, anything else as Flate samples. When <paramref name="extracted"/> has a soft mask whose size changes,
     /// the mask is scaled by <paramref name="factors"/> (new size = old size × factor, rounded) with
-    /// <paramref name="filter"/> and encoded as a Flate gray image for the mask's own object; a mask whose size does
-    /// not change gives null, so its stream stays as it is. Throws <see cref="NotSupportedException"/> when the new
+    /// <paramref name="filter"/> and encoded as a Flate gray image for the mask's own object. With
+    /// <paramref name="maskTo8Bit"/> (the 8-bit operation is on; ruling Q13) a mask deeper than 8 bits is also reduced to
+    /// 8 bits, as its image is. A mask that keeps its size and depth gives null, so its stream stays as it is. Throws <see cref="NotSupportedException"/> when the new
     /// dictionary cannot be written exactly (<see cref="PdfSyntax"/>: e.g. a non-ASCII name kept from the old one).
     /// </summary>
     public static (PdfImageStream Image, PdfImageStream? SoftMask) Encode(PdfDocument doc, PdfObjectId image,
-        string processedPath, ExtractedImage extracted, (double X, double Y) factors, ResampleFilter filter)
+        string processedPath, ExtractedImage extracted, (double X, double Y) factors, ResampleFilter filter,
+        bool maskTo8Bit = false)
     {
         ArgumentNullException.ThrowIfNull(doc);
         ArgumentException.ThrowIfNullOrEmpty(processedPath);
@@ -74,9 +76,13 @@ public static class PdfImageEncoder
             using var maskImage = PdfSamples.Read(maskPath);
             var width = Math.Max(1, (uint)Math.Round(maskImage.Width * factors.X, MidpointRounding.AwayFromZero));
             var height = Math.Max(1, (uint)Math.Round(maskImage.Height * factors.Y, MidpointRounding.AwayFromZero));
-            if (width != maskImage.Width || height != maskImage.Height)
+            var resize = width != maskImage.Width || height != maskImage.Height;
+            var reduce = maskTo8Bit && maskImage.Depth > 8;
+            if (resize || reduce)
             {
-                maskImage.Resize(new MagickGeometry(width, height) { IgnoreAspectRatio = true }, MagickRewriter.ToFilterType(filter));
+                if (resize) maskImage.Resize(new MagickGeometry(width, height) { IgnoreAspectRatio = true }, MagickRewriter.ToFilterType(filter));
+                // After resampling, as for images: the filter works at full precision.
+                if (reduce) maskImage.Depth = 8;
                 var mask = PdfImageObject.Read(doc, maskId);
                 var maskBits = maskImage.Depth > 8 ? 16 : 8;
                 var maskData = PdfSamples.Flate(maskImage, PdfSamples.RequireLayout(maskImage).Mapping, maskBits);

@@ -78,10 +78,10 @@ public static class PdfPipeline
             return new PipelineResult(Status.Warning, messages, outputPdf, new Resolution(0, 0), false);
         }
 
+        // Every image is planned and checked before any is resampled, so a PDF that will fail fails early.
         List<Job> jobs;
-        using (var input = OpenRead(inputPdf))
-        using (var document = PdfDocument.Open(input, new ParsingOptions { SkipMissingFonts = true }))
-            jobs = scan.Images.Select(entry => PlanImage(document, entry, options)).ToList();
+        using (var pdf = OpenedPdf.Open(inputPdf))
+            jobs = scan.Images.Select(entry => PlanImage(pdf.Document, entry, options)).ToList();
         ct.ThrowIfCancellationRequested();
 
         var changed = jobs.Any(j => j.NeedsChange);
@@ -149,13 +149,15 @@ public static class PdfPipeline
             // need nothing.
             if (job.NeedsChange && jpeg is { } info && (info.Coding is JpegCoding.Lossless or JpegCoding.Arithmetic || info.Precision != 8))
                 throw PdfImageObject.Unsupported(PdfImageObject.Dct);
+            // The cheap rejections of the extractor (mask cases, colour space, filters), without decoding anything.
+            if (job.NeedsChange) PdfImageExtractor.Check(document, entry.Image, plan.NewSize is not null);
             return job;
         });
     }
 
     /// <summary>
     /// Extracts, processes and encodes each image that needs a change, one at a time; returns the new streams by
-    /// object (images, and soft masks whose size changes).
+    /// object (images, and soft masks whose size or depth changes).
     /// </summary>
     private static async Task<Dictionary<PdfObjectId, PdfImageStream>> ProcessAsync(
         string inputPdf, string outputPdf, List<Job> jobs, ProcessingOptions options, CancellationToken ct)
@@ -171,15 +173,18 @@ public static class PdfPipeline
                 ct.ThrowIfCancellationRequested();
                 var id = job.Entry.Image;
                 var dir = Path.Combine(tempRoot, $"{id.Number}-{id.Generation}");
+                TestHook.Value?.Invoke("image", tempRoot);
                 try
                 {
-                    // The document is opened per image, so the data of one image is released before the next is read.
-                    using var input = OpenRead(inputPdf);
-                    using var document = PdfDocument.Open(input, new ParsingOptions { SkipMissingFonts = true });
-                    var extracted = Guard(job.Prefix, () => PdfImageExtractor.Extract(document, id, job.Plan.NewSize is not null, dir));
+                    // The document is open only while an image is extracted and encoded, not while it is resampled, so
+                    // its data is not held next to the image pipeline's pixels, nor kept from one image to the next.
+                    ExtractedImage extracted;
+                    using (var pdf = OpenedPdf.Open(inputPdf))
+                        extracted = Guard(job.Prefix, () => PdfImageExtractor.Extract(pdf.Document, id, job.Plan.NewSize is not null, dir));
                     Guard(job.Prefix, () => CheckSize(extracted.Path, job));
 
                     var processed = Path.Combine(dir, "processed" + Path.GetExtension(extracted.Path));
+                    TestHook.Value?.Invoke("resample", inputPdf);
                     var result = await GuardAsync(job.Prefix,
                         () => ImagePipeline.RunAsync(extracted.Path, processed, options, job.Drawn, ct)).ConfigureAwait(false);
                     if (result.Status == Status.Error)
@@ -190,8 +195,15 @@ public static class PdfPipeline
                     var factors = job.Plan.NewSize is { } size
                         ? ((double)size.Width / job.Width, (double)size.Height / job.Height)
                         : (1.0, 1.0);
-                    var (image, mask) = Guard(job.Prefix,
-                        () => PdfImageEncoder.Encode(document, id, processed, extracted, factors, options.Filter));
+                    // Ruling Q13: the soft mask follows the image's 8-bit operation.
+                    var maskTo8Bit = options.Operations.HasFlag(Operations.EightBit);
+                    PdfImageStream image;
+                    PdfImageStream? mask;
+                    using (var pdf = OpenedPdf.Open(inputPdf))
+                    {
+                        (image, mask) = Guard(job.Prefix,
+                            () => PdfImageEncoder.Encode(pdf.Document, id, processed, extracted, factors, options.Filter, maskTo8Bit));
+                    }
                     replacements[id] = image;
                     // A soft mask shared by several images is scaled once (the first); it is mapped onto each image's
                     // unit square whatever its pixel size. An image's own new stream wins over its use as a mask.
@@ -222,7 +234,9 @@ public static class PdfPipeline
         }
         else
         {
-            var info = new MagickImageInfo(path);
+            // Through .NET IO, so long and UNC paths work (the temp folder is deep).
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var info = new MagickImageInfo(stream);
             (width, height) = ((int)info.Width, (int)info.Height);
         }
         if (width != job.Width || height != job.Height)
@@ -274,7 +288,7 @@ public static class PdfPipeline
         }
     }
 
-    private static Exception? Translate(string prefix, Exception ex) => ex switch
+    internal static Exception? Translate(string prefix, Exception ex) => ex switch
     {
         UnsupportedImageException => new UnsupportedImageException(prefix + PdfImageScanner.FirstLine(ex.Message), ex),
         ImageTooLargeException => new ImageTooLargeException(prefix + PdfImageScanner.FirstLine(ex.Message)),
@@ -284,16 +298,55 @@ public static class PdfPipeline
 
     /// <summary>
     /// Failures reading or writing back the PDF's own data (InvalidDataException, NotSupportedException, decoder and
-    /// parser errors). Not: cancellation, memory (reported by the caller as for image files) or the file system.
+    /// parser errors, a file that ends too early). Not: cancellation, memory (reported by the caller as for image
+    /// files) or other file-system errors.
     /// </summary>
-    private static bool IsUnreadable(Exception ex) => ex is not (OperationCanceledException or OutOfMemoryException
-        or MagickResourceLimitErrorException or IOException or UnauthorizedAccessException
-        or UnsupportedImageException or ImageTooLargeException);
+    private static bool IsUnreadable(Exception ex) => ex is EndOfStreamException
+        || ex is not (OperationCanceledException or OutOfMemoryException or MagickResourceLimitErrorException
+            or IOException or UnauthorizedAccessException or UnsupportedImageException or ImageTooLargeException);
 
     private static UnsupportedImageException Unreadable(Exception ex) =>
         new($"the PDF could not be read ({PdfImageScanner.FirstLine(ex.Message)})", ex);
 
-    private static FileStream OpenRead(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+    /// <summary>
+    /// Test hook: <c>("image", temporary root folder)</c> before each image is extracted, and
+    /// <c>("resample", input PDF)</c> right before the image pipeline runs on it.
+    /// </summary>
+    internal static readonly AsyncLocal<Action<string, string>?> TestHook = new();
+
+    /// <summary>The input PDF opened in PdfPig, with its file; failures to open read as <c>the PDF could not be read</c>.</summary>
+    private sealed class OpenedPdf : IDisposable
+    {
+        private readonly FileStream _file;
+
+        private OpenedPdf(FileStream file, PdfDocument document)
+        {
+            _file = file;
+            Document = document;
+        }
+
+        public PdfDocument Document { get; }
+
+        public static OpenedPdf Open(string path) => Guard("", () =>
+        {
+            var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            try
+            {
+                return new OpenedPdf(file, PdfDocument.Open(file, new ParsingOptions { SkipMissingFonts = true }));
+            }
+            catch
+            {
+                file.Dispose();
+                throw;
+            }
+        });
+
+        public void Dispose()
+        {
+            Document.Dispose();
+            _file.Dispose();
+        }
+    }
 
     private static string Cm(double value) => value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
 

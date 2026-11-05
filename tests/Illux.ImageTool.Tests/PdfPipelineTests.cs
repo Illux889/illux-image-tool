@@ -80,8 +80,8 @@ public sealed class PdfPipelineTests : IDisposable
     [Fact]
     public async Task Pdf_Png16Bit_To8BitOnly()
     {
-        // 60 × 40 px drawn at 300 ppi: inside the Small rule's range, so only the bit depth changes. The soft mask keeps
-        // its size, so its object stays as it was.
+        // 60 × 40 px drawn at 300 ppi: inside the Small rule's range, so only the bit depth changes. Ruling Q13: the
+        // soft mask follows its image to 8 bits, keeps its size and its own object.
         var png = TestImages.Write(Path.Combine(_dir, "src"), "deep.png", 60, 40, ColorSpace.sRGB, 16, 300, alpha: true);
         var pdf = TestPdfs.OnePage(In, "deep.pdf", png, Cm(60, 300), Cm(40, 300));
         var before = PdfImageScanner.Scan(pdf);
@@ -99,8 +99,32 @@ public sealed class PdfPipelineTests : IDisposable
         Assert.Equal(8, Int(dictionary, "BitsPerComponent"));
         Assert.Equal((60, 40), (Int(dictionary, "Width"), Int(dictionary, "Height")));
         var maskAfter = SoftMask(Output(), id);
-        Assert.Equal(maskBefore.Data.ToArray(), maskAfter.Data.ToArray());
-        Assert.Equal(16, Int(maskAfter.StreamDictionary, "BitsPerComponent"));
+        Assert.Equal(MaskId(pdf, id), MaskId(Output(), id));
+        Assert.Equal(16, Int(maskBefore.StreamDictionary, "BitsPerComponent"));
+        Assert.Equal(8, Int(maskAfter.StreamDictionary, "BitsPerComponent"));
+        Assert.Equal((60, 40), (Int(maskAfter.StreamDictionary, "Width"), Int(maskAfter.StreamDictionary, "Height")));
+        var deep = Inflate(maskBefore.Data.ToArray());
+        var shallow = Inflate(maskAfter.Data.ToArray());
+        Assert.Equal(60 * 40, shallow.Length);
+        for (var i = 0; i < shallow.Length; i++)
+            Assert.InRange(shallow[i] - ((deep[2 * i] << 8) | deep[2 * i + 1]) / 257.0, -0.51, 0.51);
+    }
+
+    [Fact]
+    public async Task Pdf_EightBitOff_SoftMaskKeepsItsDepth()
+    {
+        // Q13 follows the operation: with only resample, a scaled 16-bit image and its mask stay 16 bit.
+        var png = TestImages.Write(Path.Combine(_dir, "src"), "deep.png", 60, 40, ColorSpace.sRGB, 16, 300, alpha: true);
+        var pdf = TestPdfs.OnePage(In, "deep.pdf", png, Cm(60, 100), Cm(40, 100));
+        var id = PdfImageScanner.Scan(pdf).Images.Single().Image;
+
+        var result = await Run(pdf, Output(), ProcessingOptions.Default with { Operations = Operations.Resample });
+
+        Assert.Equal(Status.Ok, result.Status);
+        var mask = SoftMask(Output(), id).StreamDictionary;
+        Assert.Equal(16, Int(mask, "BitsPerComponent"));
+        Assert.Equal((180, 120), (Int(mask, "Width"), Int(mask, "Height")));
+        Assert.Equal(16, Int(ImageStream(Output(), id).StreamDictionary, "BitsPerComponent"));
     }
 
     [Fact]
@@ -361,6 +385,303 @@ public sealed class PdfPipelineTests : IDisposable
         Assert.False(SourceImage.IsPdf(jpeg));
     }
 
+    // ---- fix round 1 ----
+
+    /// <summary>Records the pipeline's test hook events while <paramref name="action"/> runs.</summary>
+    private static async Task<List<(string Stage, string Path)>> Hooked(Func<Task> action, Action<string, string>? also = null)
+    {
+        var events = new List<(string, string)>();
+        PdfPipeline.TestHook.Value = (stage, path) =>
+        {
+            lock (events) events.Add((stage, path));
+            also?.Invoke(stage, path);
+        };
+        try
+        {
+            await action();
+        }
+        finally
+        {
+            PdfPipeline.TestHook.Value = null;
+        }
+        return events;
+    }
+
+    public static TheoryData<string, string> CheapRejections => new()
+    {
+        { "colourkey", "a colour-key mask on an image that needs scaling is not supported" },
+        { "stencil", "a stencil mask that needs scaling is not supported" },
+        { "smaskindata", "JPEG 2000 with its own mask is not supported" },
+        { "matte", "a soft mask with /Matte is not supported" },
+        { "pattern", "the Pattern colour space is not supported" },
+        { "devicen2", "a colour space with 2 components is not supported" },
+        { "jbig2", "JBIG2Decode image data is not supported" },
+    };
+
+    [Theory]
+    [MemberData(nameof(CheapRejections))]
+    public async Task Pdf_BadImageOnPage2_FailsWhilePlanning_NothingResampled(string kind, string what)
+    {
+        // M4: page 1 needs scaling and is fine; page 2 needs scaling and cannot be processed. Nothing is resampled.
+        var good = Jpeg("good.jpg");
+        const string Head = "/Type /XObject /Subtype /Image /Width 60 /Height 40";
+        var rgb = TestPdfs.Deflate(new byte[60 * 40 * 3]);
+        Func<Illux.ImageTool.Pdf.PdfObjectWriter, (string, byte[])> bad = kind switch
+        {
+            "colourkey" => _ => JpegEntries(Jpeg("bad.jpg"), " /Mask [0 10 0 10 0 10]"),
+            "stencil" => _ => ($"{Head} /ImageMask true /Filter /FlateDecode", TestPdfs.Deflate(new byte[8 * 40])),
+            "smaskindata" => _ => ($"{Head} /ColorSpace /DeviceRGB /Filter /JPXDecode /SMaskInData 1", [0, 0, 0, 12]),
+            "matte" => w =>
+            {
+                var mask = TestPdfs.WriteStream(w, $"{Head} /ColorSpace /DeviceGray /BitsPerComponent 8 /Matte [0 0 0] /Filter /FlateDecode",
+                    TestPdfs.Deflate(new byte[60 * 40]));
+                return ($"{Head} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {mask} 0 R /Filter /FlateDecode", rgb);
+            },
+            "pattern" => _ => ($"{Head} /ColorSpace /Pattern /BitsPerComponent 8 /Filter /FlateDecode", rgb),
+            "devicen2" => _ => ($"{Head} /ColorSpace [/DeviceN [/A /B] /DeviceCMYK null] /BitsPerComponent 8 /Filter /FlateDecode", rgb),
+            "jbig2" => _ => ($"{Head} /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode", [0, 0, 0, 0]),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+        var pdf = TestPdfs.CustomPages(In, "bad.pdf",
+            (_ => JpegEntries(good), Cm(60, 100), Cm(40, 100)), (bad, Cm(60, 100), Cm(40, 100)));
+
+        FileResult? result = null;
+        var events = await Hooked(async () => result = await Process(pdf));
+
+        Assert.Equal([$"page 2, image 1: {what}"], result!.Messages);
+        Assert.Equal(Status.Error, result.Status);
+        Assert.Empty(events);
+        Assert.Empty(OutNames());
+    }
+
+    [Fact]
+    public async Task Pdf_DocumentClosedWhileTheImageIsResampled()
+    {
+        // M3: nothing holds the input open while the image pipeline runs (FileShare.None would fail otherwise).
+        var pdf = TestPdfs.OnePage(In, "a.pdf", Jpeg("a.jpg"), Cm(60, 100), Cm(40, 100));
+        var exclusive = new List<bool>();
+
+        var events = await Hooked(() => Run(pdf, Output()), (stage, path) =>
+        {
+            if (stage != "resample") return;
+            try
+            {
+                using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None)) exclusive.Add(true);
+            }
+            catch (IOException)
+            {
+                exclusive.Add(false);
+            }
+        });
+
+        Assert.Equal([true], exclusive);
+        Assert.Single(events, e => e.Stage == "resample");
+    }
+
+    [Fact]
+    public async Task Pdf_TempFilesOfAnImageAreGoneBeforeTheNextStarts()
+    {
+        var pdf = TestPdfs.Pages(In, "three.pdf",
+            (Jpeg("1.jpg"), Cm(60, 100), Cm(40, 100)), (Jpeg("2.jpg"), Cm(60, 100), Cm(40, 100)), (Jpeg("3.jpg"), Cm(60, 100), Cm(40, 100)));
+        var leftOver = new List<int>();
+
+        await Hooked(() => Run(pdf, Output()), (stage, root) =>
+        {
+            if (stage == "image") leftOver.Add(Directory.GetFileSystemEntries(root, "*", SearchOption.AllDirectories).Length);
+        });
+
+        Assert.Equal([0, 0, 0], leftOver);
+        Assert.Equal(["out.pdf"], OutNames());
+    }
+
+    [Fact]
+    public async Task Pdf_SoftMaskedImageScaled_MaskUnderItsOwnIdLinesUp()
+    {
+        // Q3: an 8-bit PNG with alpha (image + soft mask) drawn at 100 ppi → 300 ppi: both become 180 × 120.
+        var png = TestImages.Write(Path.Combine(_dir, "src"), "alpha.png", 60, 40, ColorSpace.sRGB, 8, 72, alpha: true);
+        var pdf = TestPdfs.OnePage(In, "alpha.pdf", png, Cm(60, 100), Cm(40, 100));
+        var before = PdfImageScanner.Scan(pdf);
+        var id = before.Images.Single().Image;
+
+        var result = await Run(pdf, Output());
+
+        Assert.Equal(Status.Ok, result.Status);
+        AssertSamePages(pdf, Output());
+        AssertSameDrawnSizes(before, Output());
+        Assert.Equal((180, 120), Size(Output(), id));
+        Assert.Equal(MaskId(pdf, id), MaskId(Output(), id));
+        var mask = SoftMask(Output(), id).StreamDictionary;
+        Assert.Equal((180, 120), (Int(mask, "Width"), Int(mask, "Height")));
+        Assert.Equal("/FlateDecode", mask.Data["Filter"].ToString());
+        AssertNonImageStreamsSame(pdf, Output());
+    }
+
+    [Fact]
+    public async Task Pdf_SharedSoftMask_ReplacedOnceUnderItsId()
+    {
+        // Two images share one soft mask: page 1 is scaled 3× (100 → 300 ppi), page 2 2× (150 → 300 ppi). The mask is
+        // scaled once, with the first image; a soft mask is mapped onto each image whatever its pixel size.
+        const string Head = "/Type /XObject /Subtype /Image /Width 60 /Height 40 /BitsPerComponent 8 /Filter /FlateDecode";
+        var mask = 0;
+        var pdf = TestPdfs.CustomPages(In, "shared.pdf",
+            (w =>
+            {
+                mask = TestPdfs.WriteStream(w, $"{Head} /ColorSpace /DeviceGray",
+                    TestPdfs.Deflate(Enumerable.Range(0, 2400).Select(i => (byte)i).ToArray()));
+                return ($"{Head} /ColorSpace /DeviceRGB /SMask {mask} 0 R", TestPdfs.Deflate(new byte[60 * 40 * 3]));
+            }, Cm(60, 100), Cm(40, 100)),
+            (_ => ($"{Head} /ColorSpace /DeviceRGB /SMask {mask} 0 R", TestPdfs.Deflate(new byte[60 * 40 * 3])), Cm(60, 150), Cm(40, 150)));
+        var images = PdfImageScanner.Scan(pdf).Images;
+
+        var result = await Run(pdf, Output());
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.Equal([(180, 120), (120, 80)], images.Select(i => Size(Output(), i.Image)));
+        Assert.All(images, i => Assert.Equal(new PdfObjectId(mask, 0), MaskId(Output(), i.Image)));
+        var maskDictionary = ImageStream(Output(), new PdfObjectId(mask, 0)).StreamDictionary;
+        Assert.Equal((180, 120), (Int(maskDictionary, "Width"), Int(maskDictionary, "Height")));
+    }
+
+    [Theory]
+    [InlineData(90)]
+    [InlineData(30)]
+    public async Task Pdf_RotatedImage_ScaledAlongItsOwnAxes(double degrees)
+    {
+        // 60 × 40 px drawn 1.524 × 1.016 cm along its axes (100 ppi), turned on the page: 180 × 120 px at 300 ppi.
+        var pdf = TestPdfs.OnePage(In, "turned.pdf", Jpeg("t.jpg"), Cm(60, 100), Cm(40, 100), rotateDegrees: degrees);
+        var before = PdfImageScanner.Scan(pdf);
+
+        var result = await Run(pdf, Output());
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.StartsWith("page 1, image 1: 100→300 ppi", result.Messages[0]);
+        AssertSamePages(pdf, Output());
+        var image = AssertSameDrawnSizes(before, Output()).Single();
+        Assert.Equal((180, 120), Size(Output(), image.Image));
+        AssertNonImageStreamsSame(pdf, Output());
+    }
+
+    [Fact]
+    public async Task Pdf_ContentStreamsUnchanged()
+    {
+        // Spec 7: the drawing instructions (page content, form content) keep their bytes.
+        var chili = TestPdfs.ChiliLike(In, "chili.pdf", Jpeg("c.jpg"), Cm(60, 100), Cm(40, 100));
+        var inForm = TestPdfs.InForm(In, "form.pdf", Jpeg("f.jpg"), Cm(60, 100), Cm(40, 100));
+
+        await Run(chili, Output("chili.pdf"));
+        await Run(inForm, Output("form.pdf"));
+
+        Assert.True(AssertNonImageStreamsSame(chili, Output("chili.pdf")) >= 3); // page content, form, ICC profile
+        Assert.True(AssertNonImageStreamsSame(inForm, Output("form.pdf")) >= 2); // page content, form
+        var id = PdfImageScanner.Scan(chili).Images.Single().Image;
+        Assert.Equal((180, 120), Size(Output("chili.pdf"), id)); // and the image did change
+    }
+
+    [Fact]
+    public async Task Pdf_LongPath_Works()
+    {
+        // The per-image temp files sit deeper than the output; all Magick reads go through .NET IO.
+        var deep = Path.Combine(OutDir, new string('d', 90), new string('e', 90), new string('f', 90));
+        Directory.CreateDirectory(deep);
+        var png = TestImages.Write(Path.Combine(_dir, "src"), "p.png", 60, 40, ColorSpace.sRGB, 8, 72);
+        var pdf = TestPdfs.OnePage(In, "p.pdf", png, Cm(60, 100), Cm(40, 100));
+        var output = Path.Combine(deep, "out.pdf");
+        Assert.True(output.Length > 300);
+
+        var result = await Run(pdf, output);
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.Equal((180, 120), Size(output, PdfImageScanner.Scan(output).Images.Single().Image));
+    }
+
+    [Theory]
+    [InlineData("pieceinfo", "<< /PieceInfo << /Illustrator << /LastModified (D:20260101) /Private 5 0 R >> >> >>", "<< /Type /Private >>")]
+    [InlineData("aiprivatedata", "<< /Type /Private >>", "<< /AIPrivateData1 (x) /NumBlock 1 >>")]
+    public async Task Pdf_IllustratorContent_Error(string name, string object4, string object5)
+    {
+        var pdf = TestPdfs.Classic(In, name + ".pdf", (4, $"4 0 obj\n{object4}\nendobj"), (5, $"5 0 obj\n{object5}\nendobj"));
+
+        var result = await Process(pdf);
+
+        Assert.Equal(["Illustrator files are not supported"], result.Messages);
+        Assert.Equal(Status.Error, result.Status);
+        Assert.Empty(OutNames());
+    }
+
+    [Fact]
+    public async Task Pdf_AiExtension_Error_AsPdfOrPostScript()
+    {
+        var pdf = TestPdfs.OnePage(In, "logo.ai", Jpeg("l.jpg"), Cm(60, 100), Cm(40, 100));
+        var postScript = Path.Combine(In, "old.ai");
+        File.WriteAllText(postScript, "%!PS-Adobe-3.0 EPSF-3.0\n%%Creator: Adobe Illustrator\n%%Trailer\n");
+
+        var fromPdf = await Process(pdf);
+        var fromPostScript = await Process(postScript);
+
+        Assert.Equal(["Illustrator files are not supported"], fromPdf.Messages);
+        Assert.Equal(["Illustrator files are not supported"], fromPostScript.Messages);
+        Assert.Empty(OutNames());
+    }
+
+    [Fact]
+    public void IsPdf_FalseForImageSignatures()
+    {
+        Directory.CreateDirectory(_dir);
+        string Write(string name, byte[] start)
+        {
+            var path = Path.Combine(_dir, name);
+            File.WriteAllBytes(path, [.. start, .. "<x:xmpmeta>%PDF-1.4 in metadata</x:xmpmeta>"u8.ToArray()]);
+            return path;
+        }
+
+        Assert.False(SourceImage.IsPdf(Write("a.jpg", [0xFF, 0xD8, 0xFF, 0xE1])));
+        Assert.False(SourceImage.IsPdf(Write("a.tif", [(byte)'I', (byte)'I', (byte)'*', 0])));
+        Assert.False(SourceImage.IsPdf(Write("b.tif", [(byte)'M', (byte)'M', 0, (byte)'*'])));
+        Assert.False(SourceImage.IsPdf(Write("a.png", [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A])));
+        Assert.True(SourceImage.IsPdf(Write("junk.bin", "junk\n"u8.ToArray())));
+    }
+
+    [Fact]
+    public async Task Jpeg_WithPdfTextInItsMetadata_ProcessedAsImage()
+    {
+        var jpeg = Jpeg("meta.jpg");
+        using (var image = new MagickImage(jpeg))
+        {
+            image.SetAttribute("comment", "%PDF-1.4 exported from somewhere");
+            image.Write(jpeg);
+        }
+        Assert.Contains("%PDF-1.4", System.Text.Encoding.Latin1.GetString(File.ReadAllBytes(jpeg)));
+
+        var result = await Process(jpeg);
+
+        Assert.NotEqual(Status.Error, result.Status);
+        Assert.DoesNotContain(result.Messages, m => m.StartsWith("page ", StringComparison.Ordinal));
+        Assert.Equal(["meta.jpg"], OutNames());
+    }
+
+    [Fact]
+    public void Translate_MapsFailuresToTheUsersMessages()
+    {
+        Assert.Equal("the PDF could not be read (cut short)",
+            Assert.IsType<UnsupportedImageException>(PdfPipeline.Translate("page 1, image 1: ", new EndOfStreamException("cut short"))).Message);
+        Assert.Equal("the PDF could not be read (bad data)",
+            Assert.IsType<UnsupportedImageException>(PdfPipeline.Translate("page 1, image 1: ", new InvalidDataException("bad data"))).Message);
+        Assert.Equal("page 1, image 1: the X colour space is not supported",
+            PdfPipeline.Translate("page 1, image 1: ", new UnsupportedImageException("the X colour space is not supported"))!.Message);
+        Assert.Null(PdfPipeline.Translate("page 1, image 1: ", new IOException("disk full")));
+        Assert.Null(PdfPipeline.Translate("page 1, image 1: ", new OutOfMemoryException()));
+    }
+
+    [Fact]
+    public void RawObjects_FileEndsWhileCopying_InvalidData()
+    {
+        var raw = new PdfRawObjects(new MemoryStream(new byte[10]), []);
+
+        var ex = Assert.Throws<InvalidDataException>(() => raw.CopyTo(new MemoryStream(), 0, 20));
+
+        Assert.Equal("the PDF file ended while an object was copied", ex.Message);
+    }
+
     // ---- helpers ----
 
     private static (string Entries, byte[] Data) JpegEntries(string jpeg, string extra = "")
@@ -417,5 +738,37 @@ public sealed class PdfPipelineTests : IDisposable
             Assert.Equal(b.HeightCm, a.HeightCm, 1e-6);
         }
         return after.Images;
+    }
+
+    private static PdfObjectId MaskId(string pdf, PdfObjectId image)
+    {
+        var reference = Assert.IsType<IndirectReferenceToken>(ImageStream(pdf, image).StreamDictionary.Data["SMask"]);
+        return new PdfObjectId((int)reference.Data.ObjectNumber, reference.Data.Generation);
+    }
+
+    private static byte[] Inflate(byte[] data)
+    {
+        using var input = new System.IO.Compression.ZLibStream(new MemoryStream(data), System.IO.Compression.CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        input.CopyTo(output);
+        return output.ToArray();
+    }
+
+    /// <summary>Every stream that is not an image has the same raw (encoded) bytes in both files; returns how many.</summary>
+    private static int AssertNonImageStreamsSame(string input, string output)
+    {
+        using var a = PdfDocument.Open(input);
+        using var b = PdfDocument.Open(output);
+        var count = 0;
+        foreach (var reference in a.Structure.CrossReferenceTable.ObjectOffsets.Keys)
+        {
+            if (a.Structure.GetObject(reference).Data is not StreamToken stream) continue;
+            if (stream.StreamDictionary.Data.TryGetValue("Subtype", out var subtype) && subtype is NameToken { Data: "Image" }) continue;
+            if (stream.StreamDictionary.Data.TryGetValue("Type", out var type) && type is NameToken { Data: "ObjStm" or "XRef" }) continue;
+            var after = Assert.IsType<StreamToken>(b.Structure.GetObject(reference).Data);
+            Assert.Equal(stream.Data.ToArray(), after.Data.ToArray());
+            count++;
+        }
+        return count;
     }
 }

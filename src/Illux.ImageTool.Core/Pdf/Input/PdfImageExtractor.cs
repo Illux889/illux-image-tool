@@ -32,25 +32,7 @@ public static class PdfImageExtractor
         ArgumentException.ThrowIfNullOrEmpty(tempDir);
 
         var source = PdfImageObject.Read(doc, image);
-        if (source.Codec == PdfImageObject.Jpx && source.Get("SMaskInData") is NumericToken { Double: not 0 })
-            throw new UnsupportedImageException("JPEG 2000 with its own mask is not supported");
-        if (needsScaling && source.Get("Mask") is ArrayToken)
-            throw new UnsupportedImageException("a colour-key mask on an image that needs scaling is not supported");
-        if (needsScaling && source.IsImageMask)
-            throw new UnsupportedImageException("a stencil mask that needs scaling is not supported");
-        // Expansion turns indices into colours, which a colour key (index ranges) cannot describe (ruling Q10).
-        if (source.Get("Mask") is ArrayToken && source.ColorSpace().Palette != null)
-            throw new UnsupportedImageException("an indexed image with a colour-key mask is not supported");
-
-        PdfImageObject? mask = null;
-        PdfObjectId? maskId = null;
-        if (source.Dictionary.Data.TryGetValue("SMask", out var smask) && smask is IndirectReferenceToken maskReference)
-        {
-            maskId = new PdfObjectId(checked((int)maskReference.Data.ObjectNumber), maskReference.Data.Generation);
-            mask = PdfImageObject.Read(doc, maskId.Value);
-            if (mask.Dictionary.Data.ContainsKey("Matte"))
-                throw new UnsupportedImageException("a soft mask with /Matte is not supported");
-        }
+        var (mask, maskId) = CheckImage(doc, source, needsScaling);
 
         MagickSetup.Configure();
         Directory.CreateDirectory(tempDir);
@@ -77,6 +59,55 @@ public static class PdfImageExtractor
             WriteTiff(mask, maskPath, softMask: true);
         }
         return new ExtractedImage(path, isJpeg, maskPath, maskId);
+    }
+
+    /// <summary>
+    /// The checks <see cref="Extract"/> makes before writing anything, with the same exceptions, and without decoding
+    /// image data: so a PDF with an image that cannot be processed fails before any image is resampled.
+    /// </summary>
+    public static void Check(PdfDocument doc, PdfObjectId image, bool needsScaling)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        CheckImage(doc, PdfImageObject.Read(doc, image), needsScaling);
+    }
+
+    /// <summary>The mask cases, colour space, components and filters; returns the soft mask (and its id) if any.</summary>
+    private static (PdfImageObject? Mask, PdfObjectId? MaskId) CheckImage(PdfDocument doc, PdfImageObject source, bool needsScaling)
+    {
+        if (source.Codec == PdfImageObject.Jpx && source.Get("SMaskInData") is NumericToken { Double: not 0 })
+            throw new UnsupportedImageException("JPEG 2000 with its own mask is not supported");
+        if (needsScaling && source.Get("Mask") is ArrayToken)
+            throw new UnsupportedImageException("a colour-key mask on an image that needs scaling is not supported");
+        if (needsScaling && source.IsImageMask)
+            throw new UnsupportedImageException("a stencil mask that needs scaling is not supported");
+        var colorSpace = source.ColorSpace();
+        // Expansion turns indices into colours, which a colour key (index ranges) cannot describe (ruling Q10).
+        if (source.Get("Mask") is ArrayToken && colorSpace.Palette != null)
+            throw new UnsupportedImageException("an indexed image with a colour-key mask is not supported");
+
+        PdfImageObject? mask = null;
+        PdfObjectId? maskId = null;
+        if (source.Dictionary.Data.TryGetValue("SMask", out var smask) && smask is IndirectReferenceToken maskReference)
+        {
+            maskId = new PdfObjectId(checked((int)maskReference.Data.ObjectNumber), maskReference.Data.Generation);
+            mask = PdfImageObject.Read(doc, maskId.Value);
+            if (mask.Dictionary.Data.ContainsKey("Matte"))
+                throw new UnsupportedImageException("a soft mask with /Matte is not supported");
+        }
+
+        source.CheckFilters();
+        if (source.Codec is null)
+        {
+            var components = colorSpace.Palette?.Base.Components ?? colorSpace.Components;
+            if (components is not (1 or 3 or 4))
+                throw new UnsupportedImageException($"a colour space with {components} components is not supported");
+        }
+        else if (source.Codec == PdfImageObject.Jpx && (source.Get("ColorSpace") is null || colorSpace.Palette != null))
+        {
+            throw PdfImageObject.Unsupported(PdfImageObject.Jpx);
+        }
+        mask?.CheckFilters();
+        return (mask, maskId);
     }
 
     /// <summary>

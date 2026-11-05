@@ -26,6 +26,7 @@ public static class PdfImageScanner
 
     public static PdfScan Scan(string path)
     {
+        if (SourceImage.IsIllustratorName(path)) throw new UnsupportedImageException(SourceImage.IllustratorMessage);
         try
         {
             using var stream = File.OpenRead(path);
@@ -102,7 +103,7 @@ public static class PdfImageScanner
 
         public PdfScan Scan(string? headerVersion)
         {
-            CheckNotSigned();
+            CheckSupported();
             for (var number = 1; number <= document.NumberOfPages; number++) ScanPage(number);
             var header = headerVersion ?? document.Version.ToString("0.0", CultureInfo.InvariantCulture);
             var catalogVersion = (Resolve(Get(document.Structure.Catalog.CatalogDictionary, "Version")) as NameToken)?.Data;
@@ -218,21 +219,33 @@ public static class PdfImageScanner
         }
 
         /// <summary>A signed PDF (AcroForm /SigFlags bit 1, or a signature dictionary with /ByteRange) cannot be rewritten.</summary>
-        private void CheckNotSigned()
+        /// <summary>
+        /// Signed PDFs (ruling Q6) and Illustrator files (ruling Q12: <c>/PieceInfo</c> with <c>/Illustrator</c>, or
+        /// <c>AIPrivateData</c> entries, in any object) are refused; a signature wins.
+        /// </summary>
+        private void CheckSupported()
         {
             if (Resolve(Get(document.Structure.Catalog.CatalogDictionary, "AcroForm")) is DictionaryToken acroForm
                 && Resolve(Get(acroForm, "SigFlags")) is NumericToken flags
                 && ((int)flags.Double & 1) != 0)
                 throw new UnsupportedImageException("signed PDFs are not supported");
 
+            var illustrator = false;
             foreach (var reference in document.Structure.CrossReferenceTable.ObjectOffsets.Keys)
             {
                 // One object that will not parse (e.g. unreferenced garbage) must not make the whole PDF unreadable.
                 try
                 {
-                    if (document.Structure.GetObject(reference)?.Data is DictionaryToken dictionary
-                        && dictionary.Data.ContainsKey("ByteRange"))
+                    var dictionary = document.Structure.GetObject(reference)?.Data switch
+                    {
+                        DictionaryToken d => d,
+                        StreamToken s => s.StreamDictionary,
+                        _ => null,
+                    };
+                    if (dictionary is null) continue;
+                    if (dictionary.Data.ContainsKey("ByteRange"))
                         throw new UnsupportedImageException("signed PDFs are not supported");
+                    illustrator |= IsIllustrator(dictionary);
                 }
                 catch (UnsupportedImageException)
                 {
@@ -243,7 +256,12 @@ public static class PdfImageScanner
                     // Deliberately ignored: an object PdfPig cannot parse is not a signature a reader would honour either.
                 }
             }
+            if (illustrator) throw new UnsupportedImageException(SourceImage.IllustratorMessage);
         }
+
+        private bool IsIllustrator(DictionaryToken dictionary) =>
+            dictionary.Data.Keys.Any(k => k.StartsWith("AIPrivateData", StringComparison.Ordinal))
+            || (Resolve(Get(dictionary, "PieceInfo")) is DictionaryToken pieceInfo && pieceInfo.Data.ContainsKey("Illustrator"));
 
         private List<PdfImageEntry> Aggregate()
         {

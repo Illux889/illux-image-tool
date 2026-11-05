@@ -8,7 +8,7 @@ A small program for Windows and macOS (Apple silicon) that prepares images for p
 - **Resample:** brings the resolution to a target ppi (bicubic) when it is outside the range of its resolution rule. See [Resolution rules](#resolution-rules).
 - **Baseline:** rewrites progressive JPEGs as baseline JPEGs, without losing quality when possible.
 - **PDF:** can also write a PDF 1.6 with the image on one page.
-- **PDF input:** PDF files (for example from CHILI Publish) are accepted too. Every image in the PDF gets the same treatment, using the size it is drawn at on the page as its print size. A PDF in always gives one PDF out, with the same name, whatever `output=` says; its pages, page sizes and everything else stay the same. Encrypted and signed PDFs are not supported.
+- **PDF input:** PDF files (for example from CHILI Publish) are accepted too. Every image in the PDF gets the same treatment, using the size it is drawn at on the page as its print size. A PDF in always gives one PDF out, with the same name, whatever `output=` says; its pages, page sizes and everything else stay the same. Encrypted and signed PDFs, and Illustrator files, are not supported.
 
 Colours and ICC profiles are never changed, and EXIF, XMP and IPTC metadata are kept as they are (the pixel size recorded inside EXIF is not updated). Only what an operation needs changes: the pixel size and the stored resolution after resampling, and the bit depth. Photoshop layers inside a TIFF are dropped when its pixels are rewritten (the flattened image is kept, and the file gets a warning).
 

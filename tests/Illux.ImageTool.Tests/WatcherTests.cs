@@ -631,6 +631,48 @@ public sealed class WatcherTests : IDisposable
     }
 
     [Fact]
+    public void VerifyOutputs_PdfByContent_JunkBeforeHeader_NoExtension_LongTail()
+    {
+        Directory.CreateDirectory(_dir);
+        string Write(string name, string text)
+        {
+            var path = Path.Combine(_dir, name);
+            File.WriteAllBytes(path, System.Text.Encoding.Latin1.GetBytes(text));
+            return path;
+        }
+        const string Body = "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n";
+
+        Assert.Null(FolderScanner.VerifyOutputs([Write("junk.pdf", "MacBinary junk\n" + Body)]));
+        Assert.Null(FolderScanner.VerifyOutputs([Write("late.pdf", new string('x', 1019) + Body)]));
+        Assert.Null(FolderScanner.VerifyOutputs([Write("card", Body)]));
+        Assert.Null(FolderScanner.VerifyOutputs([Write("card.jpg", Body)]));
+        Assert.Null(FolderScanner.VerifyOutputs([Write("card.ai", Body)]));
+        Assert.Null(FolderScanner.VerifyOutputs([Write("tail.pdf", Body + new string(' ', 30_000) + "trailing data")]));
+
+        // PDF content is never handed to ImageMagick: a broken one is refused by the PDF check.
+        Assert.Equal("output 'broken.jpg' could not be re-opened",
+            FolderScanner.VerifyOutputs([Write("broken.jpg", "%PDF-1.4\n1 0 obj\n<<>>\nendobj\n")]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([Write("tootail.pdf", Body + new string(' ', 70_000))]));
+        Assert.NotNull(FolderScanner.VerifyOutputs([Write("toolate.pdf", new string('x', 1020) + Body)]));
+    }
+
+    [Fact]
+    public async Task Watcher_PdfWithoutExtension_PdfInOut()
+    {
+        var image = TestImages.Write(Path.Combine(_dir, "src"), "p.jpg", 60, 40, ColorSpace.sRGB, 8, 72);
+        var pdf = TestPdfs.OnePage(Path.Combine(_dir, "src"), "card.pdf", image, 60 / 100.0 * 2.54, 40 / 100.0 * 2.54);
+        Directory.CreateDirectory(In);
+        File.Move(pdf, Path.Combine(In, "card"));
+
+        await ScanTwice(Scanner());
+
+        Assert.Equal(["card"], Names(Out));
+        Assert.Equal(["card"], Names(Originals));
+        Assert.False(Directory.Exists(Error));
+        Assert.StartsWith("%PDF-1.4", System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(Path.Combine(Out, "card")), 0, 8));
+    }
+
+    [Fact]
     public async Task Watcher_PdfDropped_PdfInOut_OriginalMoved()
     {
         // A PDF 1.4 whose image is drawn at 100 ppi (Small → 300 ppi); output=both still gives only the PDF.

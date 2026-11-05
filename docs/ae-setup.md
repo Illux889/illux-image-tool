@@ -46,13 +46,13 @@ Write each parameter on its own line. They are not case sensitive.
 | `output=same` | Same format as the input. This is the default. |
 | `output=pdf` | Write a PDF 1.6 with one page instead. |
 | `output=both` | Write the image and the PDF. |
-
-A PDF input ignores `output=`: it always gives one PDF.
 | `missingppi=72` | No resolution in the image: assume 72 ppi and give a warning. Default. |
 | `missingppi=skip` | No resolution in the image: do not resample it and give a warning. |
 | `missingppi=error` | No resolution in the image: treat it as an error. |
 | `quality=95` | JPEG quality (1-100) when a JPEG has to be re-encoded. Default 95. |
 | `filter=bicubic` | Resampling method, up and down. Also `lanczos` and `mitchell`. Default `bicubic` (Photoshop's plain Bicubic). |
+
+A PDF input ignores `output=`: it always gives one PDF.
 
 `8bit`, `resample` and `baseline` are the operations.
 
@@ -85,7 +85,7 @@ An image inside a PDF has no ppi of its own. Its print size is the size it is dr
 
 - If no image needs a change, the PDF is copied unchanged (`no change needed`).
 - If any image fails, the whole PDF fails and nothing is written for it.
-- Encrypted or signed PDFs are not supported (Error).
+- Encrypted or signed PDFs, and Illustrator files (`.ai`), are not supported (Error).
 - A PDF without images is copied with the Warning `no images found`. Small images written straight into the page (inline images) are not processed: Warning `N inline image(s) not processed`.
 - An image used at different sizes is processed once, for its largest size, with a Warning.
 

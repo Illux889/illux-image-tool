@@ -9,7 +9,7 @@ public static class CliHelp
 
         PDF files are accepted too: every image in the PDF gets the same treatment, at the size it is drawn on the
         page, and the PDF keeps its pages and page sizes. A PDF in always gives one PDF out, with the same name,
-        whatever output= says.
+        whatever output= says. Encrypted and signed PDFs and Illustrator files are not supported.
 
         Usage:
           IlluxImageTool.exe ae "<input files>" "<output folder>" [parameters]
