@@ -9,7 +9,8 @@
 #    Contents/Resources/app), ad-hoc signed.
 # 3. Lays out the payload:
 #      /Applications/Illux Image Tool.app
-#      /Library/Application Support/Illux Image Tool/bin/            (IlluxImageTool, IlluxImageToolWatcher, tools/)
+#      /Library/Application Support/Illux Image Tool/bin/            (IlluxImageTool, IlluxImageToolWatcher, tools/,
+#                                                                     THIRD-PARTY-NOTICES.md)
 #      /Library/Application Support/Illux Image Tool/uninstall.sh
 #      /Library/LaunchDaemons/dk.illux.imagetool.watcher.plist
 #      /Library/LaunchAgents/dk.illux.imagetool.tray.plist
@@ -78,6 +79,9 @@ done
 for rel in IlluxImageTool IlluxImageToolWatcher tools/jpegtran/jpegtran; do
     [[ -x "$BIN/$rel" ]] || { echo "bin/ lacks the executable $rel." >&2; exit 1; }
 done
+# The notices of the open-source components; jpegtran's own licence is already in bin/tools/jpegtran/.
+install -m 0644 "$REPO_ROOT/THIRD-PARTY-NOTICES.md" "$BIN/THIRD-PARTY-NOTICES.md"
+[[ -f "$BIN/tools/jpegtran/LICENSE.md" ]] || { echo "bin/ lacks tools/jpegtran/LICENSE.md." >&2; exit 1; }
 install -m 0700 "$HERE/uninstall.sh" "$PAYLOAD/$DATA_ROOT/uninstall.sh"
 
 # --- the settings app bundle ---

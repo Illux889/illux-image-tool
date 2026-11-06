@@ -104,6 +104,27 @@ public sealed class CliTests : AppRootTestBase
     }
 
     [Fact]
+    public async Task Cli_Pdf_ExitCodeLikeImage()
+    {
+        var image = TestImages.Write(Path.Combine(Dir, "src"), "p.jpg", 60, 40, ColorSpace.sRGB, 8, 72);
+        var fine = TestPdfs.OnePage(In, "fine.pdf", image, 60 / 300.0 * 2.54, 40 / 300.0 * 2.54);
+        var empty = TestPdfs.NoImages(In, "empty.pdf");
+        var locked = TestPdfs.Encrypted(In, "locked.pdf");
+
+        var ok = await Run("ae", fine, Out, "output=pdf");
+        var warning = await Run("ae", empty, Out);
+        var error = await Run("ae", locked, Out);
+
+        Assert.Equal(0, ok.Exit);
+        Assert.Contains("fine.pdf: page 1, image 1: ", ok.Output);
+        Assert.Equal(1, warning.Exit);
+        Assert.Contains("WARNING: empty.pdf: no images found", warning.Output);
+        Assert.Equal(2, error.Exit);
+        Assert.Contains("ERROR: locked.pdf: encrypted PDFs are not supported", error.Output);
+        Assert.Equal(["empty.pdf", "fine.pdf"], OutNames());
+    }
+
+    [Fact]
     public async Task Cli_Run_Folder()
     {
         Jpeg("a.jpg");

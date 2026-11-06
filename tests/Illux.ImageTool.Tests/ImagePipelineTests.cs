@@ -39,6 +39,57 @@ public sealed class ImagePipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task RunWithResolution_IgnoresStoredPpi()
+    {
+        // 1181 x 886 px at the drawn 150 ppi is 20 x 15 cm; the stored 72 ppi must play no part.
+        var input = TestImages.Write(_dir, "d.png", 1181, 886, ColorSpace.sRGB, 8, 72);
+        var output = OutPath("d.png");
+
+        var result = await ImagePipeline.RunAsync(input, output, ProcessingOptions.Default, new Resolution(150, 150), CancellationToken.None);
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.True(result.Changed);
+        Assert.Equal(new Resolution(300, 300), result.FinalResolution);
+        Assert.Contains(result.Messages, m => m.StartsWith("150→300 ppi (rule \"Small\": 20.0 × 15.0 cm;", StringComparison.Ordinal));
+        using var image = new MagickImage(output);
+        Assert.Equal(2362u, image.Width);
+        Assert.Equal(1772u, image.Height);
+        Assert.Equal(300, PpiX(image), 0.01);
+    }
+
+    [Theory]
+    [InlineData(MissingPpiPolicy.Assume72)]
+    [InlineData(MissingPpiPolicy.Skip)]
+    [InlineData(MissingPpiPolicy.Error)]
+    public async Task RunWithResolution_NoStoredPpi_NoMissingPpiWarning(MissingPpiPolicy policy)
+    {
+        var input = TestImages.Write(_dir, "n.png", 1181, 886, ColorSpace.sRGB, 8, null);
+        var output = OutPath("n.png");
+
+        var result = await ImagePipeline.RunAsync(input, output, Options(missing: policy) with { Output = OutputMode.Pdf },
+            new Resolution(150, 150), CancellationToken.None);
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.DoesNotContain(result.Messages, m => m.Contains("no resolution stored", StringComparison.Ordinal));
+        Assert.Equal(new Resolution(300, 300), result.FinalResolution);
+    }
+
+    [Fact]
+    public async Task RunWithResolution_InsideRange_CopiesUnchanged()
+    {
+        var input = TestImages.Write(_dir, "c.png", 300, 200, ColorSpace.sRGB, 8, 72);
+        var output = OutPath("c.png");
+
+        var result = await ImagePipeline.RunAsync(input, output, ProcessingOptions.Default, new Resolution(300, 300), CancellationToken.None);
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.False(result.Changed);
+        Assert.Equal(["ppi inside 250–350 (rule \"Small\") — not resampled", "no change needed"], result.Messages);
+        Assert.Equal(new Resolution(300, 300), result.FinalResolution);
+        Assert.Equal(File.ReadAllBytes(input), File.ReadAllBytes(output));
+    }
+
+    [Fact]
     public async Task Pipeline_Tiff16Rgb150_To8Bit300()
     {
         var input = TestImages.Write(_dir, "a.tif", 300, 200, ColorSpace.sRGB, 16, 150, icc: TestImages.SrgbIcc);

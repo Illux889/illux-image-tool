@@ -2,6 +2,7 @@ using ImageMagick;
 using Illux.ImageTool.Imaging;
 using Illux.ImageTool.Options;
 using Illux.ImageTool.Pdf;
+using Illux.ImageTool.Pdf.Input;
 using Illux.ImageTool.Runtime;
 
 namespace Illux.ImageTool.Batch;
@@ -21,6 +22,8 @@ public sealed record FileResult(string Input, Status Status, IReadOnlyList<strin
 /// <summary>
 /// Processes one input file into the output folder following the AE output contract (spec 6): the output(s) are
 /// produced in a temporary folder and moved into place only when complete, so a failing file leaves nothing behind.
+/// A PDF (by content, <see cref="SourceImage.IsPdf"/>) goes through <see cref="PdfPipeline"/> and gives exactly one
+/// PDF under its own name, whatever the output mode.
 /// The temporary folder is next to the destination (R46), except for the macOS folders job (V15, final review C2): it
 /// stages in its private work folder, so nothing in Out can be swapped under it, and moves the outputs into Out with
 /// an exclusive rename.
@@ -64,8 +67,10 @@ public static class FileProcessor
             var fileName = Path.GetFileName(inputPath);
             var baseName = Path.GetFileNameWithoutExtension(inputPath);
             var extension = Path.GetExtension(inputPath);
-            var wantImage = options.Output is OutputMode.Same or OutputMode.Both;
-            var wantPdf = options.Output is OutputMode.Pdf or OutputMode.Both;
+            // A PDF in gives exactly one PDF out, under its own name, whatever output= says (it takes the image's place).
+            var isPdf = SourceImage.IsPdf(inputPath);
+            var wantImage = isPdf || (options.Output is OutputMode.Same or OutputMode.Both);
+            var wantPdf = !isPdf && (options.Output is OutputMode.Pdf or OutputMode.Both);
 
             // Names are decided before any work so a clash costs nothing.
             var targetImage = wantImage ? baseName + extension : null;
@@ -90,7 +95,9 @@ public static class FileProcessor
                 LinkGuard.ThrowIfLinkedFolder(tempDir); // R44: nothing is written through a folder swapped for a link
             }
             var tempImage = Path.Combine(tempDir, fileName);
-            var result = await ImagePipeline.RunAsync(inputPath, tempImage, options, ct).ConfigureAwait(false);
+            var result = isPdf
+                ? await PdfPipeline.RunAsync(inputPath, tempImage, options, ct).ConfigureAwait(false)
+                : await ImagePipeline.RunAsync(inputPath, tempImage, options, ct).ConfigureAwait(false);
             if (result.Status == Status.Error)
                 return new FileResult(inputPath, Status.Error, result.Messages, []);
 

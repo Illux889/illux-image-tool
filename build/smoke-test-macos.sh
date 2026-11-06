@@ -161,6 +161,8 @@ check_eq 'bin/' 'root:wheel 0755' "$(owner_mode "$ROOT/bin")"
 check_eq 'bin/IlluxImageTool' 'root:wheel 0755' "$(owner_mode "$CLI")"
 check_eq 'bin/IlluxImageToolWatcher' 'root:wheel 0755' "$(owner_mode "$ROOT/bin/IlluxImageToolWatcher")"
 check_eq 'bin/tools/jpegtran/jpegtran' 'root:wheel 0755' "$(owner_mode "$ROOT/bin/tools/jpegtran/jpegtran")"
+check_eq 'bin/THIRD-PARTY-NOTICES.md' 'root:wheel 0644' "$(owner_mode "$ROOT/bin/THIRD-PARTY-NOTICES.md")"
+check 'bin/tools/jpegtran/LICENSE.md is installed' test -f "$ROOT/bin/tools/jpegtran/LICENSE.md"
 check_eq 'files in bin/ not owned by root or writable by group/others' '' "$(find "$ROOT/bin" \( ! -user root -o -perm +022 \) -print)"
 check_eq 'uninstall.sh' 'root:wheel 0700' "$(owner_mode "$ROOT/uninstall.sh")"
 check_eq 'update/' 'root:wheel 0700' "$(owner_mode "$ROOT/update")"
@@ -320,6 +322,65 @@ drop_and_check() { # file name, label
 }
 drop_and_check print-20x15cm-150ppi.jpg 'after install'
 check_eq 'Originals was made by the folders job (folder account)' "$ME" "$(stat -f %Su "$WATCH/Originals")"
+
+section 'PDF in the watched folder'
+# A one-page PDF with a synthetic 120 ppi JPEG drawn 61 x 45.7 cm (2882 x 2159 px): rule "Large" scales it to 200 ppi.
+# The PDF is made by the installed CLI (8bit only, so nothing is resampled; output=pdf wraps the JPEG in a one-page PDF).
+python3 -I - "$WORK/chili.png" <<'EOF2'
+import struct, sys, zlib
+w, h = 2882, 2159
+xr = bytes((x * 255) // w for x in range(w))
+rows = bytearray()
+for y in range(h):
+    row = bytearray(3 * w)
+    row[0::3] = xr
+    row[1::3] = bytes([(y * 255) // h]) * w
+    row[2::3] = b'\x80' * w
+    rows += b'\0' + row
+def chunk(kind, data):
+    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+png = b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+png += chunk(b'IDAT', zlib.compress(bytes(rows), 1)) + chunk(b'IEND', b'')
+open(sys.argv[1], 'wb').write(png)
+EOF2
+sips -s format jpeg -s dpiWidth 120 -s dpiHeight 120 "$WORK/chili.png" --out "$WORK/chili-like.jpg" >/dev/null
+check_eq 'chili test JPEG size and resolution' '2882 2159 120 120' "$(image_value "$WORK/chili-like.jpg" pixelWidth) $(image_value "$WORK/chili-like.jpg" pixelHeight) $(image_value "$WORK/chili-like.jpg" dpiWidth) $(image_value "$WORK/chili-like.jpg" dpiHeight)"
+mkdir -p "$WORK/pdf-src" "$WORK/pdf-check" "$WORK/out-cli-pdf"
+"$CLI" run "$WORK/chili-like.jpg" --out "$WORK/pdf-src" 8bit output=pdf
+check_eq 'the installed CLI made the one-page PDF (exit code)' 0 "$?"
+PDF_IN="$WORK/pdf-src/chili-like.pdf"
+check 'the one-page PDF exists' test -f "$PDF_IN"
+media_box() { LC_ALL=C grep -a -o '/MediaBox *\[[^]]*\]' "$1" | head -n 1 | tr -s ' \r\n' ' '; }
+BOX_IN=$(media_box "$PDF_IN")
+check "the input PDF has a /MediaBox ($BOX_IN)" test -n "$BOX_IN"
+
+# The installed CLI on its own: its log line shows the image going to 200 ppi.
+CLI_LINES=$("$CLI" run "$PDF_IN" --out "$WORK/out-cli-pdf" 2>&1); CLI_CODE=$?
+echo "$CLI_LINES"
+check_eq 'the installed CLI processed the PDF (exit code)' 0 "$CLI_CODE"
+check 'the CLI log line shows page 1, image 1 going from 120 to 200 ppi' grep -Eq 'page 1, image 1: 120.+200 ppi' <<< "$CLI_LINES"
+if [[ -f "$WORK/out-cli-pdf/chili-like.pdf" ]]; then cp "$WORK/out-cli-pdf/chili-like.pdf" "$WORK/pdf-check/cli-macos.pdf"; else fail 'the CLI wrote chili-like.pdf'; fi
+
+# The folders job (runs as the runner user): the same PDF dropped into the watched folder.
+mkdir -p "$WORK/drop"; cp "$PDF_IN" "$WORK/drop/chili-like.pdf"
+mv "$WORK/drop/chili-like.pdf" "$WATCH/In/chili-like.pdf"
+check 'the folders job processed the PDF dropped into the watched In folder' wait_until 120 test -f "$WATCH/Out/chili-like.pdf"
+check 'the input PDF was moved to Originals' wait_until 30 test -f "$WATCH/Originals/chili-like.pdf"
+check 'the folders job log says the PDF is done' wait_until 30 folder_log_has "'chili-like\.pdf' done\."
+check 'the folders job log has no warning or error line for the PDF' not grep -Eq "'chili-like\.pdf' (done with warnings|failed)" <<< "$(folder_log)"
+check_eq 'the PDF in Originals is the input, byte for byte' "$(sha "$PDF_IN")" "$(sha "$WATCH/Originals/chili-like.pdf" 2>/dev/null)"
+if [[ -f "$WATCH/Out/chili-like.pdf" ]]; then
+    sleep 1
+    check_eq 'Out holds a PDF' '%PDF-' "$(head -c 5 "$WATCH/Out/chili-like.pdf")"
+    check_eq 'the output PDF has the page size of the input' "$BOX_IN" "$(media_box "$WATCH/Out/chili-like.pdf")"
+    check 'the output PDF is larger (the image went up to 200 ppi)' test "$(stat -f %z "$WATCH/Out/chili-like.pdf")" -gt "$(stat -f %z "$PDF_IN")"
+    check_eq 'the output PDF belongs to the folder account' "$ME" "$(stat -f %Su "$WATCH/Out/chili-like.pdf")"
+    check 'the output PDF image is 4803 px wide' grep -aq '/Width 4803' "$WATCH/Out/chili-like.pdf"
+    check 'the output PDF image is 3598 px high (200 ppi at 61 x 45.7 cm)' grep -aq '/Height 3598' "$WATCH/Out/chili-like.pdf"
+    cp "$WATCH/Out/chili-like.pdf" "$WORK/pdf-check/watched-macos.pdf"
+fi
+check_eq 'Out holds exactly one PDF' 1 "$(find "$WATCH/Out" -maxdepth 1 -name '*.pdf' | wc -l | tr -d ' ')"
+check_eq 'Out holds no image file for the PDF' 0 "$(find "$WATCH/Out" -maxdepth 1 -name 'chili-like.*' ! -name '*.pdf' | wc -l | tr -d ' ')"
 check 'the root job did no watched-folder work' not log_has 'Watched folder'
 check 'the root job runs no watcher loop' not log_has 'Watcher started'
 check "the squatted $SQUAT changed nothing (still the planted file)" test -f "$SQUAT" -a ! -L "$SQUAT"

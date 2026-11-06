@@ -39,12 +39,48 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         return settings;
     }
 
+    /// <summary>Ruling Q12: Illustrator files are refused, whether they hold PDF or PostScript.</summary>
+    internal const string IllustratorMessage = "Illustrator files are not supported";
+
+    /// <summary>True for the <c>.ai</c> extension (ruling Q12; the content check is in the PDF scanner).</summary>
+    internal static bool IsIllustratorName(string path) =>
+        string.Equals(Path.GetExtension(path), ".ai", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>How far into a file the <c>%PDF-</c> header may start (ISO 32000-1, annex H.3: readers accept it within 1024 bytes).</summary>
+    private const int PdfHeaderWindow = 1024;
+
+    // Image files whose metadata (XMP, comments) may contain "%PDF-": never PDFs (ruling Q12).
+    private static ReadOnlySpan<byte> JpegSignature => [0xFF, 0xD8];
+    private static ReadOnlySpan<byte> TiffIntelSignature => [(byte)'I', (byte)'I', (byte)'*', 0];
+    private static ReadOnlySpan<byte> TiffMotorolaSignature => [(byte)'M', (byte)'M', 0, (byte)'*'];
+    private static ReadOnlySpan<byte> PngSignature => [0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+    /// <summary>
+    /// True when <paramref name="path"/> is a PDF by content: <c>%PDF-</c> lies within the first 1024 bytes and the
+    /// file does not start with a JPEG, TIFF or PNG signature (whose metadata may hold that text; ruling Q12). Such
+    /// files go to the PDF pipeline; <see cref="Inspect"/> does not take them as images.
+    /// </summary>
+    public static bool IsPdf(string path)
+    {
+        if (Directory.Exists(path)) return false; // Inspect gives the reason
+        var header = new byte[PdfHeaderWindow];
+        int read;
+        using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            read = fs.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+        var bytes = header.AsSpan(0, read);
+        if (bytes.StartsWith(JpegSignature) || bytes.StartsWith(TiffIntelSignature) || bytes.StartsWith(TiffMotorolaSignature)
+            || bytes.StartsWith(PngSignature))
+            return false;
+        return bytes.IndexOf("%PDF-"u8) >= 0;
+    }
+
     /// <summary>Inspects <paramref name="path"/>; throws <see cref="UnsupportedImageException"/> for inputs we reject.</summary>
     public static SourceImage Inspect(string path)
     {
         if (Directory.Exists(path)) throw new UnsupportedImageException("is a folder, not a file");
         if (RawExtensions.Contains(Path.GetExtension(path)))
             throw new UnsupportedImageException("camera RAW files are not supported");
+        if (IsIllustratorName(path)) throw new UnsupportedImageException(IllustratorMessage);
 
         var format = DetectFormat(path);
         var jpeg = format is MagickFormat.Jpeg or MagickFormat.Jpg ? InspectJpeg(path) : null;
@@ -78,8 +114,6 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         {
             null => throw new UnsupportedImageException("unrecognised file format"),
             MagickFormat.Psd or MagickFormat.Psb => throw new UnsupportedImageException("Photoshop documents (PSD/PSB) are not supported"),
-            MagickFormat.Pdf or MagickFormat.Epdf or MagickFormat.Pdfa or MagickFormat.Ai =>
-                throw new UnsupportedImageException("PDF input is not supported"),
             { } f when Supported.Contains(f) => f,
             { } f => throw new UnsupportedImageException($"{f.ToString().ToUpperInvariant()} files are not supported"),
         };

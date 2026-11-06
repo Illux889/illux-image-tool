@@ -2,6 +2,8 @@
 
 Illux Image Tool runs from a **Run Script** task. It converts images to 8 bit, resamples them to the ppi of the resolution rules (see below), makes JPEGs baseline, and can write a PDF.
 
+It also takes **PDF files** (for example from CHILI Publish). Every image in the PDF gets the same treatment as an image file. A PDF in always gives **one PDF out**, with the same name, whatever `output=` says. The pages, page sizes and everything else in the PDF stay the same; only the pixels of the images change, and each image is still drawn at the same size.
+
 ## Set up (once)
 
 1. **Install the tool on the machine that runs the scripts**, not on the Automation Engine (AE) server. This is the Windows machine with the Esko Script Runner. Run `IlluxImageTool-Setup-<version>.exe` there.
@@ -50,6 +52,8 @@ Write each parameter on its own line. They are not case sensitive.
 | `quality=95` | JPEG quality (1-100) when a JPEG has to be re-encoded. Default 95. |
 | `filter=bicubic` | Resampling method, up and down. Also `lanczos` and `mitchell`. Default `bicubic` (Photoshop's plain Bicubic). |
 
+A PDF input ignores `output=`: it always gives one PDF.
+
 `8bit`, `resample` and `baseline` are the operations.
 
 - Give none of them: all three run.
@@ -75,12 +79,30 @@ The task log names the rule, for example `300→200 ppi (rule "Large": 62.3 × 4
 
 If the rules in `config.json` are not valid, the tool uses the defaults above and the task ends with a Warning that says so.
 
+## PDF files
+
+An image inside a PDF has no ppi of its own. Its print size is the size it is drawn at on the page, and its ppi is its pixels ÷ that size. The rules above then decide, as for an image file. Each message names the page and the image, for example `card.pdf: page 1, image 1: 120→200 ppi (rule "Large": 61.0 × 45.7 cm; 2882×2159 → 4803×3598, bicubic)`.
+
+- If no image needs a change, the PDF is copied unchanged (`no change needed`).
+- If any image fails, the whole PDF fails and nothing is written for it.
+- Encrypted or signed PDFs, and Illustrator files (`.ai`), are not supported (Error).
+- A PDF without images is copied with the Warning `no images found`. Small images written straight into the page (inline images) are not processed: Warning `N inline image(s) not processed`.
+- Images that are not drawn on a page (for example only in a comment or stamp, or in a fill pattern) are not processed: Warning `N image(s) not drawn on a page were not processed`.
+- An image used at different sizes is processed once, for its largest width and its largest height, with a Warning.
+
+### Known limits
+
+- Images that are not drawn on a page are not processed. They get the Warning above.
+- Encrypted PDFs, signed PDFs (a signature, not an empty signature field) and Illustrator files (`.ai`, or a PDF saved with Illustrator editing data) are refused.
+- A few unusual PDF constructs are refused with `the PDF could not be read (…)` rather than risk changing them: non-ASCII names, or strings with carriage returns, inside compressed object streams, and slightly broken cross-reference tables.
+- Such a file can be saved again from Acrobat and dropped in again.
+
 ## Task status
 
 | Status | Meaning |
 |---|---|
 | OK | All files were processed. |
-| Warning | All files were written, but something needs a look. For example, an image had no resolution, was enlarged by more than 4 times, or the resolution rules in the settings are not valid. |
+| Warning | All files were written, but something needs a look. For example, an image had no resolution, was enlarged by more than 4 times, a PDF had no images, or the resolution rules in the settings are not valid. |
 | Error | At least one file failed. The other files are still written. |
 
 The status of the task is the worst status of its files.

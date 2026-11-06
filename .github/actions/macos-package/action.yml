@@ -42,3 +42,10 @@ runs:
         "artifacts/installer/IlluxImageTool-$VERSION-macOS-arm64.pkg"
         "artifacts/installer/IlluxImageTool-$UPGRADE_VERSION-macOS-arm64.pkg"
         "$VERSION" "$UPGRADE_VERSION" "$RUNNER_TEMP/smoke"
+
+    - name: Check the smoke test PDFs with qpdf
+      shell: bash
+      run: |
+        # qpdf is installed on this throw-away runner only, as an independent PDF reader.
+        brew install qpdf
+        ./build/check-pdfs-with-qpdf.sh "$RUNNER_TEMP/smoke/pdf-check"

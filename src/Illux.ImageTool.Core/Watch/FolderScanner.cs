@@ -1,6 +1,7 @@
 using System.Text;
 using ImageMagick;
 using Illux.ImageTool.Batch;
+using Illux.ImageTool.Imaging;
 using Illux.ImageTool.Options;
 using Illux.ImageTool.Runtime;
 using Microsoft.Extensions.Logging;
@@ -515,9 +516,9 @@ public sealed class FolderScanner
             try
             {
                 if (new FileInfo(output).Length == 0) return $"output '{Path.GetFileName(output)}' is empty";
-                var ok = string.Equals(Path.GetExtension(output), ".pdf", StringComparison.OrdinalIgnoreCase)
-                    ? LooksLikePdf(output)
-                    : CanReadAsImage(output);
+                // By content, as FileProcessor routes: a PDF input keeps its own name and extension (x.PDF, x, x.jpg),
+                // and PDF content must never reach ImageMagick (its PDF coder would start Ghostscript).
+                var ok = SourceImage.IsPdf(output) ? LooksLikePdf(output) : CanReadAsImage(output);
                 if (!ok) return $"output '{Path.GetFileName(output)}' could not be re-opened";
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or MagickException)
@@ -535,17 +536,38 @@ public sealed class FolderScanner
         return info.Width > 0 && info.Height > 0;
     }
 
+    // Image outputs are PDF 1.6; a PDF input keeps its own version (never lowered), so any version can come out.
+    private static readonly HashSet<string> PdfVersions = new(StringComparer.Ordinal)
+    {
+        "%PDF-1.0", "%PDF-1.1", "%PDF-1.2", "%PDF-1.3", "%PDF-1.4", "%PDF-1.5", "%PDF-1.6", "%PDF-1.7", "%PDF-2.0",
+    };
+
+    /// <summary>How far before the end of the file <c>%%EOF</c> may be (some writers append data after it).</summary>
+    private const int PdfTailWindow = 64 * 1024;
+
+    /// <summary>
+    /// A <c>%PDF-x.y</c> header of a known version starting within the first 1024 bytes (as
+    /// <see cref="SourceImage.IsPdf"/> and readers accept: a byte copy keeps any bytes before it) and <c>%%EOF</c>
+    /// within the last 64 KiB.
+    /// </summary>
     private static bool LooksLikePdf(string path)
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var header = new byte[8];
-        if (stream.Read(header) != header.Length || Encoding.ASCII.GetString(header) != "%PDF-1.6") return false;
+        var head = new byte[1024 + 3]; // a header starting at byte 1019 ends 3 bytes past the window
+        var read = stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+        var text = Encoding.Latin1.GetString(head, 0, read);
+        var found = false;
+        for (var at = text.IndexOf("%PDF-", StringComparison.Ordinal);
+             at >= 0 && at + 5 <= 1024 && !found;
+             at = text.IndexOf("%PDF-", at + 1, StringComparison.Ordinal))
+            found = at + 8 <= text.Length && PdfVersions.Contains(text.Substring(at, 8));
+        if (!found) return false;
 
-        var tailLength = (int)Math.Min(stream.Length, 1024);
+        var tailLength = (int)Math.Min(stream.Length, PdfTailWindow);
         stream.Seek(-tailLength, SeekOrigin.End);
         var tail = new byte[tailLength];
         stream.ReadExactly(tail);
-        return Encoding.ASCII.GetString(tail).TrimEnd().EndsWith("%%EOF", StringComparison.Ordinal);
+        return tail.AsSpan().IndexOf("%%EOF"u8) >= 0;
     }
 
     /// <summary>
