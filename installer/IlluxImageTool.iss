@@ -70,6 +70,9 @@ Source: "{#RepoRoot}artifacts\redist\vc_redist.x64.exe"; Flags: dontcopy
 ; libraries and translations, and the x64-only Magick.NET assembly that the AnyCPU package replaced (the native
 ; Magick.Native dll keeps its name and is overwritten). Only {app} is touched, never the data folder in ProgramData
 ; or config.json. Taken from a diff of the v0.1.0 and v0.2 publish outputs; type files never removes a folder.
+; .NET's debugging helper carries the runtime version in its name, so a build on a newer .NET 10 patch ships it
+; under a new name. This is the name v0.1.0 to v0.3.0 shipped (runtime before 10.0.15).
+Type: files; Name: "{app}\mscordaccore_amd64_amd64_10.0.1426.52326.dll"
 Type: files; Name: "{app}\Accessibility.dll"
 Type: files; Name: "{app}\Magick.NET-Q16-HDRI-x64.dll"
 Type: files; Name: "{app}\Microsoft.VisualBasic.Forms.dll"
