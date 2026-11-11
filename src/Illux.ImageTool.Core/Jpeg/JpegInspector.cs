@@ -100,6 +100,35 @@ public static class JpegInspector
         return new JpegInfo(coding.Value, precision, width, height, components, hasAdobe, adobeTransform, density, icc);
     }
 
+    /// <summary>
+    /// True when an end-of-image marker (FF D9) follows the first start-of-scan. A file that was cut off (a broken
+    /// upload) has none, and ImageMagick would decode it with grey where the data is missing. Entropy-coded data never
+    /// holds FF D9 (an FF there is followed by 00 or a restart marker), so an EOI after the first scan is the real end;
+    /// data appended after it (motion photos) does not matter. An EOI inside an EXIF thumbnail comes before the scan.
+    /// </summary>
+    public static bool HasEndOfImage(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+        Inspect(fs); // leaves the stream just after the first SOS marker
+        var buffer = new byte[1 << 16];
+        var previous = 0;
+        int read;
+        while ((read = fs.Read(buffer)) > 0)
+        {
+            var span = buffer.AsSpan(0, read);
+            for (var start = 0; start < read;)
+            {
+                var found = span[start..].IndexOf((byte)0xD9);
+                if (found < 0) break;
+                var at = start + found;
+                if ((at == 0 ? previous : span[at - 1]) == 0xFF) return true;
+                start = at + 1;
+            }
+            previous = span[read - 1];
+        }
+        return false;
+    }
+
     private static byte[]? AssembleIcc(List<(int Seq, int Count, byte[] Data)> chunks)
     {
         if (chunks.Count == 0) return null;

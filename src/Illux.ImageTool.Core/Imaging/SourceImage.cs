@@ -119,6 +119,9 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         };
     }
 
+    internal const string IncompleteJpegMessage =
+        "the JPEG is incomplete (it ends before the image data does); the file is probably damaged or was cut off";
+
     private static JpegInfo InspectJpeg(string path)
     {
         JpegInfo info;
@@ -128,6 +131,7 @@ internal sealed record SourceImage(MagickFormat Format, uint Width, uint Height,
         if (info.Coding == JpegCoding.Lossless) throw new UnsupportedImageException("lossless JPEG is not supported");
         if (info.Coding == JpegCoding.Arithmetic) throw new UnsupportedImageException("arithmetic-coded JPEG is not supported");
         if (info.Precision != 8) throw new UnsupportedImageException($"{info.Precision}-bit JPEG is not supported");
+        if (!JpegInspector.HasEndOfImage(path)) throw new UnsupportedImageException(IncompleteJpegMessage);
         return info;
     }
 }

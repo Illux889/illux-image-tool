@@ -519,6 +519,31 @@ public sealed class PdfPipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task Pdf_OneBitImageScaled_BecomesEightBitGrey()
+    {
+        // Ruling R18 inside a PDF: a scaled 1-bit image gets 8-bit grey samples, not only 0 and 255.
+        const int w = 120, h = 90;
+        var row = (w + 7) / 8;
+        var bits = new byte[row * h];
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x += 2) bits[y * row + x / 8] |= (byte)(0x80 >> (x % 8)); // 1 px stripes
+        var pdf = TestPdfs.CustomPages(In, "bits.pdf",
+            (_ => ($"/Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /FlateDecode",
+                TestPdfs.Deflate(bits)), Cm(w, 600), Cm(h, 600)));
+        var before = PdfImageScanner.Scan(pdf);
+
+        var result = await Run(pdf, Output());
+
+        Assert.Equal(Status.Ok, result.Status);
+        var image = AssertSameDrawnSizes(before, Output()).Single();
+        Assert.Equal((60, 45), Size(Output(), image.Image));
+        var stream = ImageStream(Output(), image.Image);
+        Assert.Equal(8, Int(stream.StreamDictionary, "BitsPerComponent"));
+        var levels = Inflate(stream.Data.ToArray()).Distinct().Count();
+        Assert.True(levels > 2, $"{levels} grey levels: thresholded back to 1 bit");
+    }
+
+    [Fact]
     public async Task Pdf_DocumentClosedWhileTheImageIsResampled()
     {
         // M3: nothing holds the input open while the image pipeline runs (FileShare.None would fail otherwise).

@@ -36,6 +36,9 @@ internal static class MagickRewriter
             // EXIF X/YResolution + ResolutionUnit and Photoshop ResolutionInfo (8BIM 0x03ED) to it, so every
             // resolution tag in the output agrees (covered by Pipeline_Resample_RewritesExifAndPhotoshopResolution).
             image.Density = new Density(spec.NewResolution.X, spec.NewResolution.Y, DensityUnit.PixelsPerInch);
+            // Resampling creates grey levels (ruling R18). The depth that was read (1 bit for line art) would make the
+            // writer threshold them back to black and white, breaking up hairlines and hatching.
+            if (image.Depth < 8) image.Depth = 8;
         }
 
         // Reduce depth after resampling so the filter works at full precision (spec 8.2: "resampling is done at the
@@ -52,8 +55,12 @@ internal static class MagickRewriter
         // profile is still embedded.
         if (colorType != ColorType.Undefined) image.Settings.ColorType = colorType;
 
-        // ImageMagick's TIFF writer does not reuse the compression it read, so keep it explicitly.
-        if (source.IsTiff) image.Settings.Compression = compression;
+        // ImageMagick's TIFF writer does not reuse the compression it read, so keep it explicitly. CCITT fax
+        // compression only holds 1 bit (the writer would threshold), so a deeper image gets LZW, also lossless.
+        if (source.IsTiff)
+            image.Settings.Compression = compression is CompressionMethod.Fax or CompressionMethod.Group4 && image.Depth > 1
+                ? CompressionMethod.LZW
+                : compression;
 
         if (source.IsJpeg)
         {

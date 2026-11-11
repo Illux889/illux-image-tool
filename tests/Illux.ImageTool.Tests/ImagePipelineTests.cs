@@ -318,6 +318,84 @@ public sealed class ImagePipelineTests : IDisposable
         Assert.Equal(["ppi inside 200–200 (rule \"Only\") — not resampled", "no change needed"], result.Messages);
     }
 
+    /// <summary>A 1-bit TIFF of vertical 1 px stripes (black, white, black, ...).</summary>
+    private string BilevelTiff(string name, int w, int h, double ppi, CompressionMethod compression)
+    {
+        Directory.CreateDirectory(_dir);
+        var path = Path.Combine(_dir, name);
+        var samples = new byte[w * h * 3];
+        for (var i = 0; i < w * h; i++)
+            samples[3 * i] = samples[3 * i + 1] = samples[3 * i + 2] = (byte)(i % w % 2 == 0 ? 0 : 255);
+        using var image = new MagickImage();
+        image.ReadPixels(samples, new PixelReadSettings((uint)w, (uint)h, StorageType.Char, PixelMapping.RGB));
+        image.ColorType = ColorType.Bilevel;
+        image.Depth = 1;
+        image.Density = new Density(ppi, ppi, DensityUnit.PixelsPerInch);
+        image.Settings.Compression = compression;
+        image.Write(path, MagickFormat.Tiff);
+        return path;
+    }
+
+    [Theory]
+    [InlineData(CompressionMethod.Group4, CompressionMethod.LZW)]
+    [InlineData(CompressionMethod.LZW, CompressionMethod.LZW)]
+    [InlineData(CompressionMethod.NoCompression, CompressionMethod.NoCompression)]
+    public async Task Pipeline_BilevelTiff_Resampled_BecomesEightBitGrey(CompressionMethod written, CompressionMethod expected)
+    {
+        // Ruling R18: resampling creates grey levels a 1-bit image cannot hold, so the output is 8-bit grey, not
+        // thresholded back to black and white (which breaks up hairlines and hatching). 1 px stripes at 600 ppi average
+        // to grey at 300 ppi. CCITT fax compression cannot hold grey, so it becomes LZW (lossless); others are kept.
+        var input = BilevelTiff("line.tif", 120, 90, 600, written);
+        using (var check = new MagickImage(input))
+        {
+            Assert.Equal(ColorType.Bilevel, check.ColorType);
+            Assert.Equal(written, check.Compression);
+        }
+        var output = OutPath("line.tif");
+
+        var result = await Run(input, output);
+
+        Assert.Equal(Status.Ok, result.Status);
+        using var image = new MagickImage(output);
+        Assert.Equal((60u, 45u), (image.Width, image.Height));
+        Assert.Equal(8u, image.Depth);
+        Assert.Equal(ColorType.Grayscale, image.ColorType);
+        Assert.Equal(expected, image.Compression);
+        Assert.True(image.TotalColors > 2, $"{image.TotalColors} grey levels: thresholded back to 1 bit");
+    }
+
+    [Theory]
+    [InlineData(300)] // nothing else to do: it would be copied unchanged
+    [InlineData(150)] // it would be resampled
+    public async Task Pipeline_TruncatedJpeg_Unsupported(int ppi)
+    {
+        // A JPEG cut off before its end (a broken upload) decodes with grey where the data is missing; never pass it on.
+        var full = TestImages.Write(_dir, "full.jpg", 400, 300, ColorSpace.sRGB, 8, ppi);
+        var bytes = await File.ReadAllBytesAsync(full);
+        var input = Path.Combine(_dir, "cut.jpg");
+        await File.WriteAllBytesAsync(input, bytes[..(bytes.Length * 6 / 10)]);
+        var output = OutPath("cut.jpg");
+
+        var ex = await Assert.ThrowsAsync<UnsupportedImageException>(() => Run(input, output));
+
+        Assert.Equal("the JPEG is incomplete (it ends before the image data does); the file is probably damaged or was cut off", ex.Message);
+        Assert.False(File.Exists(output));
+    }
+
+    [Fact]
+    public async Task Pipeline_JpegWithDataAfterTheEnd_IsProcessed()
+    {
+        // Some cameras and phones append data after the end-of-image marker (e.g. motion photos): the JPEG is whole.
+        var input = TestImages.Write(_dir, "tail.jpg", 400, 300, ColorSpace.sRGB, 8, 300);
+        await File.AppendAllBytesAsync(input, new byte[4096]);
+        var output = OutPath("tail.jpg");
+
+        var result = await Run(input, output);
+
+        Assert.Equal(Status.Ok, result.Status);
+        Assert.Contains("no change needed", result.Messages);
+    }
+
     [Fact]
     public async Task Pipeline_LayeredTiff_IsOneImage_StaleLayersDropped()
     {
